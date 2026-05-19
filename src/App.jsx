@@ -1366,7 +1366,12 @@ function Help() {
     try {
       const response = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": "",
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true",
+        },
         body: JSON.stringify({
           model: "claude-sonnet-4-20250514",
           max_tokens: 1000,
@@ -1374,11 +1379,15 @@ function Help() {
           messages: [...aiMessages, { role: "user", content: userMsg }].map(m => ({ role: m.role, content: m.content }))
         })
       });
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err?.error?.message || `HTTP ${response.status}`);
+      }
       const data = await response.json();
       const reply = data.content?.[0]?.text || "Sorry, I couldn't process that. Please try again.";
       setAiMessages(prev => [...prev, { role: "assistant", content: reply }]);
     } catch (e) {
-      setAiMessages(prev => [...prev, { role: "assistant", content: "Connection error. Please check your internet and try again." }]);
+      setAiMessages(prev => [...prev, { role: "assistant", content: `⚠️ Error: ${e.message || "Unknown error. Check your connection."}` }]);
     }
     setAiLoading(false);
     setTimeout(() => chatRef.current?.scrollTo({ top: chatRef.current.scrollHeight, behavior: "smooth" }), 100);
@@ -1395,24 +1404,33 @@ function Help() {
       <div style={{ flex: 1 }}>
         {tab === "guide" && <Card><div style={{ fontSize: 18, fontWeight: 800, marginBottom: 20 }}>Getting Started</div>{[{ n: "1", t: "Activate License", d: "Enter your CR number, VAT number, and 12-digit license key. Saved permanently." }, { n: "2", t: "Login by Role", d: "Select Admin, Manager, or Cashier and enter your 4-digit PIN." }, { n: "3", t: "Setup Menu", d: "Go to Create → Items to add your menu with Arabic names, prices, and barcodes." }, { n: "4", t: "Start Billing", d: "POS opens in Takeaway mode. Add items, fill customer details, process payment." }, { n: "5", t: "ZATCA QR", d: "Every receipt auto-generates a real scannable ZATCA-compliant QR code." }, { n: "6", t: "Close Day", d: "Go to Reports → click Close Day to record end of day with exact timestamps." }].map((s, i) => <div key={i} style={{ display: "flex", gap: 14, marginBottom: 14, padding: 14, background: C.bg, borderRadius: 10 }}><div style={{ width: 34, height: 34, background: C.primary, color: "#fff", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 800, flexShrink: 0 }}>{s.n}</div><div><div style={{ fontSize: 14, fontWeight: 700, marginBottom: 3 }}>{s.t}</div><div style={{ fontSize: 13, color: C.textMid }}>{s.d}</div></div></div>)}</Card>}
         {tab === "zatca" && <Card><div style={{ fontSize: 18, fontWeight: 800, marginBottom: 20 }}>⬛ ZATCA QR Code</div>{[["Standard", "ZATCA Phase 1 & 2 Ready"], ["Encoding", "TLV (Tag-Length-Value) → Base64"], ["QR Content", "Seller Name, VAT No., Timestamp, Total, VAT Amount"], ["Verification", "Real scannable QR — works with any ZATCA scanner"], ["Auto-fill", "VAT number pulled from your license automatically"]].map(([k, v]) => <div key={k} style={{ display: "flex", gap: 12, padding: "10px 14px", background: C.zatcaLight, borderRadius: 8, marginBottom: 8 }}><span style={{ fontSize: 12, fontWeight: 700, color: C.zatca, width: 110, flexShrink: 0 }}>{k}</span><span style={{ fontSize: 13 }}>{v}</span></div>)}</Card>}
-        {tab === "ai" && <Card style={{ display: "flex", flexDirection: "column", height: 500 }}>
-          <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 16, display: "flex", alignItems: "center", gap: 8 }}><span>🤖</span> RestoPOS AI Assistant</div>
-          <div ref={chatRef} style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 12, marginBottom: 16, paddingRight: 4 }}>
+        {tab === "ai" && <Card style={{ display: "flex", flexDirection: "column", height: 560 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+            <div style={{ width: 38, height: 38, background: "linear-gradient(135deg,#6366f1,#4f46e5)", borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20 }}>🤖</div>
+            <div><div style={{ fontSize: 15, fontWeight: 800, color: C.text }}>RestoPOS AI Assistant</div><div style={{ fontSize: 11, color: C.success, fontWeight: 600 }}>● Powered by Claude · Ask anything about RestoPOS</div></div>
+          </div>
+          <div ref={chatRef} style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 10, marginBottom: 12, paddingRight: 4 }}>
             {aiMessages.map((msg, i) => (
-              <div key={i} style={{ display: "flex", justifyContent: msg.role === "user" ? "flex-end" : "flex-start" }}>
-                <div style={{ maxWidth: "80%", padding: "10px 14px", borderRadius: msg.role === "user" ? "18px 18px 4px 18px" : "18px 18px 18px 4px", background: msg.role === "user" ? C.primary : C.bg, color: msg.role === "user" ? "#fff" : C.text, fontSize: 13, lineHeight: 1.5 }}>
+              <div key={i} style={{ display: "flex", justifyContent: msg.role === "user" ? "flex-end" : "flex-start", gap: 8, alignItems: "flex-end" }}>
+                {msg.role === "assistant" && <div style={{ width: 26, height: 26, background: "linear-gradient(135deg,#6366f1,#4f46e5)", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, flexShrink: 0, marginBottom: 2 }}>🤖</div>}
+                <div style={{ maxWidth: "78%", padding: "10px 14px", borderRadius: msg.role === "user" ? "18px 18px 4px 18px" : "18px 18px 18px 4px", background: msg.role === "user" ? C.primary : C.bg, color: msg.role === "user" ? "#fff" : C.text, fontSize: 13, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>
                   {msg.content}
                 </div>
               </div>
             ))}
-            {aiLoading && <div style={{ display: "flex", justifyContent: "flex-start" }}><div style={{ padding: "10px 14px", borderRadius: "18px 18px 18px 4px", background: C.bg, fontSize: 13, color: C.textMid }}>Thinking…</div></div>}
+            {aiLoading && <div style={{ display: "flex", justifyContent: "flex-start", gap: 8, alignItems: "flex-end" }}>
+              <div style={{ width: 26, height: 26, background: "linear-gradient(135deg,#6366f1,#4f46e5)", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12 }}>🤖</div>
+              <div style={{ padding: "10px 16px", borderRadius: "18px 18px 18px 4px", background: C.bg, fontSize: 18, color: C.zatca, letterSpacing: 3 }}>&#x2022;&#x2022;&#x2022;</div>
+            </div>}
           </div>
           <div style={{ display: "flex", gap: 8 }}>
-            <input value={aiInput} onChange={e => setAiInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter") sendMessage(); }} placeholder="Ask anything about RestoPOS…" style={{ flex: 1, padding: "10px 14px", border: `1.5px solid ${C.border}`, borderRadius: 10, fontSize: 13, fontFamily: "inherit" }} />
-            <button onClick={sendMessage} disabled={aiLoading || !aiInput.trim()} style={{ padding: "10px 18px", background: C.primary, color: "#fff", border: "none", borderRadius: 10, cursor: "pointer", fontSize: 13, fontWeight: 700, fontFamily: "inherit" }}>Send</button>
+            <input value={aiInput} onChange={e => setAiInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } }} placeholder="Ask anything about RestoPOS — billing, ZATCA, settings…" style={{ flex: 1, padding: "11px 14px", border: `1.5px solid ${C.border}`, borderRadius: 12, fontSize: 13, fontFamily: "inherit", outline: "none" }} />
+            <button onClick={sendMessage} disabled={aiLoading || !aiInput.trim()} style={{ padding: "11px 22px", background: aiLoading || !aiInput.trim() ? "#ccc" : "linear-gradient(135deg,#6366f1,#4f46e5)", color: "#fff", border: "none", borderRadius: 12, cursor: aiLoading || !aiInput.trim() ? "not-allowed" : "pointer", fontSize: 13, fontWeight: 700, fontFamily: "inherit", transition: "all 0.15s" }}>
+              {aiLoading ? "..." : "Send ↑"}
+            </button>
           </div>
         </Card>}
-        {tab === "support" && <Card><div style={{ fontSize: 18, fontWeight: 800, marginBottom: 20 }}>Support & Contact</div>{[{ icon: "📦", label: "Product", value: "RestoPOS v2.0 · ZATCA Phase 2" }, { icon: "🌍", label: "Region", value: "Kingdom of Saudi Arabia" }, { icon: "📧", label: "Email", value: "support@restopos.sa" }, { icon: "📞", label: "Phone", value: "+966 50 000 0000 (9AM–6PM)" }, { icon: "💬", label: "WhatsApp", value: "+966 50 000 0000" }].map((item, i) => <div key={i} style={{ display: "flex", gap: 14, padding: "12px 0", borderBottom: `1px solid ${C.border}`, alignItems: "center" }}><span style={{ fontSize: 20, width: 28 }}>{item.icon}</span><div style={{ fontSize: 12, fontWeight: 700, color: C.textMid, width: 90 }}>{item.label}</div><div style={{ fontSize: 13, color: C.text, fontWeight: 600 }}>{item.value}</div></div>)}</Card>}
+        {tab === "support" && <Card><div style={{ fontSize: 18, fontWeight: 800, marginBottom: 20 }}>Support & Contact</div>{[{ icon: "📦", label: "Product", value: "RestoPOS v4.0 · ZATCA Phase 2" }, { icon: "🌍", label: "Region", value: "Kingdom of Saudi Arabia" }, { icon: "📧", label: "Email", value: "support@restopos.sa" }, { icon: "📞", label: "Phone", value: "+966 50 000 0000 (9AM–6PM)" }, { icon: "💬", label: "WhatsApp", value: "+966 50 000 0000" }].map((item, i) => <div key={i} style={{ display: "flex", gap: 14, padding: "12px 0", borderBottom: `1px solid ${C.border}`, alignItems: "center" }}><span style={{ fontSize: 20, width: 28 }}>{item.icon}</span><div style={{ fontSize: 12, fontWeight: 700, color: C.textMid, width: 90 }}>{item.label}</div><div style={{ fontSize: 13, color: C.text, fontWeight: 600 }}>{item.value}</div></div>)}</Card>}
       </div>
     </div>
   );
