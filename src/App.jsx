@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { initializeApp } from "firebase/app";
-import { getFirestore, collection, query, where, getDocs, updateDoc, doc } from "firebase/firestore";
+import { getFirestore, collection, query, where, getDocs, updateDoc, doc, addDoc, getDoc } from "firebase/firestore";
 
 // ═══════════════════════════════════════════════════════════════════
 // FIREBASE CONFIG
@@ -229,69 +229,283 @@ function BusinessRegistration({ onNext }) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// STEP 2 — LICENSE KEY VERIFICATION (Firebase)
+// STEP 2 — LICENSE KEY VERIFICATION + DOCUMENT UPLOAD + PENDING APPROVAL
 // ═══════════════════════════════════════════════════════════════════
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
 function LicenseVerification({ businessData, onSuccess, onBack }) {
+  const [subStep, setSubStep] = useState("key"); // "key" | "docs" | "pending"
   const [licenseKey, setLicenseKey] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [licDocRef, setLicDocRef] = useState(null);
+  const [deviceId] = useState(() => {
+    let id = localStorage.getItem("restopos_device_id");
+    if (!id) { id = "dev_" + Date.now() + "_" + Math.random().toString(36).slice(2, 10); localStorage.setItem("restopos_device_id", id); }
+    return id;
+  });
 
-  async function handleVerify() {
+  // Doc upload state
+  const [vatCert, setVatCert] = useState(null);
+  const [bizLicense, setBizLicense] = useState(null);
+  const [uploadLoading, setUploadLoading] = useState(false);
+  const [uploadError, setUploadError] = useState("");
+  const vatRef = useRef();
+  const bizRef = useRef();
+
+  // Pending polling state
+  const [pendingId, setPendingId] = useState(() => localStorage.getItem("restopos_pending_id"));
+  const [pollStatus, setPollStatus] = useState("pending");
+  const [pollMsg, setPollMsg] = useState("");
+
+  // If already pending from a previous session, jump straight to pending screen
+  useEffect(() => {
+    const savedPending = localStorage.getItem("restopos_pending_id");
+    const savedLicense = LS.get("restopos_license_v2");
+    if (savedLicense) return; // already approved
+    if (savedPending) { setPendingId(savedPending); setSubStep("pending"); }
+  }, []);
+
+  // Poll Firestore every 10s while on pending screen
+  useEffect(() => {
+    if (subStep !== "pending" || !pendingId) return;
+    async function poll() {
+      try {
+        const snap = await getDoc(doc(db, "pending_activations", pendingId));
+        if (!snap.exists()) return;
+        const d = snap.data();
+        if (d.status === "approved") {
+          // Build license from the approval data and proceed
+          const license = { businessName: d.businessName, crNumber: d.crNumber, vatNumber: d.vatNumber, address: d.address, city: d.city, phone: d.phone, licenseKey: d.licenseKey, activatedAt: new Date().toISOString(), docId: d.licDocId, deviceId };
+          LS.set("restopos_license_v2", license);
+          localStorage.removeItem("restopos_pending_id");
+          setPollStatus("approved");
+          setTimeout(() => onSuccess(license), 1800);
+        } else if (d.status === "rejected") {
+          setPollStatus("rejected");
+          setPollMsg(d.rejectReason || "Your application was rejected. Please contact support.");
+          localStorage.removeItem("restopos_pending_id");
+        }
+      } catch (e) { /* network hiccup, ignore */ }
+    }
+    poll();
+    const interval = setInterval(poll, 10000);
+    return () => clearInterval(interval);
+  }, [subStep, pendingId]);
+
+  // STEP A: Verify license key exists and is valid
+  async function handleVerifyKey() {
     setError("");
     const key = licenseKey.trim();
     if (key.length !== 12) return setError("License key must be exactly 12 digits.");
     if (!/^\d{12}$/.test(key)) return setError("License key must contain numbers only.");
     setLoading(true);
     try {
-      // ✅ Generate or retrieve a persistent deviceId for this browser/device
-      let deviceId = localStorage.getItem("restopos_device_id");
-      if (!deviceId) {
-        deviceId = "dev_" + Date.now() + "_" + Math.random().toString(36).slice(2, 10);
-        localStorage.setItem("restopos_device_id", deviceId);
-      }
-
       const q = query(collection(db, "licenses"), where("key", "==", key), where("active", "==", true));
       const snap = await getDocs(q);
       if (snap.empty) { setError("Invalid or inactive license key. Please contact support."); setLoading(false); return; }
       const docRef = snap.docs[0];
       const licData = docRef.data();
-
-      // ✅ Single-device check: if already bound to a different device, block activation
       if (licData.deviceId && licData.deviceId !== deviceId) {
-        setError("❌ This license key is already activated on another device. Each license allows only 1 device. Contact support to transfer.");
-        setLoading(false);
-        return;
+        setError("❌ This license key is already activated on another device. Contact support to transfer.");
+        setLoading(false); return;
       }
-
-      await updateDoc(doc(db, "licenses", docRef.id), {
-        activatedBy: businessData.businessName,
-        activatedAt: new Date().toISOString(),
-        crNumber: businessData.crNumber,
-        vatNumber: businessData.vatNumber,
-        deviceId: deviceId, // ✅ Lock to this device
-      });
-      const license = { ...businessData, licenseKey: key, activatedAt: new Date().toISOString(), docId: docRef.id, deviceId };
-      LS.set("restopos_license_v2", license);
-      onSuccess(license);
-    } catch (e) {
-      setError("Connection error. Please check your internet and try again.");
-    }
+      // Check if this key already has a pending activation
+      if (licData.pendingId) {
+        setPendingId(licData.pendingId);
+        localStorage.setItem("restopos_pending_id", licData.pendingId);
+        setSubStep("pending");
+        setLoading(false); return;
+      }
+      setLicDocRef(docRef);
+      setSubStep("docs");
+    } catch (e) { setError("Connection error. Please check your internet and try again."); }
     setLoading(false);
   }
 
-  return (
-    <div style={{ minHeight: "100vh", background: "linear-gradient(135deg,#0a1628,#1A3A5C 50%,#0a2818)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, fontFamily: "'Plus Jakarta Sans',sans-serif" }}>
-      <div style={{ width: "100%", maxWidth: 460 }}>
-        <div style={{ textAlign: "center", marginBottom: 28 }}>
-          <div style={{ display: "inline-flex", alignItems: "center", gap: 12 }}>
-            <div style={{ width: 48, height: 48, background: "linear-gradient(135deg,#1A6B4A,#F0A500)", borderRadius: 14, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, fontWeight: 900, color: "#fff" }}>R</div>
-            <div style={{ fontSize: 26, fontWeight: 900, color: "#fff" }}>RestoPOS</div>
+  function handleFileSelect(e, setter) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const allowed = ["image/jpeg", "image/jpg", "image/png", "application/pdf"];
+    if (!allowed.includes(file.type)) { setUploadError("Only JPG, PNG, or PDF files are allowed."); return; }
+    if (file.size > 5 * 1024 * 1024) { setUploadError("File must be under 5MB."); return; }
+    setUploadError("");
+    setter(file);
+  }
+
+  // STEP B: Upload documents and create pending_activations record
+  async function handleSubmitDocs() {
+    setUploadError("");
+    if (!vatCert) return setUploadError("Please upload your VAT Registration Certificate.");
+    if (!bizLicense) return setUploadError("Please upload your Commercial Business License.");
+    setUploadLoading(true);
+    try {
+      // Convert files to base64 and store in Firestore (files ≤5MB each → fits in Firestore doc)
+      const vatBase64 = await fileToBase64(vatCert);
+      const bizBase64 = await fileToBase64(bizLicense);
+
+      // Create pending activation record
+      const pendingRef = await addDoc(collection(db, "pending_activations"), {
+        businessName: businessData.businessName,
+        crNumber: businessData.crNumber,
+        vatNumber: businessData.vatNumber,
+        address: businessData.address,
+        city: businessData.city,
+        phone: businessData.phone,
+        licenseKey: licenseKey.trim(),
+        licDocId: licDocRef.id,
+        deviceId,
+        status: "pending",
+        submittedAt: new Date().toISOString(),
+        vatCertName: vatCert.name,
+        vatCertType: vatCert.type,
+        vatCertBase64: vatBase64,
+        bizLicenseName: bizLicense.name,
+        bizLicenseType: bizLicense.type,
+        bizLicenseBase64: bizBase64,
+      });
+
+      // Link pending ID to the license doc so we can find it on re-login
+      await updateDoc(doc(db, "licenses", licDocRef.id), { pendingId: pendingRef.id, pendingAt: new Date().toISOString() });
+
+      setPendingId(pendingRef.id);
+      localStorage.setItem("restopos_pending_id", pendingRef.id);
+      setSubStep("pending");
+    } catch (e) {
+      setUploadError("Upload failed. Check your connection and try again. (" + e.message + ")");
+    }
+    setUploadLoading(false);
+  }
+
+  const BG = "linear-gradient(135deg,#0a1628,#1A3A5C 50%,#0a2818)";
+  const Logo = () => (
+    <div style={{ textAlign: "center", marginBottom: 28 }}>
+      <div style={{ display: "inline-flex", alignItems: "center", gap: 12 }}>
+        <div style={{ width: 48, height: 48, background: "linear-gradient(135deg,#1A6B4A,#F0A500)", borderRadius: 14, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, fontWeight: 900, color: "#fff" }}>R</div>
+        <div style={{ fontSize: 26, fontWeight: 900, color: "#fff" }}>RestoPOS</div>
+      </div>
+    </div>
+  );
+
+  // ── PENDING SCREEN ────────────────────────────────────────────────
+  if (subStep === "pending") {
+    if (pollStatus === "approved") return (
+      <div style={{ minHeight: "100vh", background: BG, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, fontFamily: "'Plus Jakarta Sans',sans-serif" }}>
+        <div style={{ textAlign: "center", color: "#fff" }}>
+          <div style={{ fontSize: 64, marginBottom: 16 }}>✅</div>
+          <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 8 }}>Approved!</div>
+          <div style={{ fontSize: 14, color: "rgba(255,255,255,0.7)" }}>Launching RestoPOS…</div>
+        </div>
+      </div>
+    );
+    if (pollStatus === "rejected") return (
+      <div style={{ minHeight: "100vh", background: BG, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, fontFamily: "'Plus Jakarta Sans',sans-serif" }}>
+        <Logo />
+        <div style={{ background: "rgba(255,255,255,0.97)", borderRadius: 20, padding: 32, maxWidth: 460, width: "100%", boxShadow: "0 32px 80px rgba(0,0,0,0.4)", textAlign: "center" }}>
+          <div style={{ fontSize: 48, marginBottom: 12 }}>❌</div>
+          <div style={{ fontSize: 18, fontWeight: 800, color: C.danger, marginBottom: 8 }}>Application Rejected</div>
+          <div style={{ fontSize: 14, color: C.textMid, marginBottom: 20 }}>{pollMsg}</div>
+          <button onClick={() => { setSubStep("key"); setPollStatus("pending"); }} style={{ padding: "12px 28px", background: C.primary, color: "#fff", border: "none", borderRadius: 12, fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Try Again</button>
+        </div>
+      </div>
+    );
+    return (
+      <div style={{ minHeight: "100vh", background: BG, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, fontFamily: "'Plus Jakarta Sans',sans-serif" }}>
+        <div style={{ width: "100%", maxWidth: 480 }}>
+          <Logo />
+          <div style={{ background: "rgba(255,255,255,0.97)", borderRadius: 20, padding: 36, boxShadow: "0 32px 80px rgba(0,0,0,0.4)", textAlign: "center" }}>
+            <div style={{ width: 72, height: 72, background: "linear-gradient(135deg,#F0A500,#e09000)", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 36, margin: "0 auto 20px" }}>⏳</div>
+            <div style={{ fontSize: 20, fontWeight: 800, color: C.text, marginBottom: 8 }}>Awaiting Manual Approval</div>
+            <div style={{ fontSize: 14, color: C.textMid, lineHeight: 1.7, marginBottom: 24 }}>
+              Your documents have been submitted successfully.<br/>
+              Our team is reviewing your <strong>VAT Certificate</strong> and <strong>Commercial License</strong>.<br/>
+              This usually takes <strong>a few hours</strong>.
+            </div>
+            <div style={{ background: C.warningLight, border: `1px solid ${C.accent}40`, borderRadius: 12, padding: "14px 18px", marginBottom: 20 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: C.warning, marginBottom: 6 }}>📋 WHAT HAPPENS NEXT</div>
+              <div style={{ fontSize: 13, color: C.textMid, textAlign: "left", lineHeight: 1.8 }}>
+                1. Our team reviews your submitted documents<br/>
+                2. We verify your CR & VAT registration<br/>
+                3. You'll be automatically approved and logged in<br/>
+                4. Keep this page open or come back later
+              </div>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, fontSize: 12, color: C.textLight }}>
+              <div style={{ width: 8, height: 8, borderRadius: "50%", background: C.accent, animation: "pulse 1.5s infinite" }} />
+              Checking for approval every 10 seconds…
+            </div>
+            <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}`}</style>
           </div>
         </div>
+      </div>
+    );
+  }
+
+  // ── DOCUMENT UPLOAD SCREEN ────────────────────────────────────────
+  if (subStep === "docs") {
+    const FileBox = ({ label, file, inputRef, onChange, accept }) => (
+      <div style={{ border: `2px dashed ${file ? C.primary : C.border}`, borderRadius: 12, padding: "18px 16px", background: file ? C.primaryLight : C.bg, cursor: "pointer", transition: "all 0.15s" }}
+        onClick={() => inputRef.current?.click()}>
+        <input ref={inputRef} type="file" accept={accept} style={{ display: "none" }} onChange={onChange} />
+        <div style={{ textAlign: "center" }}>
+          <div style={{ fontSize: 28, marginBottom: 6 }}>{file ? "✅" : "📄"}</div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: file ? C.primary : C.textMid, marginBottom: 4 }}>{label}</div>
+          {file ? (
+            <div style={{ fontSize: 11, color: C.primary, fontWeight: 600 }}>✓ {file.name}</div>
+          ) : (
+            <div style={{ fontSize: 11, color: C.textLight }}>Click to upload · JPG, PNG or PDF · Max 5MB</div>
+          )}
+        </div>
+      </div>
+    );
+    return (
+      <div style={{ minHeight: "100vh", background: BG, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, fontFamily: "'Plus Jakarta Sans',sans-serif" }}>
+        <div style={{ width: "100%", maxWidth: 500 }}>
+          <Logo />
+          <div style={{ background: "rgba(255,255,255,0.97)", borderRadius: 20, padding: 32, boxShadow: "0 32px 80px rgba(0,0,0,0.4)" }}>
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ fontSize: 19, fontWeight: 800, color: C.text, marginBottom: 4 }}>📎 Upload Verification Documents</div>
+              <div style={{ fontSize: 13, color: C.textMid }}>Step 3 of 3 — Required for manual approval</div>
+            </div>
+            <div style={{ background: C.primaryLight, border: `1px solid ${C.primary}30`, borderRadius: 10, padding: "10px 14px", marginBottom: 20, fontSize: 13 }}>
+              <div style={{ fontWeight: 700, color: C.primary, marginBottom: 2 }}>✓ {businessData.businessName}</div>
+              <div style={{ color: C.textMid, fontSize: 12 }}>CR: {businessData.crNumber} · VAT: {businessData.vatNumber} · Key: {licenseKey.trim()}</div>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 16 }}>
+              <FileBox label="VAT Registration Certificate" file={vatCert} inputRef={vatRef} accept=".jpg,.jpeg,.png,.pdf" onChange={e => handleFileSelect(e, setVatCert)} />
+              <FileBox label="Commercial Business License (CR)" file={bizLicense} inputRef={bizRef} accept=".jpg,.jpeg,.png,.pdf" onChange={e => handleFileSelect(e, setBizLicense)} />
+            </div>
+            {uploadError && <div style={{ background: C.dangerLight, border: `1px solid ${C.danger}`, borderRadius: 8, padding: "10px 14px", fontSize: 13, color: C.danger, fontWeight: 600, marginBottom: 12 }}>⚠️ {uploadError}</div>}
+            <button onClick={handleSubmitDocs} disabled={uploadLoading || !vatCert || !bizLicense}
+              style={{ width: "100%", padding: 14, background: uploadLoading || !vatCert || !bizLicense ? "#ccc" : "linear-gradient(135deg,#1A6B4A,#134D36)", color: "#fff", border: "none", borderRadius: 12, fontSize: 15, fontWeight: 800, cursor: uploadLoading || !vatCert || !bizLicense ? "not-allowed" : "pointer", fontFamily: "inherit", marginBottom: 10 }}>
+              {uploadLoading ? "⏳ Submitting…" : "📤 Submit for Approval"}
+            </button>
+            <button onClick={() => setSubStep("key")} style={{ width: "100%", padding: 12, background: "transparent", color: C.textMid, border: `1px solid ${C.border}`, borderRadius: 12, fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>← Back</button>
+            <div style={{ marginTop: 14, padding: "10px 14px", background: C.bg, borderRadius: 10, fontSize: 11, color: C.textMid, lineHeight: 1.6 }}>
+              🔒 Your documents are stored securely and used only for business verification. After manual review by our team, your account will be activated automatically.
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── LICENSE KEY ENTRY SCREEN ──────────────────────────────────────
+  return (
+    <div style={{ minHeight: "100vh", background: BG, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, fontFamily: "'Plus Jakarta Sans',sans-serif" }}>
+      <div style={{ width: "100%", maxWidth: 460 }}>
+        <Logo />
         <div style={{ background: "rgba(255,255,255,0.97)", borderRadius: 20, padding: 32, boxShadow: "0 32px 80px rgba(0,0,0,0.4)" }}>
           <div style={{ marginBottom: 22 }}>
             <div style={{ fontSize: 19, fontWeight: 800, color: C.text, marginBottom: 4 }}>🔐 License Activation</div>
-            <div style={{ fontSize: 13, color: C.textMid }}>Step 2 of 2 — Enter your 12-digit license key</div>
+            <div style={{ fontSize: 13, color: C.textMid }}>Step 2 of 3 — Enter your 12-digit license key</div>
           </div>
           <div style={{ background: C.primaryLight, border: `1px solid ${C.primary}30`, borderRadius: 10, padding: "10px 14px", marginBottom: 18, fontSize: 13 }}>
             <div style={{ fontWeight: 700, color: C.primary, marginBottom: 2 }}>✓ {businessData.businessName}</div>
@@ -299,12 +513,12 @@ function LicenseVerification({ businessData, onSuccess, onBack }) {
           </div>
           <Inp label="License Key (12 digits — provided after payment)" value={licenseKey} onChange={setLicenseKey} placeholder="123456789012" />
           {error && <div style={{ background: C.dangerLight, border: `1px solid ${C.danger}`, borderRadius: 8, padding: "10px 14px", fontSize: 13, color: C.danger, fontWeight: 600, marginTop: 12 }}>⚠️ {error}</div>}
-          <button onClick={handleVerify} disabled={loading} style={{ width: "100%", marginTop: 16, background: loading ? "#ccc" : "linear-gradient(135deg,#6366f1,#4f46e5)", color: "#fff", border: "none", borderRadius: 12, padding: 14, fontSize: 15, fontWeight: 800, cursor: loading ? "not-allowed" : "pointer", fontFamily: "inherit" }}>
-            {loading ? "⏳ Verifying…" : "✓ Activate RestoPOS"}
+          <button onClick={handleVerifyKey} disabled={loading} style={{ width: "100%", marginTop: 16, background: loading ? "#ccc" : "linear-gradient(135deg,#6366f1,#4f46e5)", color: "#fff", border: "none", borderRadius: 12, padding: 14, fontSize: 15, fontWeight: 800, cursor: loading ? "not-allowed" : "pointer", fontFamily: "inherit" }}>
+            {loading ? "⏳ Checking…" : "Next — Upload Documents →"}
           </button>
           <button onClick={onBack} style={{ width: "100%", marginTop: 10, background: "transparent", color: C.textMid, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12, fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>← Back</button>
           <div style={{ marginTop: 16, padding: "12px 14px", background: C.bg, borderRadius: 10, fontSize: 12, color: C.textMid }}>
-            🔒 Your license is verified against our secure database. Contact support if you don't have a key.
+            🔒 Your license is verified against our secure database. After key validation, you'll upload your CR and VAT documents for manual approval.
           </div>
         </div>
       </div>
@@ -486,14 +700,28 @@ function PaymentModal({ total, subtotal, vat, promos, onConfirm, onClose }) {
 // ═══════════════════════════════════════════════════════════════════
 function ReceiptModal({ order, license, onClose }) {
   const qrData = generateZATCABase64({ sellerName: license.businessName, vatNumber: license.vatNumber, timestamp: new Date().toISOString(), total: order.total, vatAmount: order.vat });
+  const printFrameRef = useRef();
 
-  // ✅ FIX: Thermal printer silent print — opens a dedicated print window
-  // formatted for 80mm thermal paper, dark ink, no extra browser chrome
+  // ✅ FIX: Generate QR as base64 PNG first, then inject into hidden iframe for printing
+  // This avoids canvas→print issues AND removes the popup window confirmation dialog
   function handleThermalPrint() {
-    const win = window.open("", "_blank", "width=340,height=700,scrollbars=yes");
-    if (!win) { alert("Pop-up blocked. Please allow pop-ups for this site to print."); return; }
+    // Step 1: Generate QR to a temporary off-screen canvas and convert to PNG base64
+    let qrImgSrc = "";
+    try {
+      const tempDiv = document.createElement("div");
+      tempDiv.style.cssText = "position:absolute;left:-9999px;top:-9999px;width:120px;height:120px;";
+      document.body.appendChild(tempDiv);
+      new window.QRCode(tempDiv, {
+        text: qrData, width: 110, height: 110,
+        colorDark: "#000000", colorLight: "#ffffff",
+        correctLevel: window.QRCode?.CorrectLevel?.M
+      });
+      const canvas = tempDiv.querySelector("canvas");
+      if (canvas) qrImgSrc = canvas.toDataURL("image/png");
+      document.body.removeChild(tempDiv);
+    } catch (e) { console.warn("QR gen error:", e); }
 
-    // Build receipt HTML optimised for 80mm thermal paper
+    // Step 2: Build receipt HTML with QR as <img> (prints perfectly every time)
     const receiptHtml = `<!DOCTYPE html>
 <html>
 <head>
@@ -506,20 +734,16 @@ function ReceiptModal({ order, license, onClose }) {
   .center { text-align: center; }
   .bold { font-weight: bold; }
   .big { font-size: 16px; font-weight: bold; }
-  .xl { font-size: 20px; font-weight: 900; }
   .hr { border: none; border-top: 1px dashed #000; margin: 6px 0; }
   .row { display: flex; justify-content: space-between; margin: 2px 0; }
   .row-total { display: flex; justify-content: space-between; margin: 4px 0; font-size: 15px; font-weight: 900; border-top: 2px solid #000; padding-top: 4px; }
   .item-name { flex: 1; }
   .item-amt { white-space: nowrap; margin-left: 4px; }
   .qr-wrap { text-align: center; margin: 8px 0; }
-  .qr-wrap img { width: 100px; height: 100px; }
+  .qr-wrap img { width: 110px; height: 110px; display: block; margin: 0 auto; }
   .zatca-label { font-size: 9px; color: #000; font-weight: bold; letter-spacing: 0.1em; }
   .footer { font-size: 11px; text-align: center; margin-top: 8px; font-weight: bold; }
-  .ar { font-family: Arial, sans-serif; direction: rtl; text-align: right; font-size: 10px; }
-  @media print {
-    body { width: 80mm; }
-  }
+  @media print { body { width: 80mm; } }
 </style>
 </head>
 <body>
@@ -534,7 +758,7 @@ function ReceiptModal({ order, license, onClose }) {
   <div>Cashier: ${order.cashier || "Admin"}</div>
 </div>
 <hr class="hr"/>
-${order.items.map(it => `<div class="row"><span class="item-name">${it.name}${it.nameAr ? `<br/><span style="direction:rtl;display:block;text-align:right;font-family:Arial,sans-serif;font-size:10px;">${it.nameAr}</span>` : ''}<br/><small>${it.qty} x ${it.price.toFixed(2)}</small></span><span class="item-amt">${(it.qty * it.price).toFixed(2)}</span></div>`).join("")}
+${order.items.map(it => `<div class="row"><span class="item-name">${it.name}${it.nameAr ? `<br/><span style="direction:rtl;display:block;text-align:right;font-family:Arial,sans-serif;font-size:10px;">${it.nameAr}</span>` : ""}<br/><small>${it.qty} x ${it.price.toFixed(2)}</small></span><span class="item-amt">${(it.qty * it.price).toFixed(2)}</span></div>`).join("")}
 <hr class="hr"/>
 <div class="row"><span>Subtotal</span><span>SAR ${order.subtotal.toFixed(2)}</span></div>
 ${order.discount > 0 ? `<div class="row"><span>Discount</span><span>-SAR ${order.discount.toFixed(2)}</span></div>` : ""}
@@ -542,37 +766,24 @@ ${order.discount > 0 ? `<div class="row"><span>Discount</span><span>-SAR ${order
 <div class="row-total"><span>TOTAL</span><span>SAR ${order.total.toFixed(2)}</span></div>
 ${order.payMethod === "Cash" ? `<div class="row"><span>Cash Given</span><span>SAR ${Number(order.given).toFixed(2)}</span></div><div class="row bold"><span>Change</span><span>SAR ${Number(order.change).toFixed(2)}</span></div>` : `<div class="row bold"><span>Payment</span><span>${order.payMethod}</span></div>`}
 <hr class="hr"/>
-<div id="qr-placeholder" class="qr-wrap">
-  <canvas id="qr-canvas"></canvas>
-  <div class="zatca-label">ZATCA PHASE 2 · QR CODE</div>
+<div class="qr-wrap">
+  ${qrImgSrc ? `<img src="${qrImgSrc}" alt="ZATCA QR"/>` : `<div style="width:110px;height:110px;border:1px solid #ccc;margin:0 auto;display:flex;align-items:center;justify-content:center;font-size:9px;">QR unavailable</div>`}
+  <div class="zatca-label" style="margin-top:4px;">ZATCA PHASE 2 · QR CODE</div>
   <div style="font-size:8px;">TLV Base64 · Scan to verify</div>
 </div>
-<div class="footer">Thank you for your visit!</div><div style="font-family:Arial,sans-serif;font-size:13px;font-weight:bold;text-align:center;direction:rtl;margin-top:4px;">شكراً لزيارتكم</div>
+<div class="footer">Thank you for your visit!</div>
+<div style="font-family:Arial,sans-serif;font-size:13px;font-weight:bold;text-align:center;direction:rtl;margin-top:4px;">شكراً لزيارتكم</div>
 <br/><br/>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-<script>
-  var qrData = ${JSON.stringify(qrData)};
-  function doQR() {
-    if (window.QRCode) {
-      try {
-        new QRCode(document.getElementById("qr-canvas"), {
-          text: qrData, width: 100, height: 100,
-          colorDark: "#000000", colorLight: "#ffffff",
-          correctLevel: QRCode.CorrectLevel.M
-        });
-      } catch(e) {}
-      setTimeout(function(){ window.print(); window.close(); }, 800);
-    } else {
-      setTimeout(doQR, 200);
-    }
-  }
-  window.onload = doQR;
-</script>
 </body>
 </html>`;
 
-    win.document.write(receiptHtml);
-    win.document.close();
+    // Step 3: Write into hidden iframe and print — no popup, no extra confirmation window
+    const iframe = printFrameRef.current;
+    const doc = iframe.contentDocument || iframe.contentWindow.document;
+    doc.open();
+    doc.write(receiptHtml);
+    doc.close();
+    setTimeout(() => { iframe.contentWindow.focus(); iframe.contentWindow.print(); }, 400);
   }
 
   return (
@@ -611,9 +822,8 @@ ${order.payMethod === "Cash" ? `<div class="row"><span>Cash Given</span><span>SA
           <Btn variant="ghost" onClick={onClose} style={{ flex: 1 }}>Close</Btn>
           <Btn variant="primary" onClick={handleThermalPrint} style={{ flex: 1 }}>🖨️ Print Receipt</Btn>
         </div>
-        <div style={{ marginTop: 10, padding: "8px 12px", background: "#f0f7ff", borderRadius: 8, fontSize: 11, color: "#5A7A9A", textAlign: "center" }}>
-          🖨️ Opens a thermal-optimised print window (80mm). Make sure pop-ups are allowed.
-        </div>
+        {/* Hidden iframe used for printing — avoids popup window & prints QR correctly */}
+        <iframe ref={printFrameRef} style={{ display: "none", width: 0, height: 0, border: "none" }} title="print-frame" />
       </div>
     </Modal>
   );
@@ -1496,11 +1706,21 @@ function Help() {
     setAiMessages(prev => [...prev, { role: "user", content: userMsg }]);
     setAiLoading(true);
     try {
+      // Fetch API key from Firestore config doc (set this once in your Firebase console)
+      // Collection: config / Document ID: ai / Field: apiKey
+      let apiKey = "";
+      try {
+        const cfgSnap = await getDoc(doc(db, "config", "ai"));
+        if (cfgSnap.exists()) apiKey = cfgSnap.data().apiKey || "";
+      } catch (e) { /* ignore, will fail below */ }
+
+      if (!apiKey) throw new Error("AI not configured. Ask support to enable the AI assistant.");
+
       const response = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-api-key": "",
+          "x-api-key": apiKey,
           "anthropic-version": "2023-06-01",
           "anthropic-dangerous-direct-browser-access": "true",
         },
@@ -1519,7 +1739,7 @@ function Help() {
       const reply = data.content?.[0]?.text || "Sorry, I couldn't process that. Please try again.";
       setAiMessages(prev => [...prev, { role: "assistant", content: reply }]);
     } catch (e) {
-      setAiMessages(prev => [...prev, { role: "assistant", content: `⚠️ Error: ${e.message || "Unknown error. Check your connection."}` }]);
+      setAiMessages(prev => [...prev, { role: "assistant", content: `⚠️ ${e.message || "Unknown error. Check your connection."}` }]);
     }
     setAiLoading(false);
     setTimeout(() => chatRef.current?.scrollTo({ top: chatRef.current.scrollHeight, behavior: "smooth" }), 100);
@@ -1605,8 +1825,10 @@ export default function App() {
 
   useEffect(() => {
     const saved = LS.get("restopos_license_v2");
+    const pendingId = localStorage.getItem("restopos_pending_id");
     // ✅ currentUser is never saved → every page load/refresh requires PIN login
     if (saved) { setLicense(saved); setStep("login"); }
+    else if (pendingId) { setStep("license"); } // resume pending approval screen
     else setStep("register");
   }, []);
 
@@ -1632,7 +1854,7 @@ export default function App() {
 
   if (step === "checking") return <div style={{ minHeight: "100vh", background: "#0a1628", display: "flex", alignItems: "center", justifyContent: "center" }}><div style={{ color: "#fff", fontSize: 16 }}>Loading…</div></div>;
   if (step === "register") return <BusinessRegistration onNext={(data) => { setBusinessData(data); setStep("license"); }} />;
-  if (step === "license") return <LicenseVerification businessData={businessData} onSuccess={(lic) => { setLicense(lic); setStep("login"); }} onBack={() => setStep("register")} />;
+  if (step === "license") return <LicenseVerification businessData={businessData || { businessName: "", crNumber: "", vatNumber: "", address: "", city: "", phone: "" }} onSuccess={(lic) => { setLicense(lic); setStep("login"); }} onBack={() => setStep("register")} />;
   if (step === "login" || !currentUser) return <RoleLogin license={license} onLogin={(user) => { setCurrentUser(user); setStep("app"); if (user.role === "Cashier") setScreen("pos"); }} />;
 
   return (
