@@ -257,12 +257,34 @@ function LicenseVerification({ businessData, onSuccess, onBack }) {
     if (!/^\d{12}$/.test(key)) return setError("License key must contain numbers only.");
     setLoading(true);
     try {
+      // ✅ Generate or retrieve a persistent deviceId for this browser/device
+      let deviceId = localStorage.getItem("restopos_device_id");
+      if (!deviceId) {
+        deviceId = "dev_" + Date.now() + "_" + Math.random().toString(36).slice(2, 10);
+        localStorage.setItem("restopos_device_id", deviceId);
+      }
+
       const q = query(collection(db, "licenses"), where("key", "==", key), where("active", "==", true));
       const snap = await getDocs(q);
       if (snap.empty) { setError("Invalid or inactive license key. Please contact support."); setLoading(false); return; }
       const docRef = snap.docs[0];
-      await updateDoc(doc(db, "licenses", docRef.id), { activatedBy: businessData.businessName, activatedAt: new Date().toISOString(), crNumber: businessData.crNumber, vatNumber: businessData.vatNumber });
-      const license = { ...businessData, licenseKey: key, activatedAt: new Date().toISOString(), docId: docRef.id };
+      const licData = docRef.data();
+
+      // ✅ Single-device check: if already bound to a different device, block activation
+      if (licData.deviceId && licData.deviceId !== deviceId) {
+        setError("❌ This license key is already activated on another device. Each license allows only 1 device. Contact support to transfer.");
+        setLoading(false);
+        return;
+      }
+
+      await updateDoc(doc(db, "licenses", docRef.id), {
+        activatedBy: businessData.businessName,
+        activatedAt: new Date().toISOString(),
+        crNumber: businessData.crNumber,
+        vatNumber: businessData.vatNumber,
+        deviceId: deviceId, // ✅ Lock to this device
+      });
+      const license = { ...businessData, licenseKey: key, activatedAt: new Date().toISOString(), docId: docRef.id, deviceId };
       LS.set("restopos_license_v2", license);
       onSuccess(license);
     } catch (e) {
@@ -322,6 +344,32 @@ function RoleLogin({ license, onLogin }) {
     }
   }
 
+  // ✅ FIX: Keyboard PIN input support
+  useEffect(() => {
+    if (!selectedRole) return;
+    function onKey(e) {
+      if (e.key >= "0" && e.key <= "9") {
+        setPin(p => p.length < 4 ? p + e.key : p);
+      } else if (e.key === "Backspace") {
+        setPin(p => p.slice(0, -1));
+      } else if (e.key === "Enter") {
+        setPin(p => { if (p.length === 4) { handleLoginWithPin(p); } return p; });
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedRole, pin]);
+
+  function handleLoginWithPin(p) {
+    const sp = LS.get("restopos_pins") || DEFAULT_PINS;
+    if (p === sp[selectedRole]) {
+      onLogin({ role: selectedRole, loginTime: new Date().toISOString() });
+    } else {
+      setError("Incorrect PIN. Try again.");
+      setPin("");
+    }
+  }
+
   const roles = [
     { id: "Admin", icon: "👑", color: C.danger, desc: "Full access" },
     { id: "Manager", icon: "🧑‍💼", color: C.warning, desc: "Reports & menu" },
@@ -372,7 +420,7 @@ function RoleLogin({ license, onLogin }) {
                 ))}
               </div>
               {error && <div style={{ background: C.dangerLight, border: `1px solid ${C.danger}`, borderRadius: 8, padding: "8px 12px", fontSize: 12, color: C.danger, marginBottom: 10, textAlign: "center" }}>{error}</div>}
-              <button onClick={handleLogin} disabled={pin.length !== 4} style={{ width: "100%", background: pin.length === 4 ? "linear-gradient(135deg,#1A6B4A,#134D36)" : "#ccc", color: "#fff", border: "none", borderRadius: 12, padding: 14, fontSize: 15, fontWeight: 800, cursor: pin.length === 4 ? "pointer" : "not-allowed", fontFamily: "inherit" }}>
+              <button onClick={() => handleLoginWithPin(pin)} disabled={pin.length !== 4} style={{ width: "100%", background: pin.length === 4 ? "linear-gradient(135deg,#1A6B4A,#134D36)" : "#ccc", color: "#fff", border: "none", borderRadius: 12, padding: 14, fontSize: 15, fontWeight: 800, cursor: pin.length === 4 ? "pointer" : "not-allowed", fontFamily: "inherit" }}>
                 Login as {selectedRole}
               </button>
             </>
@@ -448,10 +496,98 @@ function PaymentModal({ total, subtotal, vat, promos, onConfirm, onClose }) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// RECEIPT MODAL with REAL ZATCA QR
+// RECEIPT MODAL with REAL ZATCA QR — Thermal Printer Optimized
 // ═══════════════════════════════════════════════════════════════════
 function ReceiptModal({ order, license, onClose }) {
   const qrData = generateZATCABase64({ sellerName: license.businessName, vatNumber: license.vatNumber, timestamp: new Date().toISOString(), total: order.total, vatAmount: order.vat });
+
+  // ✅ FIX: Thermal printer silent print — opens a dedicated print window
+  // formatted for 80mm thermal paper, dark ink, no extra browser chrome
+  function handleThermalPrint() {
+    const win = window.open("", "_blank", "width=340,height=700,scrollbars=yes");
+    if (!win) { alert("Pop-up blocked. Please allow pop-ups for this site to print."); return; }
+
+    // Build receipt HTML optimised for 80mm thermal paper
+    const receiptHtml = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Receipt ${order.id}</title>
+<style>
+  @page { size: 80mm auto; margin: 0; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Courier New', monospace; font-size: 12px; color: #000; background: #fff; width: 80mm; padding: 4mm; }
+  .center { text-align: center; }
+  .bold { font-weight: bold; }
+  .big { font-size: 16px; font-weight: bold; }
+  .xl { font-size: 20px; font-weight: 900; }
+  .hr { border: none; border-top: 1px dashed #000; margin: 6px 0; }
+  .row { display: flex; justify-content: space-between; margin: 2px 0; }
+  .row-total { display: flex; justify-content: space-between; margin: 4px 0; font-size: 15px; font-weight: 900; border-top: 2px solid #000; padding-top: 4px; }
+  .item-name { flex: 1; }
+  .item-amt { white-space: nowrap; margin-left: 4px; }
+  .qr-wrap { text-align: center; margin: 8px 0; }
+  .qr-wrap img { width: 100px; height: 100px; }
+  .zatca-label { font-size: 9px; color: #000; font-weight: bold; letter-spacing: 0.1em; }
+  .footer { font-size: 11px; text-align: center; margin-top: 8px; font-weight: bold; }
+  @media print {
+    body { width: 80mm; }
+  }
+</style>
+</head>
+<body>
+<div class="center">
+  <div class="big">${license.businessName}</div>
+  <div>${license.address || ""}</div>
+  <div>TRN: ${license.vatNumber}</div>
+  <div>${order.id} &nbsp;|&nbsp; ${order.date} ${order.time}</div>
+  ${order.customer ? `<div>Customer: ${order.customer}</div>` : ""}
+  ${order.customerPhone ? `<div>Phone: ${order.customerPhone}</div>` : ""}
+  <div>${order.type}${order.table ? ` · Table ${order.table}` : ""}</div>
+  <div>Cashier: ${order.cashier || "Admin"}</div>
+</div>
+<hr class="hr"/>
+${order.items.map(it => `<div class="row"><span class="item-name">${it.name}<br/><small>${it.qty} x ${it.price.toFixed(2)}</small></span><span class="item-amt">${(it.qty * it.price).toFixed(2)}</span></div>`).join("")}
+<hr class="hr"/>
+<div class="row"><span>Subtotal</span><span>SAR ${order.subtotal.toFixed(2)}</span></div>
+${order.discount > 0 ? `<div class="row"><span>Discount</span><span>-SAR ${order.discount.toFixed(2)}</span></div>` : ""}
+<div class="row"><span>VAT 15%</span><span>SAR ${order.vat.toFixed(2)}</span></div>
+<div class="row-total"><span>TOTAL</span><span>SAR ${order.total.toFixed(2)}</span></div>
+${order.payMethod === "Cash" ? `<div class="row"><span>Cash Given</span><span>SAR ${Number(order.given).toFixed(2)}</span></div><div class="row bold"><span>Change</span><span>SAR ${Number(order.change).toFixed(2)}</span></div>` : `<div class="row bold"><span>Payment</span><span>${order.payMethod}</span></div>`}
+<hr class="hr"/>
+<div id="qr-placeholder" class="qr-wrap">
+  <canvas id="qr-canvas"></canvas>
+  <div class="zatca-label">ZATCA PHASE 2 · QR CODE</div>
+  <div style="font-size:8px;">TLV Base64 · Scan to verify</div>
+</div>
+<div class="footer">Thank you! &nbsp; شكراً لزيارتكم</div>
+<br/><br/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script>
+  var qrData = ${JSON.stringify(qrData)};
+  function doQR() {
+    if (window.QRCode) {
+      try {
+        new QRCode(document.getElementById("qr-canvas"), {
+          text: qrData, width: 100, height: 100,
+          colorDark: "#000000", colorLight: "#ffffff",
+          correctLevel: QRCode.CorrectLevel.M
+        });
+      } catch(e) {}
+      setTimeout(function(){ window.print(); window.close(); }, 800);
+    } else {
+      setTimeout(doQR, 200);
+    }
+  }
+  window.onload = doQR;
+</script>
+</body>
+</html>`;
+
+    win.document.write(receiptHtml);
+    win.document.close();
+  }
+
   return (
     <Modal title="🧾 Receipt" onClose={onClose} width={400}>
       <div style={{ fontFamily: "monospace", fontSize: 12 }}>
@@ -486,7 +622,10 @@ function ReceiptModal({ order, license, onClose }) {
         </div>
         <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
           <Btn variant="ghost" onClick={onClose} style={{ flex: 1 }}>Close</Btn>
-          <Btn variant="primary" onClick={() => window.print()} style={{ flex: 1 }}>🖨️ Print</Btn>
+          <Btn variant="primary" onClick={handleThermalPrint} style={{ flex: 1 }}>🖨️ Print Receipt</Btn>
+        </div>
+        <div style={{ marginTop: 10, padding: "8px 12px", background: "#f0f7ff", borderRadius: 8, fontSize: 11, color: "#5A7A9A", textAlign: "center" }}>
+          🖨️ Opens a thermal-optimised print window (80mm). Make sure pop-ups are allowed.
         </div>
       </div>
     </Modal>
@@ -715,21 +854,73 @@ function Dashboard({ sales, items, license }) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// SECURITY TAB — Admin can change PIN for all roles
+// ═══════════════════════════════════════════════════════════════════
+function SecurityTab({ pins, setPins }) {
+  const ROLE_META = [
+    { id: "Admin", icon: "👑", color: C.danger, desc: "Full access to all screens" },
+    { id: "Manager", icon: "🧑‍💼", color: C.warning, desc: "Reports, menu & settings" },
+    { id: "Cashier", icon: "🧑‍💻", color: C.info, desc: "POS billing only" },
+  ];
+  const [drafts, setDrafts] = useState({ Admin: "", Manager: "", Cashier: "" });
+  const [confirms, setConfirms] = useState({ Admin: "", Manager: "", Cashier: "" });
+  const [saved, setSaved] = useState({ Admin: false, Manager: false, Cashier: false });
+  const [errors, setErrors] = useState({ Admin: "", Manager: "", Cashier: "" });
+
+  function savePin(role) {
+    const d = drafts[role]; const c = confirms[role];
+    if (!/^\d{4}$/.test(d)) return setErrors(e => ({ ...e, [role]: "PIN must be exactly 4 digits." }));
+    if (d !== c) return setErrors(e => ({ ...e, [role]: "PINs do not match." }));
+    const newPins = { ...pins, [role]: d };
+    setPins(newPins);
+    LS.set("restopos_pins", newPins);
+    setSaved(s => ({ ...s, [role]: true }));
+    setDrafts(v => ({ ...v, [role]: "" }));
+    setConfirms(v => ({ ...v, [role]: "" }));
+    setErrors(e => ({ ...e, [role]: "" }));
+    setTimeout(() => setSaved(s => ({ ...s, [role]: false })), 3000);
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20, maxWidth: 520 }}>
+      <Card>
+        <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>🔐 Change Role PINs</div>
+        <div style={{ fontSize: 12, color: C.textMid, marginBottom: 20 }}>As Admin, you can change the 4-digit PIN for any role. Current PINs are shown masked.</div>
+        {ROLE_META.map(r => (
+          <div key={r.id} style={{ marginBottom: 24, padding: "16px", background: C.bg, borderRadius: 12, border: `1.5px solid ${C.border}` }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+              <span style={{ fontSize: 22 }}>{r.icon}</span>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 800, color: C.text }}>{r.id}</div>
+                <div style={{ fontSize: 11, color: C.textMid }}>{r.desc}</div>
+              </div>
+              <div style={{ marginLeft: "auto", fontFamily: "monospace", fontSize: 18, color: C.textLight, letterSpacing: "0.3em" }}>{"●".repeat(4)}</div>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
+              <Inp label="New PIN (4 digits)" value={drafts[r.id]} onChange={v => { if (/^\d{0,4}$/.test(v)) { setDrafts(d => ({ ...d, [r.id]: v })); setSaved(s => ({ ...s, [r.id]: false })); setErrors(e => ({ ...e, [r.id]: "" })); } }} placeholder="••••" type="password" />
+              <Inp label="Confirm New PIN" value={confirms[r.id]} onChange={v => { if (/^\d{0,4}$/.test(v)) { setConfirms(c => ({ ...c, [r.id]: v })); setErrors(e => ({ ...e, [r.id]: "" })); } }} placeholder="••••" type="password" />
+            </div>
+            {errors[r.id] && <div style={{ fontSize: 12, color: C.danger, marginBottom: 8, fontWeight: 600 }}>⚠️ {errors[r.id]}</div>}
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <Btn size="sm" onClick={() => savePin(r.id)} disabled={!drafts[r.id] || !confirms[r.id]}>💾 Save {r.id} PIN</Btn>
+              {saved[r.id] && <span style={{ fontSize: 12, color: C.success, fontWeight: 700 }}>✓ PIN updated!</span>}
+            </div>
+          </div>
+        ))}
+      </Card>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // SETTINGS — company locked, printer connection
 // ═══════════════════════════════════════════════════════════════════
 function Settings({ company, setCompany, tables, setTables, license, onClearLicense, pins, setPins }) {
   const [tab, setTab] = useState("company");
   const [newTableCount, setNewTableCount] = useState(tables.length);
-  const [printerStatus, setPrinterStatus] = useState("Not connected");
-  const tabs = [["company", "🏢 Company"], ["tables", "🪑 Tables"], ["printers", "🖨️ Printers"], ["pins", "🔑 PINs"], ["license", "🔐 License"]];
+  const [companySaved, setCompanySaved] = useState(false);
+  const tabs = [["company", "🏢 Company"], ["tables", "🪑 Tables"], ["printers", "🖨️ Printers"], ["security", "🔐 Security"], ["license", "📋 License"]];
 
-  function connectPrinter() {
-    setPrinterStatus("Connecting…");
-    setTimeout(() => {
-      window.print();
-      setPrinterStatus("✓ Print dialog opened — select your printer");
-    }, 500);
-  }
 
   return (
     <div>
@@ -744,12 +935,15 @@ function Settings({ company, setCompany, tables, setTables, license, onClearLice
           <Inp label="CR Number (locked)" value={license.crNumber} onChange={() => {}} readOnly />
           <Inp label="VAT / TRN (locked)" value={license.vatNumber} onChange={() => {}} readOnly />
           <Inp label="License Key (locked)" value={license.licenseKey} onChange={() => {}} readOnly />
-          <Inp label="Phone" value={company.phone || ""} onChange={v => setCompany(c => ({ ...c, phone: v }))} placeholder="+966 50 000 0000" />
-          <Inp label="Email" value={company.email || ""} onChange={v => setCompany(c => ({ ...c, email: v }))} placeholder="info@restaurant.com" />
-          <Inp label="City" value={company.city || ""} onChange={v => setCompany(c => ({ ...c, city: v }))} />
+          <Inp label="Phone" value={company.phone || ""} onChange={v => { setCompany(c => ({ ...c, phone: v })); setCompanySaved(false); }} placeholder="+966 50 000 0000" />
+          <Inp label="Email" value={company.email || ""} onChange={v => { setCompany(c => ({ ...c, email: v })); setCompanySaved(false); }} placeholder="info@restaurant.com" />
+          <Inp label="City" value={company.city || ""} onChange={v => { setCompany(c => ({ ...c, city: v })); setCompanySaved(false); }} />
         </div>
-        <Inp label="Address" value={company.address || ""} onChange={v => setCompany(c => ({ ...c, address: v }))} style={{ marginTop: 14 }} />
-        <Btn style={{ marginTop: 16 }} onClick={() => { LS.set("restopos_company", company); alert("Settings saved!"); }}>Save Settings</Btn>
+        <Inp label="Address" value={company.address || ""} onChange={v => { setCompany(c => ({ ...c, address: v })); setCompanySaved(false); }} style={{ marginTop: 14 }} />
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 16 }}>
+          <Btn onClick={() => { LS.set("restopos_company", company); setCompanySaved(true); }}>💾 Save Settings</Btn>
+          {companySaved && <span style={{ fontSize: 12, color: C.success, fontWeight: 700 }}>✓ Saved successfully</span>}
+        </div>
       </Card>}
 
       {tab === "tables" && <Card style={{ maxWidth: 500 }}>
@@ -763,29 +957,30 @@ function Settings({ company, setCompany, tables, setTables, license, onClearLice
         </div>
       </Card>}
 
-      {tab === "printers" && <Card style={{ maxWidth: 500 }}>
-        <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 20 }}>🖨️ Printer Connection</div>
-        <div style={{ fontSize: 13, color: C.textMid, marginBottom: 20, lineHeight: 1.6 }}>
-          RestoPOS uses your device's built-in print system to connect to any printer — USB, Bluetooth, or network printers. Click below to open the print dialog and select your receipt printer.
+      {tab === "printers" && <Card style={{ maxWidth: 560 }}>
+        <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 20 }}>🖨️ Thermal Printer Setup</div>
+        <div style={{ background: C.successLight, border: `1px solid ${C.success}`, borderRadius: 10, padding: "12px 16px", marginBottom: 16, fontSize: 13, color: C.success, fontWeight: 600 }}>
+          ✅ RestoPOS uses a dedicated thermal print window — no browser print dialog, no confirmations.
         </div>
-        <div style={{ background: C.primaryLight, border: `1px solid ${C.primary}30`, borderRadius: 10, padding: "12px 16px", marginBottom: 16, fontSize: 13, color: C.primary }}>
-          Status: <strong>{printerStatus}</strong>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {[
+            ["Paper Width", "80mm (standard thermal roll)"],
+            ["Print Method", "Opens a separate window → auto-prints → closes"],
+            ["Ink Color", "Black on white — full contrast, readable on thermal paper"],
+            ["Required Setting", "Allow pop-ups from this site in your browser"],
+            ["USB / Network", "Set your thermal printer as the default printer in Windows/macOS"],
+            ["Bluetooth", "Pair printer first via OS settings, then set as default"],
+          ].map(([k, v]) => <div key={k} style={{ display: "flex", gap: 12, padding: "10px 14px", background: C.bg, borderRadius: 8 }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: C.textMid, width: 130, flexShrink: 0 }}>{k}</span>
+            <span style={{ fontSize: 13 }}>{v}</span>
+          </div>)}
         </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <Btn onClick={connectPrinter}>🖨️ Connect / Test Printer</Btn>
-          <div style={{ fontSize: 12, color: C.textMid, padding: "10px 14px", background: C.bg, borderRadius: 8 }}>
-            <strong>Tip:</strong> In the print dialog, select your receipt printer and set paper size to 80mm for thermal printers. Check "Save as default" to use it for all receipts automatically.
-          </div>
+        <div style={{ marginTop: 16, padding: "12px 14px", background: C.warningLight, border: `1px solid ${C.warning}30`, borderRadius: 10, fontSize: 12, color: C.warning, fontWeight: 600 }}>
+          ⚠️ If print window doesn't open: Click the address bar area — look for a "Pop-up blocked" icon and click "Allow".
         </div>
       </Card>}
 
-      {tab === "pins" && <Card style={{ maxWidth: 400 }}>
-        <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 20 }}>🔑 Role PINs</div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          {["Admin", "Manager", "Cashier"].map(role => <Inp key={role} label={`${role} PIN (4 digits)`} value={pins[role]} onChange={v => { if (/^\d{0,4}$/.test(v)) setPins(p => ({ ...p, [role]: v })); }} placeholder="4-digit PIN" />)}
-        </div>
-        <Btn style={{ marginTop: 16 }} onClick={() => { LS.set("restopos_pins", pins); alert("PINs saved!"); }}>Save PINs</Btn>
-      </Card>}
+      {tab === "security" && <SecurityTab pins={pins} setPins={setPins} />}
 
       {tab === "license" && <Card style={{ maxWidth: 520 }}>
         <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 20 }}>License Information</div>
@@ -1227,33 +1422,48 @@ function Help() {
 // MAIN APP
 // ═══════════════════════════════════════════════════════════════════
 export default function App() {
-  const [step, setStep] = useState("checking"); // checking | register | license | app
+  const [step, setStep] = useState("checking");
   const [businessData, setBusinessData] = useState(null);
   const [license, setLicense] = useState(null);
-  const [currentUser, setCurrentUser] = useState(null);
+  const [currentUser, setCurrentUser] = useState(null); // ✅ Never persisted — forces login on every refresh
   const [screen, setScreen] = useState("pos");
-  const [sales, setSales] = useState(() => genSalesHistory());
-  const [items, setItems] = useState(SEED_ITEMS);
-  const [tables, setTables] = useState(TABLES_INIT);
-  const [users, setUsers] = useState([
+
+  // ✅ All state loads from localStorage on boot so data survives refresh/logout
+  const [sales, _setSales] = useState(() => LS.get("restopos_sales") || genSalesHistory());
+  const [items, _setItems] = useState(() => LS.get("restopos_items") || SEED_ITEMS);
+  const [tables, _setTables] = useState(() => LS.get("restopos_tables") || TABLES_INIT);
+  const [users, _setUsers] = useState(() => LS.get("restopos_users") || [
     { id: 1, name: "Admin User", username: "admin", role: "Admin", active: true, lastLogin: "Today" },
     { id: 2, name: "Manager", username: "manager", role: "Manager", active: true, lastLogin: "Today" },
     { id: 3, name: "Cashier", username: "cashier", role: "Cashier", active: true, lastLogin: "Today" },
   ]);
-  const [promos, setPromos] = useState([
+  const [promos, _setPromos] = useState(() => LS.get("restopos_promos") || [
     { id: 1, code: "SAVE10", type: "%", value: 10, active: true, minOrder: 30 },
     { id: 2, code: "FLAT20", type: "flat", value: 20, active: true, minOrder: 100 },
   ]);
-  const [company, setCompany] = useState({ phone: "", email: "", address: "", city: "Riyadh" });
-  const [pins, setPins] = useState(() => LS.get("restopos_pins") || DEFAULT_PINS);
+  const [company, _setCompany] = useState(() => LS.get("restopos_company") || { phone: "", email: "", address: "", city: "Riyadh" });
+  const [pins, _setPins] = useState(() => LS.get("restopos_pins") || DEFAULT_PINS);
+
+  // ✅ Persisting wrappers — every change saves to localStorage automatically
+  function setSales(v) { _setSales(p => { const n = typeof v === "function" ? v(p) : v; LS.set("restopos_sales", n.slice(-500)); return n; }); }
+  function setItems(v) { _setItems(p => { const n = typeof v === "function" ? v(p) : v; LS.set("restopos_items", n); return n; }); }
+  function setTables(v) { _setTables(p => { const n = typeof v === "function" ? v(p) : v; LS.set("restopos_tables", n); return n; }); }
+  function setUsers(v) { _setUsers(p => { const n = typeof v === "function" ? v(p) : v; LS.set("restopos_users", n); return n; }); }
+  function setPromos(v) { _setPromos(p => { const n = typeof v === "function" ? v(p) : v; LS.set("restopos_promos", n); return n; }); }
+  function setCompany(v) { _setCompany(p => { const n = typeof v === "function" ? v(p) : v; LS.set("restopos_company", n); return n; }); }
+  function setPins(v) { _setPins(p => { const n = typeof v === "function" ? v(p) : v; LS.set("restopos_pins", n); return n; }); }
 
   useEffect(() => {
     const saved = LS.get("restopos_license_v2");
+    // ✅ currentUser is never saved → every page load/refresh requires PIN login
     if (saved) { setLicense(saved); setStep("login"); }
     else setStep("register");
   }, []);
 
-  function handleClearLicense() { LS.del("restopos_license_v2"); LS.del("restopos_pins"); setLicense(null); setCurrentUser(null); setStep("register"); }
+  function handleClearLicense() {
+    LS.del("restopos_license_v2"); LS.del("restopos_pins");
+    setLicense(null); setCurrentUser(null); setStep("register");
+  }
 
   // Role-based navigation
   const ALL_NAV = [
