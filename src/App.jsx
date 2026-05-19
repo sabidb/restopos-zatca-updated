@@ -115,21 +115,7 @@ const TABLES_INIT = Array.from({ length: 12 }, (_, i) => ({ id: i + 1, status: i
 // Default PINs
 const DEFAULT_PINS = { Admin: "1234", Manager: "2345", Cashier: "3456" };
 
-function genSalesHistory() {
-  const sales = []; const now = new Date(); let id = 1000;
-  for (let d = 30; d >= 0; d--) {
-    const date = new Date(now); date.setDate(date.getDate() - d);
-    const dateStr = date.toISOString().split("T")[0];
-    const count = Math.floor(Math.random() * 12) + 2;
-    for (let o = 0; o < count; o++) {
-      const items = SEED_ITEMS.slice(0, Math.floor(Math.random() * 4) + 1);
-      const subtotal = items.reduce((s, it) => s + it.price * (Math.floor(Math.random() * 2) + 1), 0);
-      const vat = subtotal * 0.15;
-      sales.push({ id: "INV-" + (++id), date: dateStr, time: `${String(Math.floor(Math.random() * 12) + 9).padStart(2, "0")}:${String(Math.floor(Math.random() * 60)).padStart(2, "0")}`, type: ["Dine-in", "Takeaway", "Delivery"][Math.floor(Math.random() * 3)], table: Math.floor(Math.random() * 12) + 1, items: items.map(it => ({ ...it, qty: Math.floor(Math.random() * 2) + 1 })), subtotal, vat, total: subtotal + vat, status: "completed", cashier: "Admin", payMethod: ["Cash", "Mada", "Apple Pay", "STC Pay"][Math.floor(Math.random() * 4)], discount: 0 });
-    }
-  }
-  return sales;
-}
+// No demo data — sales starts empty for real use
 
 const TODAY = new Date().toISOString().split("T")[0];
 function fmtSAR(n) { return "SAR " + Number(n).toFixed(2); }
@@ -198,7 +184,7 @@ function BusinessRegistration({ onNext }) {
   function handleNext() {
     setError("");
     if (!form.businessName.trim()) return setError("Business name is required.");
-    if (!/^\d{10}$/.test(form.crNumber.trim())) return setError("CR Number must be exactly 10 digits.");
+    if (!/^\d{12}$/.test(form.crNumber.trim())) return setError("CR Number must be exactly 12 digits.");
     if (!/^3\d{14}$/.test(form.vatNumber.trim())) return setError("VAT number must be 15 digits starting with 3.");
     if (!form.address.trim()) return setError("Address is required.");
     onNext(form);
@@ -224,7 +210,7 @@ function BusinessRegistration({ onNext }) {
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <Inp label="Business / Restaurant Name *" value={form.businessName} onChange={v => set("businessName", v)} placeholder="e.g. Al Baik Restaurant" />
-            <Inp label="Commercial Registration Number (CR) * — 10 digits" value={form.crNumber} onChange={v => set("crNumber", v)} placeholder="1234567890" />
+            <Inp label="Commercial Registration Number (CR) * — 12 digits" value={form.crNumber} onChange={v => set("crNumber", v)} placeholder="123456789012" />
             <Inp label="VAT Registration Number (TRN) * — 15 digits" value={form.vatNumber} onChange={v => set("vatNumber", v)} placeholder="300XXXXXXXXXXXX" />
             <Inp label="Business Address *" value={form.address} onChange={v => set("address", v)} placeholder="King Fahd Road, Riyadh 12345" />
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
@@ -530,6 +516,7 @@ function ReceiptModal({ order, license, onClose }) {
   .qr-wrap img { width: 100px; height: 100px; }
   .zatca-label { font-size: 9px; color: #000; font-weight: bold; letter-spacing: 0.1em; }
   .footer { font-size: 11px; text-align: center; margin-top: 8px; font-weight: bold; }
+  .ar { font-family: Arial, sans-serif; direction: rtl; text-align: right; font-size: 10px; }
   @media print {
     body { width: 80mm; }
   }
@@ -547,7 +534,7 @@ function ReceiptModal({ order, license, onClose }) {
   <div>Cashier: ${order.cashier || "Admin"}</div>
 </div>
 <hr class="hr"/>
-${order.items.map(it => `<div class="row"><span class="item-name">${it.name}<br/><small>${it.qty} x ${it.price.toFixed(2)}</small></span><span class="item-amt">${(it.qty * it.price).toFixed(2)}</span></div>`).join("")}
+${order.items.map(it => `<div class="row"><span class="item-name">${it.name}${it.nameAr ? `<br/><span style="direction:rtl;display:block;text-align:right;font-family:Arial,sans-serif;font-size:10px;">${it.nameAr}</span>` : ''}<br/><small>${it.qty} x ${it.price.toFixed(2)}</small></span><span class="item-amt">${(it.qty * it.price).toFixed(2)}</span></div>`).join("")}
 <hr class="hr"/>
 <div class="row"><span>Subtotal</span><span>SAR ${order.subtotal.toFixed(2)}</span></div>
 ${order.discount > 0 ? `<div class="row"><span>Discount</span><span>-SAR ${order.discount.toFixed(2)}</span></div>` : ""}
@@ -560,7 +547,7 @@ ${order.payMethod === "Cash" ? `<div class="row"><span>Cash Given</span><span>SA
   <div class="zatca-label">ZATCA PHASE 2 · QR CODE</div>
   <div style="font-size:8px;">TLV Base64 · Scan to verify</div>
 </div>
-<div class="footer">Thank you! &nbsp; شكراً لزيارتكم</div>
+<div class="footer">Thank you for your visit!</div><div style="font-family:Arial,sans-serif;font-size:13px;font-weight:bold;text-align:center;direction:rtl;margin-top:4px;">شكراً لزيارتكم</div>
 <br/><br/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script>
@@ -648,8 +635,8 @@ function POS({ items, sales, setSales, tables, setTables, promos, license }) {
   const [showReceipt, setShowReceipt] = useState(false);
   const [lastOrder, setLastOrder] = useState(null);
   const [notif, setNotif] = useState(null);
-  const [vno, setVno] = useState(38298);
-  const [kotNo, setKotNo] = useState(1);
+  const [vno, setVno] = useState(() => LS.get("restopos_vno") || 1);
+  const [kotNo, setKotNo] = useState(() => LS.get("restopos_kot") || 1);
   const [selectedRow, setSelectedRow] = useState(null);
   // Customer details (optional)
   const [customerName, setCustomerName] = useState("");
@@ -679,7 +666,8 @@ function POS({ items, sales, setSales, tables, setTables, promos, license }) {
     setLastOrder(inv);
     if (selectedTable) setTables(prev => prev.map(t => t.id === selectedTable ? { ...t, status: "occupied" } : t));
     setCart([]); setCustomerName(""); setCustomerPhone(""); setCustomerAddress(""); setSelectedTable(null); setSelectedRow(null);
-    setVno(v => v + 1); setKotNo(k => k + 1);
+    setVno(v => { const n = v + 1; LS.set("restopos_vno", n); return n; });
+    setKotNo(k => { const n = k + 1; LS.set("restopos_kot", n); return n; });
     setShowPayment(false); setShowReceipt(true);
   }
 
@@ -1106,16 +1094,82 @@ function Create({ items, setItems, promos, setPromos }) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// TRANSACTIONS
+// TRANSACTIONS — with search + print per bill
 // ═══════════════════════════════════════════════════════════════════
-function Transactions({ sales, setSales }) {
+function reprintReceipt(sale, license) {
+  const qrData = generateZATCABase64({ sellerName: license.businessName, vatNumber: license.vatNumber, timestamp: new Date().toISOString(), total: sale.total, vatAmount: sale.vat });
+  const win = window.open("", "_blank", "width=340,height=700,scrollbars=yes");
+  if (!win) { alert("Pop-up blocked. Please allow pop-ups."); return; }
+  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Receipt ${sale.id}</title>
+<style>
+  @page{size:80mm auto;margin:0}*{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Courier New',monospace;font-size:12px;color:#000;background:#fff;width:80mm;padding:4mm}
+  .center{text-align:center}.bold{font-weight:bold}.big{font-size:16px;font-weight:bold}
+  .hr{border:none;border-top:1px dashed #000;margin:6px 0}
+  .row{display:flex;justify-content:space-between;margin:2px 0}
+  .row-total{display:flex;justify-content:space-between;margin:4px 0;font-size:15px;font-weight:900;border-top:2px solid #000;padding-top:4px}
+  .item-name{flex:1}.item-amt{white-space:nowrap;margin-left:4px}
+  .qr-wrap{text-align:center;margin:8px 0}.zatca-label{font-size:9px;font-weight:bold;letter-spacing:0.1em}
+  .ar{font-family:Arial,sans-serif;direction:rtl;text-align:right;font-size:10px}
+  @media print{body{width:80mm}}
+</style></head><body>
+<div class="center">
+  <div class="big">${sale.businessName || license.businessName}</div>
+  <div>${license.address || ""}</div>
+  <div>TRN: ${license.vatNumber}</div>
+  <div>${sale.id} | ${sale.date} ${sale.time}</div>
+  ${sale.customer ? `<div>Customer: ${sale.customer}</div>` : ""}
+  ${sale.customerPhone ? `<div>Phone: ${sale.customerPhone}</div>` : ""}
+  <div>${sale.type}${sale.table ? ` · Table ${sale.table}` : ""}</div>
+  <div>Cashier: ${sale.cashier || "Admin"}</div>
+</div>
+<hr class="hr"/>
+${(sale.items||[]).map(it => `<div class="row"><span class="item-name">${it.name}${it.nameAr ? `<span class="ar">${it.nameAr}</span>` : ""}<br/><small>${it.qty} x ${it.price.toFixed(2)}</small></span><span class="item-amt">${(it.qty*it.price).toFixed(2)}</span></div>`).join("")}
+<hr class="hr"/>
+<div class="row"><span>Subtotal</span><span>SAR ${(sale.subtotal||0).toFixed(2)}</span></div>
+${(sale.discount||0)>0?`<div class="row"><span>Discount</span><span>-SAR ${sale.discount.toFixed(2)}</span></div>`:""}
+<div class="row"><span>VAT 15%</span><span>SAR ${(sale.vat||0).toFixed(2)}</span></div>
+<div class="row-total"><span>TOTAL</span><span>SAR ${(sale.total||0).toFixed(2)}</span></div>
+${sale.payMethod==="Cash"?`<div class="row"><span>Cash Given</span><span>SAR ${Number(sale.given||0).toFixed(2)}</span></div><div class="row bold"><span>Change</span><span>SAR ${Number(sale.change||0).toFixed(2)}</span></div>`:`<div class="row bold"><span>Payment</span><span>${sale.payMethod}</span></div>`}
+<hr class="hr"/>
+<div id="qr-placeholder" style="text-align:center;margin:8px 0">
+  <canvas id="qr-canvas"></canvas>
+  <div class="zatca-label">ZATCA PHASE 2 · QR CODE</div>
+  <div style="font-size:8px">TLV Base64 · Scan to verify</div>
+</div>
+<div class="bold center" style="margin-top:6px">Thank you for your visit!</div>
+<div class="ar center bold" style="font-family:Arial,sans-serif;direction:rtl;text-align:center;margin-top:3px">شكراً لزيارتكم</div>
+<br/><br/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script>
+  var qrData=${JSON.stringify(qrData)};
+  function doQR(){if(window.QRCode){try{new QRCode(document.getElementById("qr-canvas"),{text:qrData,width:100,height:100,colorDark:"#000000",colorLight:"#ffffff",correctLevel:QRCode.CorrectLevel.M});}catch(e){}setTimeout(function(){window.print();window.close();},800);}else{setTimeout(doQR,200);}}
+  window.onload=doQR;
+</script></body></html>`;
+  win.document.write(html);
+  win.document.close();
+}
+
+function Transactions({ sales, setSales, license }) {
   const [tab, setTab] = useState("sales");
   const [dateFrom, setDateFrom] = useState(TODAY);
   const [dateTo, setDateTo] = useState(TODAY);
+  const [search, setSearch] = useState("");
   const [refundTarget, setRefundTarget] = useState(null);
-  const filtered = sales.filter(s => s.date >= dateFrom && s.date <= dateTo);
+
+  const dateFiltered = sales.filter(s => s.date >= dateFrom && s.date <= dateTo);
+  const filtered = search.trim()
+    ? sales.filter(s =>
+        s.id?.toLowerCase().includes(search.toLowerCase()) ||
+        s.date?.includes(search) ||
+        s.type?.toLowerCase().includes(search.toLowerCase()) ||
+        s.cashier?.toLowerCase().includes(search.toLowerCase()) ||
+        s.payMethod?.toLowerCase().includes(search.toLowerCase())
+      )
+    : dateFiltered;
   const total = filtered.reduce((s, o) => s + o.total, 0);
   const vat = filtered.reduce((s, o) => s + o.vat, 0);
+
   return (
     <div>
       {refundTarget && <Modal title="Process Refund" onClose={() => setRefundTarget(null)} width={420}>
@@ -1126,36 +1180,79 @@ function Transactions({ sales, setSales }) {
           <Btn variant="danger" onClick={() => { setSales(prev => prev.map(s => s.id === refundTarget.id ? { ...s, status: "refunded" } : s)); setRefundTarget(null); }} style={{ flex: 1 }}>Confirm</Btn>
         </div>
       </Modal>}
+
+      {/* Search bar — always visible at top */}
+      <Card style={{ marginBottom: 16, padding: "12px 16px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 18 }}>🔍</span>
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search by invoice number, date, type, cashier, payment method…"
+            style={{ flex: 1, padding: "9px 14px", border: `1.5px solid ${search ? C.primary : C.border}`, borderRadius: 10, fontSize: 13, fontFamily: "inherit", outline: "none", background: search ? C.primaryLight : "#fff" }}
+          />
+          {search && <button onClick={() => setSearch("")} style={{ background: C.dangerLight, color: C.danger, border: "none", borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>✕ Clear</button>}
+        </div>
+        {search && <div style={{ fontSize: 12, color: C.textMid, marginTop: 8, paddingLeft: 28 }}>Found {filtered.length} result{filtered.length !== 1 ? "s" : ""} for "<strong>{search}</strong>"</div>}
+      </Card>
+
       <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
         {[["sales", "💳 Sales"], ["payments", "💰 Payments"], ["kot", "🍽 KOT"]].map(([id, label]) => <button key={id} onClick={() => setTab(id)} style={{ padding: "8px 16px", borderRadius: 8, border: `1.5px solid ${tab === id ? C.primary : C.border}`, background: tab === id ? C.primaryLight : "#fff", color: tab === id ? C.primary : C.textMid, fontFamily: "inherit", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>{label}</button>)}
       </div>
+
       {tab === "sales" && <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-        <Card style={{ display: "flex", gap: 12, alignItems: "flex-end", flexWrap: "wrap" }}>
+        {!search && <Card style={{ display: "flex", gap: 12, alignItems: "flex-end", flexWrap: "wrap" }}>
           <Inp label="From" value={dateFrom} onChange={setDateFrom} type="date" />
           <Inp label="To" value={dateTo} onChange={setDateTo} type="date" />
           <div style={{ marginLeft: "auto" }}><div style={{ fontSize: 12, color: C.textMid }}>{filtered.length} orders · VAT: {fmtSAR(vat)}</div><div style={{ fontSize: 20, fontWeight: 800, color: C.primary }}>{fmtSAR(total)}</div></div>
-        </Card>
-        <Card><DataTable headers={["Invoice", "Date", "Time", "Type", "Method", "Total", "Status", "Actions"]}
-          rows={filtered.slice().reverse().slice(0, 50).map(s => [
-            <span style={{ fontFamily: "monospace", fontSize: 12, color: C.primary }}>{s.id}</span>,
-            s.date, s.time, s.type, s.payMethod,
-            <strong>{fmtSAR(s.total)}</strong>,
-            <Badge color={s.status === "completed" ? C.success : s.status === "voided" ? C.danger : C.warning} bg={s.status === "completed" ? C.successLight : s.status === "voided" ? C.dangerLight : C.warningLight}>{s.status}</Badge>,
-            <div style={{ display: "flex", gap: 4 }}>{s.status === "completed" && <><Btn size="sm" variant="ghost" onClick={() => setRefundTarget(s)}>Refund</Btn><Btn size="sm" variant="danger" onClick={() => { if (confirm("Void?")) setSales(prev => prev.map(x => x.id === s.id ? { ...x, status: "voided" } : x)); }}>Void</Btn></>}</div>
-          ])} /></Card>
+        </Card>}
+        {filtered.length === 0
+          ? <Card><div style={{ textAlign: "center", padding: "40px 0", color: C.textMid }}>
+              <div style={{ fontSize: 40, marginBottom: 12 }}>🧾</div>
+              <div style={{ fontSize: 15, fontWeight: 700 }}>{search ? "No invoices found" : "No orders yet"}</div>
+              <div style={{ fontSize: 13, marginTop: 6, color: C.textLight }}>{search ? `Try a different search term` : "Orders you process at the POS will appear here"}</div>
+            </div></Card>
+          : <Card><DataTable headers={["Invoice", "Date", "Time", "Type", "Method", "Total", "Status", "Actions"]}
+              rows={filtered.slice().reverse().slice(0, 100).map(s => [
+                <span style={{ fontFamily: "monospace", fontSize: 12, color: C.primary, fontWeight: 700 }}>{s.id}</span>,
+                s.date, s.time, s.type, s.payMethod,
+                <strong>{fmtSAR(s.total)}</strong>,
+                <Badge color={s.status === "completed" ? C.success : s.status === "voided" ? C.danger : s.status === "refunded" ? C.warning : C.warning} bg={s.status === "completed" ? C.successLight : s.status === "voided" ? C.dangerLight : C.warningLight}>{s.status}</Badge>,
+                <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                  <Btn size="sm" variant="outline" onClick={() => reprintReceipt(s, license)}>🖨️ Print</Btn>
+                  {s.status === "completed" && <>
+                    <Btn size="sm" variant="ghost" onClick={() => setRefundTarget(s)}>Refund</Btn>
+                    <Btn size="sm" variant="danger" onClick={() => { if (confirm("Void this invoice?")) setSales(prev => prev.map(x => x.id === s.id ? { ...x, status: "voided" } : x)); }}>Void</Btn>
+                  </>}
+                </div>
+              ])} emptyMsg="No orders found" /></Card>
+        }
       </div>}
       {tab === "payments" && <Card><div style={{ fontSize: 15, fontWeight: 700, marginBottom: 16 }}>Payment Summary (Today)</div>{["Cash", "Mada", "Apple Pay", "STC Pay"].map(method => { const ms = sales.filter(s => s.date === TODAY && s.payMethod === method); return <div key={method} style={{ display: "flex", justifyContent: "space-between", padding: "12px 0", borderBottom: `1px solid ${C.border}` }}><span style={{ fontSize: 14, fontWeight: 600 }}>{method}</span><div style={{ textAlign: "right" }}><div style={{ fontSize: 16, fontWeight: 700, color: C.primary }}>{fmtSAR(ms.reduce((s, o) => s + o.total, 0))}</div><div style={{ fontSize: 11, color: C.textLight }}>{ms.length} transactions</div></div></div>; })}</Card>}
-      {tab === "kot" && <Card><div style={{ fontSize: 15, fontWeight: 700, marginBottom: 16 }}>KOT Log (Today)</div><div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(210px,1fr))", gap: 12 }}>{sales.filter(s => s.date === TODAY).slice(-6).map(s => <div key={s.id} style={{ border: "2px dashed #ccc", borderRadius: 8, padding: 14, fontFamily: "monospace", fontSize: 12 }}><div style={{ fontWeight: 700, marginBottom: 6 }}>{s.type}{s.table ? ` · T${s.table}` : ""} · {s.time}</div>{s.items.slice(0, 4).map(it => <div key={it.id}>{it.qty}× {it.name}</div>)}<div style={{ marginTop: 6, fontSize: 10, color: C.textLight }}>{s.id}</div></div>)}</div></Card>}
+      {tab === "kot" && <Card>
+        <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 16 }}>KOT Log (Today)</div>
+        {sales.filter(s => s.date === TODAY).length === 0
+          ? <div style={{ textAlign: "center", padding: "30px 0", color: C.textMid }}><div style={{ fontSize: 32, marginBottom: 8 }}>🍽</div><div>No KOTs today</div></div>
+          : <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(210px,1fr))", gap: 12 }}>
+              {sales.filter(s => s.date === TODAY).slice().reverse().map(s => (
+                <div key={s.id} style={{ border: "2px dashed #ccc", borderRadius: 8, padding: 14, fontFamily: "monospace", fontSize: 12 }}>
+                  <div style={{ fontWeight: 700, marginBottom: 6 }}>{s.type}{s.table ? ` · T${s.table}` : ""} · {s.time}</div>
+                  {(s.items||[]).slice(0, 4).map((it, idx) => <div key={idx}>{it.qty}× {it.name}</div>)}
+                  <div style={{ marginTop: 6, fontSize: 10, color: C.textLight }}>{s.id}</div>
+                </div>
+              ))}
+            </div>
+        }
+      </Card>}
     </div>
   );
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// ACCOUNTS — Fixed
+// ACCOUNTS — 3 boxes: Total Sale, VAT Collected, Avg Sale %
 // ═══════════════════════════════════════════════════════════════════
-function Accounts({ sales, items }) {
-  const [tab, setTab] = useState("pl");
-  const [period, setPeriod] = useState("month");
+function Accounts({ sales }) {
+  const [period, setPeriod] = useState("today");
   const now = new Date();
 
   const periodSales = sales.filter(s => {
@@ -1166,45 +1263,62 @@ function Accounts({ sales, items }) {
     return true;
   });
 
-  const revenue = periodSales.reduce((s, o) => s + o.total, 0);
+  const totalSale = periodSales.reduce((s, o) => s + o.total, 0);
   const vatCollected = periodSales.reduce((s, o) => s + o.vat, 0);
-  const cogs = periodSales.reduce((acc, o) => acc + o.items.reduce((ss, it) => ss + (it.cost || 0) * it.qty, 0), 0);
-  const grossProfit = revenue - cogs - vatCollected;
-  const netRevenue = revenue - vatCollected;
 
+  // Average sale % = today's total vs average of previous 7 days
+  const todayTotal = sales.filter(s => s.date === TODAY).reduce((s, o) => s + o.total, 0);
+  const prev7 = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(); d.setDate(d.getDate() - (i + 1));
+    const ds = d.toISOString().split("T")[0];
+    return sales.filter(s => s.date === ds).reduce((s, o) => s + o.total, 0);
+  });
+  const prev7avg = prev7.reduce((a, b) => a + b, 0) / 7;
+  const avgPct = prev7avg > 0 ? (((todayTotal - prev7avg) / prev7avg) * 100).toFixed(1) : todayTotal > 0 ? "100.0" : "0.0";
+  const avgUp = parseFloat(avgPct) >= 0;
   const periodLabel = { today: "Today", week: "Last 7 Days", month: "This Month", all: "All Time" }[period];
 
   return (
     <div>
-      <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap", alignItems: "center" }}>
-        {[["pl", "📊 P&L"], ["vat", "⬛ VAT Report"], ["summary", "📋 Summary"]].map(([id, label]) => <button key={id} onClick={() => setTab(id)} style={{ padding: "8px 16px", borderRadius: 8, border: `1.5px solid ${tab === id ? C.primary : C.border}`, background: tab === id ? C.primaryLight : "#fff", color: tab === id ? C.primary : C.textMid, fontFamily: "inherit", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>{label}</button>)}
-        <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-          {[["today", "Today"], ["week", "Week"], ["month", "Month"], ["all", "All"]].map(([id, label]) => <button key={id} onClick={() => setPeriod(id)} style={{ padding: "6px 12px", borderRadius: 6, border: `1px solid ${period === id ? C.primary : C.border}`, background: period === id ? C.primary : "#fff", color: period === id ? "#fff" : C.textMid, fontFamily: "inherit", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>{label}</button>)}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24, flexWrap: "wrap", gap: 10 }}>
+        <div><div style={{ fontSize: 20, fontWeight: 800, color: C.text }}>📈 Accounts</div><div style={{ fontSize: 13, color: C.textMid, marginTop: 2 }}>Period: {periodLabel} · {periodSales.length} orders</div></div>
+        <div style={{ display: "flex", gap: 6 }}>
+          {[["today", "Today"], ["week", "Week"], ["month", "Month"], ["all", "All"]].map(([id, label]) => (
+            <button key={id} onClick={() => setPeriod(id)} style={{ padding: "8px 16px", borderRadius: 8, border: `1px solid ${period === id ? C.primary : C.border}`, background: period === id ? C.primary : "#fff", color: period === id ? "#fff" : C.textMid, fontFamily: "inherit", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>{label}</button>
+          ))}
         </div>
       </div>
-      {tab === "pl" && <>
-        <div style={{ fontSize: 14, fontWeight: 700, color: C.textMid, marginBottom: 16 }}>Period: {periodLabel} · {periodSales.length} orders</div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(200px,1fr))", gap: 16 }}>
-          <StatCard icon="💰" label="Total Revenue (incl. VAT)" value={fmtSAR(revenue)} color={C.primary} bg={C.primaryLight} />
-          <StatCard icon="📊" label="Net Revenue (excl. VAT)" value={fmtSAR(netRevenue)} color={C.info} bg={C.infoLight} />
-          <StatCard icon="🏷️" label="VAT Collected" value={fmtSAR(vatCollected)} color={C.zatca} bg={C.zatcaLight} />
-          <StatCard icon="📦" label="Est. COGS" value={fmtSAR(cogs)} color={C.warning} bg={C.warningLight} />
-          <StatCard icon="✅" label="Gross Profit" value={fmtSAR(grossProfit)} color={C.success} bg={C.successLight} />
-          <StatCard icon="📈" label="Profit Margin" value={revenue > 0 ? (grossProfit / revenue * 100).toFixed(1) + "%" : "0%"} color={C.accent} bg={C.accentLight} />
-        </div>
-      </>}
-      {tab === "vat" && <Card>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 20 }}>
-          <div style={{ width: 36, height: 36, background: C.zatcaLight, borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center" }}>⬛</div>
-          <div><div style={{ fontSize: 16, fontWeight: 700 }}>ZATCA VAT Report — {periodLabel}</div><div style={{ fontSize: 12, color: C.textMid }}>For quarterly ZATCA submission</div></div>
-        </div>
-        {[["Total Sales (incl. VAT)", fmtSAR(revenue)], ["Taxable Amount (excl. VAT)", fmtSAR(netRevenue)], ["VAT Rate", "15%"], ["VAT Collected", fmtSAR(vatCollected)], ["Total Invoices", periodSales.length], ["Period", periodLabel]].map(([l, v]) => <div key={l} style={{ display: "flex", justifyContent: "space-between", padding: "12px 0", borderBottom: `1px solid ${C.border}`, fontSize: 14 }}><span style={{ color: C.textMid }}>{l}</span><strong>{v}</strong></div>)}
-        <Btn variant="zatca" style={{ marginTop: 16, width: "100%" }} onClick={() => alert("ZATCA report ready for export!")}>⬛ Export ZATCA Report</Btn>
-      </Card>}
-      {tab === "summary" && <Card>
-        <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 16 }}>Payment Methods — {periodLabel}</div>
-        {["Cash", "Mada", "Apple Pay", "STC Pay"].map(method => { const ms = periodSales.filter(s => s.payMethod === method); const mt = ms.reduce((s, o) => s + o.total, 0); return <div key={method} style={{ display: "flex", justifyContent: "space-between", padding: "12px 0", borderBottom: `1px solid ${C.border}` }}><span style={{ fontSize: 14, fontWeight: 600 }}>{method}</span><div style={{ textAlign: "right" }}><div style={{ fontSize: 16, fontWeight: 700, color: C.primary }}>{fmtSAR(mt)}</div><div style={{ fontSize: 11, color: C.textLight }}>{ms.length} transactions · {revenue > 0 ? (mt / revenue * 100).toFixed(0) : 0}%</div></div></div>; })}
-      </Card>}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 20 }}>
+        {/* Box 1 — Total Sale */}
+        <Card style={{ padding: 28, borderLeft: `5px solid ${C.primary}` }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: C.textMid, marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.06em" }}>💰 Total Sale</div>
+          <div style={{ fontSize: 34, fontWeight: 900, color: C.primary, lineHeight: 1 }}>{fmtSAR(totalSale)}</div>
+          <div style={{ fontSize: 12, color: C.textLight, marginTop: 8 }}>Including VAT · {periodSales.length} orders</div>
+        </Card>
+
+        {/* Box 2 — VAT Collected */}
+        <Card style={{ padding: 28, borderLeft: `5px solid ${C.zatca}` }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: C.textMid, marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.06em" }}>⬛ VAT Collected</div>
+          <div style={{ fontSize: 34, fontWeight: 900, color: C.zatca, lineHeight: 1 }}>{fmtSAR(vatCollected)}</div>
+          <div style={{ fontSize: 12, color: C.textLight, marginTop: 8 }}>15% VAT · {periodLabel}</div>
+        </Card>
+
+        {/* Box 3 — Average Sale % */}
+        <Card style={{ padding: 28, borderLeft: `5px solid ${avgUp ? C.success : C.danger}` }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: C.textMid, marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.06em" }}>📊 Avg Sale vs Prev 7 Days</div>
+          <div style={{ fontSize: 34, fontWeight: 900, color: avgUp ? C.success : C.danger, lineHeight: 1 }}>{avgUp ? "+" : ""}{avgPct}%</div>
+          <div style={{ fontSize: 12, color: C.textLight, marginTop: 8 }}>Today: {fmtSAR(todayTotal)} · 7-day avg: {fmtSAR(prev7avg)}</div>
+        </Card>
+      </div>
+
+      {periodSales.length === 0 && (
+        <Card style={{ marginTop: 24, textAlign: "center", padding: "48px 0" }}>
+          <div style={{ fontSize: 40, marginBottom: 12 }}>📊</div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: C.textMid }}>No sales data for this period</div>
+          <div style={{ fontSize: 13, color: C.textLight, marginTop: 6 }}>Process orders at the POS to see your figures here</div>
+        </Card>
+      )}
     </div>
   );
 }
@@ -1267,7 +1381,25 @@ function Reports({ sales, items, setSales }) {
 
       {tab === "summary" && <><DateFilter /><div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(200px,1fr))", gap: 16 }}><StatCard icon="💰" label="Revenue" value={fmtSAR(filtered.reduce((s, o) => s + o.total, 0))} color={C.primary} bg={C.primaryLight} /><StatCard icon="🧾" label="Orders" value={filtered.length} color={C.info} bg={C.infoLight} /><StatCard icon="📊" label="VAT" value={fmtSAR(filtered.reduce((s, o) => s + o.vat, 0))} color={C.accent} bg={C.accentLight} /><StatCard icon="💵" label="Avg Order" value={fmtSAR(filtered.length ? filtered.reduce((s, o) => s + o.total, 0) / filtered.length : 0)} color={C.success} bg={C.successLight} /></div></>}
       {tab === "category" && <><DateFilter /><Card><DataTable headers={["Category", "Revenue"]} rows={catSales.map(c => [c.cat, <strong style={{ color: C.primary }}>{fmtSAR(c.revenue)}</strong>])} /></Card></>}
-      {tab === "items" && <><DateFilter /><Card><DataTable headers={["Item", "Category", "Price", "Qty Sold", "Revenue"]} rows={itemSales.map(it => [it.name, <Badge color={C.info} bg={C.infoLight}>{it.category}</Badge>, fmtSAR(it.price), <strong>{it.sold}</strong>, fmtSAR(it.revenue)])} /></Card></>}
+      {tab === "items" && <>
+        <DateFilter />
+        <Card>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+            <div style={{ fontSize: 14, fontWeight: 700 }}>Items Sold</div>
+            <Btn size="sm" variant="outline" onClick={() => {
+              const win = window.open("", "_blank", "width=400,height=600");
+              if (!win) { alert("Allow pop-ups to print"); return; }
+              const rows = itemSales.map(it => `<tr><td style="padding:6px 10px;border-bottom:1px solid #eee;font-family:Arial">${it.name}</td><td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:right;font-family:Arial">${it.nameAr||""}</td><td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:center;font-weight:bold;font-family:Arial">${it.sold}</td></tr>`).join("");
+              win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Items Report</title><style>@page{size:A4;margin:15mm}body{font-family:Arial;font-size:13px}table{width:100%;border-collapse:collapse}th{background:#1A6B4A;color:#fff;padding:8px 10px}h2{color:#1A6B4A}</style></head><body><h2>📋 Items Sold — ${dateFrom} to ${dateTo}</h2><table><thead><tr><th style="text-align:left">Item</th><th style="text-align:right">Arabic</th><th style="text-align:center">Qty Sold</th></tr></thead><tbody>${rows}</tbody></table><p style="margin-top:16px;font-size:12px;color:#888">Total items: ${itemSales.length} · Printed: ${new Date().toLocaleString()}</p><script>window.onload=function(){window.print();window.close()}<\/script></body></html>`);
+              win.document.close();
+            }}>🖨️ Print Items Report</Btn>
+          </div>
+          {itemSales.length === 0
+            ? <div style={{ textAlign: "center", padding: "30px 0", color: C.textMid }}>No items sold in this period</div>
+            : <DataTable headers={["Item", "Category", "Price", "Qty Sold", "Revenue"]} rows={itemSales.map(it => [it.name, <Badge color={C.info} bg={C.infoLight}>{it.category}</Badge>, fmtSAR(it.price), <strong style={{ color: C.primary, fontSize: 15 }}>{it.sold}</strong>, fmtSAR(it.revenue)])} />
+          }
+        </Card>
+      </>}
       {tab === "stock" && <Card><div style={{ fontSize: 15, fontWeight: 700, marginBottom: 16 }}>Stock Levels</div><DataTable headers={["Item", "Category", "Stock", "Alert"]} rows={items.map(it => [it.name, it.category, it.stock, it.stock < 10 ? <Badge color={C.danger} bg={C.dangerLight}>Low</Badge> : <Badge color={C.success} bg={C.successLight}>OK</Badge>])} /></Card>}
       {tab === "eod" && <Card>
         <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 20 }}>🌙 End of Day Report — {fmtDate(TODAY)}</div>
@@ -1430,7 +1562,7 @@ function Help() {
             </button>
           </div>
         </Card>}
-        {tab === "support" && <Card><div style={{ fontSize: 18, fontWeight: 800, marginBottom: 20 }}>Support & Contact</div>{[{ icon: "📦", label: "Product", value: "RestoPOS v4.0 · ZATCA Phase 2" }, { icon: "🌍", label: "Region", value: "Kingdom of Saudi Arabia" }, { icon: "📧", label: "Email", value: "support@restopos.sa" }, { icon: "📞", label: "Phone", value: "+966 50 000 0000 (9AM–6PM)" }, { icon: "💬", label: "WhatsApp", value: "+966 50 000 0000" }].map((item, i) => <div key={i} style={{ display: "flex", gap: 14, padding: "12px 0", borderBottom: `1px solid ${C.border}`, alignItems: "center" }}><span style={{ fontSize: 20, width: 28 }}>{item.icon}</span><div style={{ fontSize: 12, fontWeight: 700, color: C.textMid, width: 90 }}>{item.label}</div><div style={{ fontSize: 13, color: C.text, fontWeight: 600 }}>{item.value}</div></div>)}</Card>}
+        {tab === "support" && <Card><div style={{ fontSize: 18, fontWeight: 800, marginBottom: 20 }}>Support & Contact</div>{[{ icon: "📦", label: "Product", value: "RestoPOS v5.0 · ZATCA Phase 2" }, { icon: "🌍", label: "Region", value: "Kingdom of Saudi Arabia" }, { icon: "📧", label: "Email", value: "support@restopos.sa" }, { icon: "📞", label: "Phone", value: "+966 50 000 0000 (9AM–6PM)" }, { icon: "💬", label: "WhatsApp", value: "+966 50 000 0000" }].map((item, i) => <div key={i} style={{ display: "flex", gap: 14, padding: "12px 0", borderBottom: `1px solid ${C.border}`, alignItems: "center" }}><span style={{ fontSize: 20, width: 28 }}>{item.icon}</span><div style={{ fontSize: 12, fontWeight: 700, color: C.textMid, width: 90 }}>{item.label}</div><div style={{ fontSize: 13, color: C.text, fontWeight: 600 }}>{item.value}</div></div>)}</Card>}
       </div>
     </div>
   );
@@ -1447,7 +1579,7 @@ export default function App() {
   const [screen, setScreen] = useState("pos");
 
   // ✅ All state loads from localStorage on boot so data survives refresh/logout
-  const [sales, _setSales] = useState(() => LS.get("restopos_sales") || genSalesHistory());
+  const [sales, _setSales] = useState(() => LS.get("restopos_sales") || []);
   const [items, _setItems] = useState(() => LS.get("restopos_items") || SEED_ITEMS);
   const [tables, _setTables] = useState(() => LS.get("restopos_tables") || TABLES_INIT);
   const [users, _setUsers] = useState(() => LS.get("restopos_users") || [
@@ -1532,7 +1664,7 @@ export default function App() {
         {screen === "pos" && <POS items={items} sales={sales} setSales={setSales} tables={tables} setTables={setTables} promos={promos} license={license} />}
         {screen === "settings" && <Settings company={company} setCompany={setCompany} tables={tables} setTables={setTables} license={license} onClearLicense={handleClearLicense} pins={pins} setPins={setPins} />}
         {screen === "create" && <Create items={items} setItems={setItems} promos={promos} setPromos={setPromos} />}
-        {screen === "transactions" && <Transactions sales={sales} setSales={setSales} />}
+        {screen === "transactions" && <Transactions sales={sales} setSales={setSales} license={license} />}
         {screen === "accounts" && <Accounts sales={sales} items={items} />}
         {screen === "reports" && <Reports sales={sales} items={items} setSales={setSales} />}
         {screen === "tools" && <Tools sales={sales} items={items} setItems={setItems} />}
