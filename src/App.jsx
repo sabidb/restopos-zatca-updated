@@ -658,6 +658,40 @@ function POS({items,sales,setSales,tables,setTables,promos,license}){
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// LIVE CLOCK
+// ═══════════════════════════════════════════════════════════════════
+function LiveClock(){
+  const [now,setNow]=useState(new Date());
+  useEffect(()=>{const t=setInterval(()=>setNow(new Date()),1000);return()=>clearInterval(t);},[]);
+  const hh=String(now.getHours()).padStart(2,"0");
+  const mm=String(now.getMinutes()).padStart(2,"0");
+  const ss=String(now.getSeconds()).padStart(2,"0");
+  const dateStr=now.toLocaleDateString("en-SA",{weekday:"long",year:"numeric",month:"long",day:"numeric"});
+  const hijri=now.toLocaleDateString("ar-SA-u-ca-islamic",{year:"numeric",month:"long",day:"numeric"});
+  return(
+    <Card style={{marginBottom:24,background:"linear-gradient(135deg,#0F2340 0%,#1A3A5C 50%,#0a2818 100%)",border:"none",padding:"20px 28px"}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:12}}>
+        <div>
+          <div style={{display:"flex",alignItems:"baseline",gap:4}}>
+            <span style={{fontSize:52,fontWeight:900,color:"#fff",fontFamily:"'Courier New',monospace",letterSpacing:"0.05em",lineHeight:1}}>{hh}:{mm}</span>
+            <span style={{fontSize:28,fontWeight:700,color:"rgba(255,255,255,0.5)",fontFamily:"'Courier New',monospace",lineHeight:1,marginBottom:2}}>:{ss}</span>
+          </div>
+          <div style={{fontSize:13,color:"rgba(255,255,255,0.6)",marginTop:4,fontWeight:500}}>{dateStr}</div>
+        </div>
+        <div style={{textAlign:"right"}}>
+          <div style={{fontSize:13,color:"rgba(240,165,0,0.9)",fontWeight:700,fontFamily:"'Tajawal',sans-serif",direction:"rtl"}}>{hijri}</div>
+          <div style={{fontSize:11,color:"rgba(255,255,255,0.35)",marginTop:4}}>Kingdom of Saudi Arabia · AST (UTC+3)</div>
+          <div style={{marginTop:8,display:"flex",gap:6,justifyContent:"flex-end"}}>
+            <span style={{padding:"3px 10px",borderRadius:20,background:"rgba(26,138,74,0.25)",border:"1px solid rgba(26,138,74,0.4)",fontSize:10,fontWeight:700,color:"#4ade80"}}>● LIVE</span>
+            <span style={{padding:"3px 10px",borderRadius:20,background:"rgba(99,102,241,0.2)",border:"1px solid rgba(99,102,241,0.4)",fontSize:10,fontWeight:700,color:"#818cf8"}}>ZATCA PHASE 2</span>
+          </div>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // DASHBOARD
 // ═══════════════════════════════════════════════════════════════════
 function Dashboard({sales,items,license}){
@@ -665,6 +699,7 @@ function Dashboard({sales,items,license}){
   const qStatus=zatcaUtils.getQueueStatus();
   return(
     <div>
+      <LiveClock/>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill, minmax(220px, 1fr))",gap:16,marginBottom:24}}>
         <StatCard icon="💰" label="Today's Revenue" value={fmtSAR(todayRevenue)} color={C.primary} bg={C.primaryLight}/>
         <StatCard icon="🧾" label="Today's Orders" value={todaySales.length} color={C.info} bg={C.infoLight}/>
@@ -710,11 +745,113 @@ function SecurityTab({pins,setPins}){
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// INVOICE FORMAT TAB
+// ═══════════════════════════════════════════════════════════════════
+const RECEIPT_FONTS=[
+  {id:"courier",label:"Courier New",family:"'Courier New',monospace",lang:"EN"},
+  {id:"georgia",label:"Georgia",family:"Georgia,serif",lang:"EN"},
+  {id:"trebuchet",label:"Trebuchet MS",family:"'Trebuchet MS',sans-serif",lang:"EN"},
+  {id:"arial-narrow",label:"Arial Narrow",family:"'Arial Narrow',Arial,sans-serif",lang:"EN"},
+  {id:"impact",label:"Impact",family:"Impact,Haettenschweiler,sans-serif",lang:"EN"},
+  {id:"tajawal",label:"Tajawal",family:"'Tajawal',sans-serif",lang:"AR"},
+  {id:"cairo",label:"Cairo",family:"'Cairo',sans-serif",lang:"AR"},
+  {id:"amiri",label:"Amiri",family:"'Amiri',serif",lang:"AR"},
+  {id:"scheherazade",label:"Scheherazade New",family:"'Scheherazade New',serif",lang:"AR"},
+  {id:"noto-naskh",label:"Noto Naskh Arabic",family:"'Noto Naskh Arabic',serif",lang:"AR"},
+];
+
+function InvoiceFormatTab({license,company,invoiceFormat,setInvoiceFormat}){
+  const [saved,setSaved]=useState(false);
+  const fmt=invoiceFormat||{font:"courier",footer:"Thank you for your visit!",footerAr:"شكراً لزيارتكم",website:"",social:"",tagline:""};
+  function update(k,v){setInvoiceFormat(f=>({...(f||fmt),[k]:v}));setSaved(false);}
+  function save(){LS.set("restopos_invoice_format",invoiceFormat);setSaved(true);setTimeout(()=>setSaved(false),3000);}
+  const selectedFont=RECEIPT_FONTS.find(f=>f.id===fmt.font)||RECEIPT_FONTS[0];
+  return(
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:20,alignItems:"start"}}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700&family=Cairo:wght@400;700&family=Amiri:wght@400;700&family=Scheherazade+New:wght@400;700&family=Noto+Naskh+Arabic:wght@400;700&display=swap');`}</style>
+      <div>
+        <Card style={{marginBottom:16}}>
+          <div style={{fontSize:14,fontWeight:700,marginBottom:16}}>🔤 Receipt Font</div>
+          <div style={{fontSize:11,color:C.textMid,marginBottom:10}}>English fonts</div>
+          <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:14}}>
+            {RECEIPT_FONTS.filter(f=>f.lang==="EN").map(f=>(
+              <button key={f.id} onClick={()=>update("font",f.id)} style={{padding:"10px 14px",border:`2px solid ${fmt.font===f.id?C.primary:C.border}`,borderRadius:8,background:fmt.font===f.id?C.primaryLight:"#fff",cursor:"pointer",textAlign:"left",fontFamily:f.family,fontSize:14,color:fmt.font===f.id?C.primary:C.text,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <span>{f.label}</span>{fmt.font===f.id&&<span style={{fontSize:10,fontWeight:700}}>✓ Selected</span>}
+              </button>
+            ))}
+          </div>
+          <div style={{fontSize:11,color:C.textMid,marginBottom:10}}>Arabic fonts</div>
+          <div style={{display:"flex",flexDirection:"column",gap:6}}>
+            {RECEIPT_FONTS.filter(f=>f.lang==="AR").map(f=>(
+              <button key={f.id} onClick={()=>update("font",f.id)} style={{padding:"10px 14px",border:`2px solid ${fmt.font===f.id?C.primary:C.border}`,borderRadius:8,background:fmt.font===f.id?C.primaryLight:"#fff",cursor:"pointer",textAlign:"left",fontFamily:f.family,fontSize:14,color:fmt.font===f.id?C.primary:C.text,display:"flex",justifyContent:"space-between",alignItems:"center",direction:"rtl"}}>
+                <span>{f.label} — نموذج</span>{fmt.font===f.id&&<span style={{fontSize:10,fontWeight:700,direction:"ltr"}}>✓ Selected</span>}
+              </button>
+            ))}
+          </div>
+        </Card>
+        <Card>
+          <div style={{fontSize:14,fontWeight:700,marginBottom:16}}>📝 Additional Info</div>
+          <div style={{display:"flex",flexDirection:"column",gap:12}}>
+            <Inp label="Footer Message (English)" value={fmt.footer||""} onChange={v=>update("footer",v)} placeholder="Thank you for your visit!"/>
+            <Inp label="Footer Message (Arabic)" value={fmt.footerAr||""} onChange={v=>update("footerAr",v)} placeholder="شكراً لزيارتكم"/>
+            <Inp label="Website" value={fmt.website||""} onChange={v=>update("website",v)} placeholder="www.restaurant.sa"/>
+            <Inp label="Social / Instagram" value={fmt.social||""} onChange={v=>update("social",v)} placeholder="@restaurant"/>
+            <Inp label="Tagline" value={fmt.tagline||""} onChange={v=>update("tagline",v)} placeholder="Best food in town!"/>
+            <Inp label="VAT Number (locked)" value={license.vatNumber} onChange={()=>{}} readOnly/>
+            <Inp label="Invoice Numbering (locked)" value="Auto-sequential INV-XXXXXX" onChange={()=>{}} readOnly/>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginTop:16}}><Btn onClick={save}>💾 Save Format</Btn>{saved&&<span style={{fontSize:12,color:C.success,fontWeight:700}}>✓ Saved!</span>}</div>
+        </Card>
+      </div>
+      <Card>
+        <div style={{fontSize:14,fontWeight:700,marginBottom:16}}>👁 Receipt Preview</div>
+        <div style={{background:"#fff",border:"1px dashed #ccc",borderRadius:8,padding:16,maxWidth:260,margin:"0 auto",fontFamily:selectedFont.family,fontSize:12,color:"#000"}}>
+          <div style={{textAlign:"center",marginBottom:8}}>
+            <div style={{fontSize:15,fontWeight:900}}>{company.businessName||license.businessName}</div>
+            <div style={{fontSize:10}}>{company.address||license.address||""}</div>
+            <div style={{fontSize:10}}>TRN: {license.vatNumber}</div>
+            {fmt.tagline&&<div style={{fontSize:10,marginTop:3,fontStyle:"italic"}}>{fmt.tagline}</div>}
+          </div>
+          <div style={{borderTop:"1px dashed #000",margin:"6px 0"}}/>
+          <div style={{display:"flex",justifyContent:"space-between"}}><span>INV-001001</span><span>Today 12:00</span></div>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:"#555"}}><span>Takeaway</span><span>Cash</span></div>
+          <div style={{borderTop:"1px dashed #000",margin:"6px 0"}}/>
+          {[["Broasted Chicken Half","28.00"],["French Fries","10.00"]].map(([n,p])=>(
+            <div key={n} style={{display:"flex",justifyContent:"space-between",marginBottom:3}}>
+              <span>{n}</span><span>{p}</span>
+            </div>
+          ))}
+          <div style={{borderTop:"1px dashed #000",margin:"6px 0"}}/>
+          <div style={{display:"flex",justifyContent:"space-between"}}><span>Subtotal</span><span>38.00</span></div>
+          <div style={{display:"flex",justifyContent:"space-between"}}><span>VAT 15%</span><span>5.70</span></div>
+          <div style={{display:"flex",justifyContent:"space-between",fontWeight:900,fontSize:14,borderTop:"2px solid #000",paddingTop:4,marginTop:4}}><span>TOTAL</span><span>SAR 43.70</span></div>
+          <div style={{borderTop:"1px dashed #000",margin:"8px 0"}}/>
+          <div style={{textAlign:"center",fontSize:10}}>
+            {fmt.website&&<div>{fmt.website}</div>}
+            {fmt.social&&<div>{fmt.social}</div>}
+            <div style={{marginTop:4,fontWeight:700}}>{fmt.footer||"Thank you for your visit!"}</div>
+            {fmt.footerAr&&<div style={{direction:"rtl",marginTop:2,fontFamily:"'Tajawal',sans-serif"}}>{fmt.footerAr}</div>}
+          </div>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // SETTINGS
 // ═══════════════════════════════════════════════════════════════════
-function Settings({company,setCompany,tables,setTables,license,onClearLicense,pins,setPins}){
+function Settings({company,setCompany,tables,setTables,license,onClearLicense,pins,setPins,invoiceFormat,setInvoiceFormat}){
   const [tab,setTab]=useState("company");const [newTableCount,setNewTableCount]=useState(tables.length);const [companySaved,setCompanySaved]=useState(false);
-  const tabs=[["company","🏢 Company"],["tables","🪑 Tables"],["printers","🖨️ Printers"],["security","🔐 Security"],["license","📋 License"]];
+  const [kitchenPrinter,setKitchenPrinter]=useState(()=>LS.get("restopos_kitchen_printer")||{name:"Kitchen Printer",paperWidth:"80mm",autoKOT:true,enabled:false});
+  const [kpSaved,setKpSaved]=useState(false);
+  function saveKP(){LS.set("restopos_kitchen_printer",kitchenPrinter);setKpSaved(true);setTimeout(()=>setKpSaved(false),3000);}
+  function testKOT(){
+    const win=window.open("","_blank","width=340,height=500");if(!win){alert("Pop-up blocked.");return;}
+    const html=`<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@page{size:${kitchenPrinter.paperWidth} auto;margin:0}body{font-family:'Courier New',monospace;font-size:14px;padding:8mm;width:${kitchenPrinter.paperWidth}}.center{text-align:center}.big{font-size:18px;font-weight:900}.hr{border:none;border-top:2px dashed #000;margin:6px 0}</style></head><body><div class="center"><div class="big">*** KOT TEST ***</div><div>Kitchen Order Ticket</div><div>${new Date().toLocaleTimeString()}</div></div><div class="hr"/><div>1x Broasted Chicken Half</div><div>2x French Fries</div><div>1x Fresh Lemon Juice</div><div class="hr"/><div class="center">Table 5 · Dine-in</div><script>window.onload=function(){window.print();window.close();}<\/script></body></html>`;
+    win.document.write(html);win.document.close();
+  }
+  const tabs=[["company","🏢 Company"],["tables","🪑 Tables"],["printers","🖨️ Bill Printer"],["kitchen","🍽️ Kitchen Printer"],["invoice","🧾 Invoice Format"],["security","🔐 Security"],["license","📋 License"]];
   return(<div>
     <div style={{display:"flex",gap:8,marginBottom:20,flexWrap:"wrap"}}>{tabs.map(([id,label])=><button key={id} onClick={()=>setTab(id)} style={{padding:"8px 16px",borderRadius:8,border:`1.5px solid ${tab===id?C.primary:C.border}`,background:tab===id?C.primaryLight:"#fff",color:tab===id?C.primary:C.textMid,fontFamily:"inherit",fontSize:13,fontWeight:600,cursor:"pointer"}}>{label}</button>)}</div>
     {tab==="company"&&<Card style={{maxWidth:640}}>
@@ -738,6 +875,43 @@ function Settings({company,setCompany,tables,setTables,license,onClearLicense,pi
       <div style={{background:C.successLight,border:`1px solid ${C.success}`,borderRadius:10,padding:"12px 16px",marginBottom:16,fontSize:13,color:C.success,fontWeight:600}}>✅ RestoPOS uses a hidden iframe for printing — no pop-up dialog, no extra confirmation.</div>
       <div style={{display:"flex",flexDirection:"column",gap:12}}>{[["Paper Width","80mm standard thermal roll"],["Print Method","Hidden iframe → auto-prints, no pop-up"],["USB / Network","Set thermal printer as default in OS"],["Bluetooth","Pair first via OS settings, then set as default"]].map(([k,v])=><div key={k} style={{display:"flex",gap:12,padding:"10px 14px",background:C.bg,borderRadius:8}}><span style={{fontSize:12,fontWeight:700,color:C.textMid,width:130,flexShrink:0}}>{k}</span><span style={{fontSize:13}}>{v}</span></div>)}</div>
     </Card>}
+    {tab==="kitchen"&&<Card style={{maxWidth:560}}>
+      <div style={{fontSize:15,fontWeight:700,marginBottom:20}}>🍽️ Kitchen Printer (KOT)</div>
+      <div style={{background:C.infoLight,border:`1px solid ${C.info}`,borderRadius:10,padding:"12px 16px",marginBottom:20,fontSize:13,color:C.info,fontWeight:600}}>ℹ️ Set up a second printer dedicated to printing Kitchen Order Tickets (KOTs) to the kitchen.</div>
+      <div style={{display:"flex",flexDirection:"column",gap:14}}>
+        <div style={{display:"flex",alignItems:"center",gap:12,padding:"12px 16px",background:C.bg,borderRadius:10,border:`1px solid ${C.border}`}}>
+          <div style={{flex:1}}><div style={{fontSize:13,fontWeight:700}}>Enable Kitchen Printer</div><div style={{fontSize:11,color:C.textMid}}>Auto-print KOT to kitchen on every order</div></div>
+          <button onClick={()=>setKitchenPrinter(p=>({...p,enabled:!p.enabled}))} style={{width:44,height:24,borderRadius:12,background:kitchenPrinter.enabled?C.primary:"#ccc",border:"none",cursor:"pointer",position:"relative",transition:"background 0.2s"}}>
+            <span style={{position:"absolute",top:2,left:kitchenPrinter.enabled?22:2,width:20,height:20,borderRadius:"50%",background:"#fff",transition:"left 0.2s",display:"block"}}/>
+          </button>
+        </div>
+        <Inp label="Kitchen Printer Name / Label" value={kitchenPrinter.name||""} onChange={v=>setKitchenPrinter(p=>({...p,name:v}))} placeholder="e.g. Kitchen Printer, Grill Station"/>
+        <div style={{display:"flex",flexDirection:"column",gap:4}}>
+          <label style={{fontSize:12,fontWeight:600,color:C.textMid}}>Paper Width</label>
+          <div style={{display:"flex",gap:8}}>
+            {["58mm","80mm"].map(w=><button key={w} onClick={()=>setKitchenPrinter(p=>({...p,paperWidth:w}))} style={{flex:1,padding:"10px",border:`2px solid ${kitchenPrinter.paperWidth===w?C.primary:C.border}`,borderRadius:8,background:kitchenPrinter.paperWidth===w?C.primaryLight:"#fff",color:kitchenPrinter.paperWidth===w?C.primary:C.textMid,fontFamily:"inherit",fontSize:13,fontWeight:700,cursor:"pointer"}}>{w}</button>)}
+          </div>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:12,padding:"12px 16px",background:C.bg,borderRadius:10,border:`1px solid ${C.border}`}}>
+          <div style={{flex:1}}><div style={{fontSize:13,fontWeight:700}}>Auto-Print KOT on Checkout</div><div style={{fontSize:11,color:C.textMid}}>Automatically send KOT to kitchen when payment is confirmed</div></div>
+          <button onClick={()=>setKitchenPrinter(p=>({...p,autoKOT:!p.autoKOT}))} style={{width:44,height:24,borderRadius:12,background:kitchenPrinter.autoKOT?C.primary:"#ccc",border:"none",cursor:"pointer",position:"relative",transition:"background 0.2s"}}>
+            <span style={{position:"absolute",top:2,left:kitchenPrinter.autoKOT?22:2,width:20,height:20,borderRadius:"50%",background:"#fff",transition:"left 0.2s",display:"block"}}/>
+          </button>
+        </div>
+        <div style={{display:"flex",flexDirection:"column",gap:10,padding:"14px 16px",background:C.bg,borderRadius:10,border:`1px solid ${C.border}`}}>
+          <div style={{fontSize:12,fontWeight:700,color:C.textMid}}>SETUP INSTRUCTIONS</div>
+          {[["1","Connect your kitchen printer via USB or Network to the same computer/device."],["2",`Set it as a secondary printer in your OS — name it "${kitchenPrinter.name||"Kitchen Printer"}".`],["3","RestoPOS will open a separate print dialog targeting that printer for KOTs."],["4","Use 80mm thermal paper for kitchen tickets (58mm if your printer is smaller)."]].map(([n,t])=>(
+            <div key={n} style={{display:"flex",gap:10}}><span style={{width:20,height:20,borderRadius:"50%",background:C.primary,color:"#fff",fontSize:11,fontWeight:800,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{n}</span><span style={{fontSize:12,color:C.textMid}}>{t}</span></div>
+          ))}
+        </div>
+        <div style={{display:"flex",gap:10}}>
+          <Btn onClick={testKOT} variant="outline">🖨️ Test KOT Print</Btn>
+          <Btn onClick={saveKP}>💾 Save Kitchen Settings</Btn>
+          {kpSaved&&<span style={{fontSize:12,color:C.success,fontWeight:700,alignSelf:"center"}}>✓ Saved!</span>}
+        </div>
+      </div>
+    </Card>}
+    {tab==="invoice"&&<InvoiceFormatTab license={license} company={company} invoiceFormat={invoiceFormat} setInvoiceFormat={setInvoiceFormat}/>}
     {tab==="security"&&<SecurityTab pins={pins} setPins={setPins}/>}
     {tab==="license"&&<Card style={{maxWidth:520}}>
       <div style={{fontSize:15,fontWeight:700,marginBottom:20}}>License Information</div>
@@ -752,6 +926,7 @@ function Settings({company,setCompany,tables,setTables,license,onClearLicense,pi
 // ═══════════════════════════════════════════════════════════════════
 function Create({items,setItems,promos,setPromos}){
   const [tab,setTab]=useState("items");const [showItemModal,setShowItemModal]=useState(false);const [editItem,setEditItem]=useState(null);const [showBarcodeModal,setShowBarcodeModal]=useState(false);const [barcodeItem,setBarcodeItem]=useState(null);const [barcodeInput,setBarcodeInput]=useState("");const [showPromoModal,setShowPromoModal]=useState(false);const [editPromo,setEditPromo]=useState(null);const [categories,setCategories]=useState(SEED_CATEGORIES);const [newCat,setNewCat]=useState("");
+  const [showImport,setShowImport]=useState(false);const [importRows,setImportRows]=useState([]);const [importError,setImportError]=useState("");const [importDone,setImportDone]=useState(false);
   const blankItem={name:"",nameAr:"",category:categories[0],price:"",cost:"",stock:"",active:true,barcode:""};const [itemForm,setItemForm]=useState(blankItem);
   const blankPromo={code:"",type:"%",value:"",minOrder:0,active:true};const [promoForm,setPromoForm]=useState(blankPromo);const barcodeRef=useRef();
   function openItemModal(it=null){setEditItem(it);setItemForm(it?{...it}:{...blankItem,category:categories[0]});setShowItemModal(true);}
@@ -760,6 +935,42 @@ function Create({items,setItems,promos,setPromos}){
   function saveBarcode(){setItems(prev=>prev.map(i=>i.id===barcodeItem.id?{...i,barcode:barcodeInput.trim()}:i));setShowBarcodeModal(false);alert("Barcode saved!");}
   function openPromoModal(p=null){setEditPromo(p);setPromoForm(p?{...p}:{...blankPromo});setShowPromoModal(true);}
   function savePromo(){if(!promoForm.code||!promoForm.value)return alert("Code and value required");const promo={...promoForm,value:parseFloat(promoForm.value),minOrder:parseFloat(promoForm.minOrder||0),id:editPromo?editPromo.id:Date.now()};setPromos(prev=>editPromo?prev.map(p=>p.id===editPromo.id?promo:p):[...prev,promo]);setShowPromoModal(false);}
+
+  function downloadTemplate(){
+    const csv="name,nameAr,category,price,cost,stock,barcode\nChicken Burger,برجر دجاج,Burgers,28,12,50,\nFrench Fries,بطاطس,Sides,10,3,100,\n";
+    const blob=new Blob([csv],{type:"text/csv"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="menu-import-template.csv";a.click();
+  }
+  function handleImportFile(e){
+    setImportError("");setImportRows([]);setImportDone(false);
+    const file=e.target.files[0];if(!file)return;
+    const reader=new FileReader();
+    reader.onload=ev=>{
+      try{
+        const text=ev.target.result;
+        let rows=[];
+        if(file.name.endsWith(".json")){
+          const parsed=JSON.parse(text);rows=Array.isArray(parsed)?parsed:[];
+        } else {
+          const lines=text.trim().split("\n");
+          const headers=lines[0].split(",").map(h=>h.trim().toLowerCase());
+          rows=lines.slice(1).filter(l=>l.trim()).map(line=>{
+            const vals=line.split(",").map(v=>v.trim());
+            const obj={};headers.forEach((h,i)=>obj[h]=vals[i]||"");return obj;
+          });
+        }
+        const valid=rows.filter(r=>r.name&&r.price&&!isNaN(parseFloat(r.price)));
+        if(valid.length===0){setImportError("No valid rows found. Make sure your file has 'name' and 'price' columns.");return;}
+        setImportRows(valid);
+      }catch(err){setImportError("Could not parse file: "+err.message);}
+    };
+    reader.readAsText(file);
+    e.target.value="";
+  }
+  function confirmImport(){
+    const newItems=importRows.map(r=>({id:Date.now()+Math.random(),name:r.name||"",nameAr:r.namear||r.nameAr||"",category:r.category||categories[0],price:parseFloat(r.price)||0,cost:parseFloat(r.cost||0),stock:parseInt(r.stock||0),active:true,barcode:r.barcode||""}));
+    setItems(prev=>[...prev,...newItems]);setImportDone(true);setTimeout(()=>{setShowImport(false);setImportRows([]);setImportDone(false);},1500);
+  }
+
   return(<div>
     {showItemModal&&<Modal title={editItem?"Edit Item":"New Menu Item"} onClose={()=>setShowItemModal(false)}>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
@@ -785,8 +996,38 @@ function Create({items,setItems,promos,setPromos}){
       </div>
       <div style={{display:"flex",gap:10,marginTop:16}}><Btn variant="ghost" onClick={()=>setShowPromoModal(false)} style={{flex:1}}>Cancel</Btn><Btn onClick={savePromo} style={{flex:1}}>Save</Btn></div>
     </Modal>}
+    {showImport&&<Modal title="📥 Import Menu Items" onClose={()=>{setShowImport(false);setImportRows([]);setImportError("");setImportDone(false);}} width={640}>
+      <div style={{fontSize:13,color:C.textMid,marginBottom:16}}>Upload a CSV or JSON file to bulk-import menu items. Download the template to see the correct format.</div>
+      <div style={{display:"flex",gap:10,marginBottom:20,alignItems:"center"}}>
+        <label style={{display:"inline-flex",alignItems:"center",gap:8,padding:"9px 16px",background:C.primaryLight,border:`1.5px solid ${C.primary}`,borderRadius:8,cursor:"pointer",fontSize:13,fontWeight:600,color:C.primary}}>
+          📂 Choose File (CSV or JSON)<input type="file" accept=".csv,.json" onChange={handleImportFile} style={{display:"none"}}/>
+        </label>
+        <button onClick={downloadTemplate} style={{padding:"9px 14px",background:"transparent",border:`1px solid ${C.border}`,borderRadius:8,fontSize:12,fontWeight:600,color:C.textMid,cursor:"pointer",fontFamily:"inherit"}}>⬇️ Download Template</button>
+      </div>
+      {importError&&<div style={{padding:"10px 14px",background:C.dangerLight,border:`1px solid ${C.danger}`,borderRadius:8,fontSize:13,color:C.danger,marginBottom:16}}>{importError}</div>}
+      {importRows.length>0&&!importDone&&(
+        <>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:10,color:C.success}}>✓ {importRows.length} items ready to import — preview below:</div>
+          <div style={{maxHeight:260,overflowY:"auto",border:`1px solid ${C.border}`,borderRadius:8,marginBottom:16}}>
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+              <thead><tr style={{background:C.bg}}>{["Name","Arabic","Category","Price","Cost","Stock"].map(h=><th key={h} style={{padding:"8px 10px",textAlign:"left",fontWeight:700,color:C.textMid,fontSize:10,textTransform:"uppercase",borderBottom:`1px solid ${C.border}`}}>{h}</th>)}</tr></thead>
+              <tbody>{importRows.map((r,i)=><tr key={i} style={{borderBottom:`1px solid ${C.border}`,background:i%2===0?"#fff":"#FAFBFC"}}>
+                <td style={{padding:"7px 10px",fontWeight:600}}>{r.name}</td>
+                <td style={{padding:"7px 10px",direction:"rtl",fontFamily:"'Tajawal',sans-serif"}}>{r.namear||r.nameAr||"—"}</td>
+                <td style={{padding:"7px 10px",color:C.textMid}}>{r.category||"—"}</td>
+                <td style={{padding:"7px 10px",color:C.primary,fontWeight:700}}>SAR {parseFloat(r.price||0).toFixed(2)}</td>
+                <td style={{padding:"7px 10px",color:C.textMid}}>{r.cost?`SAR ${parseFloat(r.cost).toFixed(2)}`:"—"}</td>
+                <td style={{padding:"7px 10px"}}>{r.stock||0}</td>
+              </tr>)}</tbody>
+            </table>
+          </div>
+          <div style={{display:"flex",gap:10}}><Btn variant="ghost" onClick={()=>setImportRows([])} style={{flex:1}}>Cancel</Btn><Btn onClick={confirmImport} style={{flex:1}}>✓ Import {importRows.length} Items</Btn></div>
+        </>
+      )}
+      {importDone&&<div style={{textAlign:"center",padding:"30px 0"}}><div style={{fontSize:40,marginBottom:8}}>✅</div><div style={{fontSize:15,fontWeight:700,color:C.success}}>Import successful!</div></div>}
+    </Modal>}
     <div style={{display:"flex",gap:8,marginBottom:20}}>{[["items","🍔 Items"],["categories","📂 Categories"],["promos","🏷️ Promos"]].map(([id,label])=><button key={id} onClick={()=>setTab(id)} style={{padding:"8px 16px",borderRadius:8,border:`1.5px solid ${tab===id?C.primary:C.border}`,background:tab===id?C.primaryLight:"#fff",color:tab===id?C.primary:C.textMid,fontFamily:"inherit",fontSize:13,fontWeight:600,cursor:"pointer"}}>{label}</button>)}</div>
-    {tab==="items"&&<Card><div style={{display:"flex",justifyContent:"space-between",marginBottom:16}}><div style={{fontSize:15,fontWeight:700}}>Menu Items ({items.length})</div><Btn size="sm" onClick={()=>openItemModal()}>+ New Item</Btn></div><DataTable headers={["Name","Category","Price","Stock","Barcode","Status","Actions"]} rows={items.map(it=>[it.name,<Badge color={C.info} bg={C.infoLight}>{it.category}</Badge>,<strong style={{color:C.primary}}>{fmtSAR(it.price)}</strong>,it.stock,<div style={{display:"flex",alignItems:"center",gap:6}}>{it.barcode?<span style={{fontFamily:"monospace",fontSize:11,color:C.zatca}}>{it.barcode}</span>:<span style={{color:C.textLight,fontSize:11}}>None</span>}<button onClick={()=>openBarcodeModal(it)} style={{background:C.zatcaLight,border:`1px solid ${C.zatca}30`,color:C.zatca,padding:"2px 7px",borderRadius:5,fontSize:10,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>🔲 {it.barcode?"Edit":"Add"}</button></div>,<Badge color={it.active?C.success:C.danger} bg={it.active?C.successLight:C.dangerLight}>{it.active?"Active":"Off"}</Badge>,<div style={{display:"flex",gap:5}}><Btn size="sm" variant="ghost" onClick={()=>openItemModal(it)}>Edit</Btn><Btn size="sm" variant="danger" onClick={()=>{if(confirm("Delete?"))setItems(prev=>prev.filter(i=>i.id!==it.id));}}>Del</Btn></div>])}/></Card>}
+    {tab==="items"&&<Card><div style={{display:"flex",justifyContent:"space-between",marginBottom:16,gap:8,flexWrap:"wrap"}}><div style={{fontSize:15,fontWeight:700}}>Menu Items ({items.length})</div><div style={{display:"flex",gap:8}}><Btn size="sm" variant="outline" onClick={()=>setShowImport(true)}>📥 Import Menu</Btn><Btn size="sm" onClick={()=>openItemModal()}>+ New Item</Btn></div></div><DataTable headers={["Name","Category","Price","Stock","Barcode","Status","Actions"]} rows={items.map(it=>[it.name,<Badge color={C.info} bg={C.infoLight}>{it.category}</Badge>,<strong style={{color:C.primary}}>{fmtSAR(it.price)}</strong>,it.stock,<div style={{display:"flex",alignItems:"center",gap:6}}>{it.barcode?<span style={{fontFamily:"monospace",fontSize:11,color:C.zatca}}>{it.barcode}</span>:<span style={{color:C.textLight,fontSize:11}}>None</span>}<button onClick={()=>openBarcodeModal(it)} style={{background:C.zatcaLight,border:`1px solid ${C.zatca}30`,color:C.zatca,padding:"2px 7px",borderRadius:5,fontSize:10,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>🔲 {it.barcode?"Edit":"Add"}</button></div>,<Badge color={it.active?C.success:C.danger} bg={it.active?C.successLight:C.dangerLight}>{it.active?"Active":"Off"}</Badge>,<div style={{display:"flex",gap:5}}><Btn size="sm" variant="ghost" onClick={()=>openItemModal(it)}>Edit</Btn><Btn size="sm" variant="danger" onClick={()=>{if(confirm("Delete?"))setItems(prev=>prev.filter(i=>i.id!==it.id));}}>Del</Btn></div>])}/></Card>}
     {tab==="categories"&&<Card><div style={{fontSize:15,fontWeight:700,marginBottom:16}}>Categories</div><div style={{display:"flex",gap:10,marginBottom:20}}><input value={newCat} onChange={e=>setNewCat(e.target.value)} placeholder="New category" style={{flex:1,padding:"9px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontSize:13,fontFamily:"inherit"}}/><Btn onClick={()=>{if(newCat.trim()){setCategories(prev=>[...prev,newCat.trim()]);setNewCat("");}}}>Add</Btn></div><div style={{display:"flex",flexWrap:"wrap",gap:10}}>{categories.map(cat=><div key={cat} style={{padding:"8px 16px",background:C.primaryLight,borderRadius:8,fontSize:13,fontWeight:600,color:C.primary,display:"flex",alignItems:"center",gap:8}}>{cat}<button onClick={()=>setCategories(prev=>prev.filter(c=>c!==cat))} style={{background:"none",border:"none",color:C.danger,cursor:"pointer",fontSize:14}}>×</button></div>)}</div></Card>}
     {tab==="promos"&&<Card><div style={{display:"flex",justifyContent:"space-between",marginBottom:16}}><div style={{fontSize:15,fontWeight:700}}>Promo Codes</div><Btn size="sm" onClick={()=>openPromoModal()}>+ New</Btn></div><DataTable headers={["Code","Type","Value","Min Order","Status","Actions"]} rows={promos.map(p=>[<strong style={{fontFamily:"monospace",color:C.primary}}>{p.code}</strong>,p.type==="%"?"%":"Flat",p.type==="%"?p.value+"%":fmtSAR(p.value),p.minOrder>0?fmtSAR(p.minOrder):"None",<Badge color={p.active?C.success:C.danger} bg={p.active?C.successLight:C.dangerLight}>{p.active?"Active":"Off"}</Badge>,<div style={{display:"flex",gap:5}}><Btn size="sm" variant="ghost" onClick={()=>openPromoModal(p)}>Edit</Btn><Btn size="sm" variant="danger" onClick={()=>setPromos(prev=>prev.filter(x=>x.id!==p.id))}>Del</Btn></div>])} emptyMsg="No promos yet"/></Card>}
   </div>);
@@ -941,8 +1182,10 @@ function Tools({sales,items,setItems}){
 // ═══════════════════════════════════════════════════════════════════
 function UserAdmin({users,setUsers}){
   const [showModal,setShowModal]=useState(false);const [editUser,setEditUser]=useState(null);const blank={name:"",username:"",role:"Cashier",active:true};const [form,setForm]=useState(blank);
+  const [showOwnerModal,setShowOwnerModal]=useState(false);const [ownerPwd,setOwnerPwd]=useState("");const [ownerErr,setOwnerErr]=useState("");const [ownerAuthedLocal,setOwnerAuthedLocal]=useState(false);
   function openModal(u=null){setEditUser(u);setForm(u?{...u}:{...blank});setShowModal(true);}
   function save(){if(!form.name||!form.username)return alert("Name and username required");setUsers(prev=>editUser?prev.map(u=>u.id===editUser.id?{...form,id:editUser.id}:u):[...prev,{...form,id:Date.now(),lastLogin:"Never"}]);setShowModal(false);}
+  function handleOwnerLogin(){if(ownerPwd===OWNER_PASSWORD){setOwnerAuthedLocal(true);setOwnerErr("");setOwnerPwd("");}else{setOwnerErr("Incorrect password.");}}
   return(<div>
     {showModal&&<Modal title={editUser?"Edit User":"New User"} onClose={()=>setShowModal(false)} width={420}>
       <div style={{display:"flex",flexDirection:"column",gap:12}}>
@@ -952,8 +1195,50 @@ function UserAdmin({users,setUsers}){
       </div>
       <div style={{display:"flex",gap:10,marginTop:16}}><Btn variant="ghost" onClick={()=>setShowModal(false)} style={{flex:1}}>Cancel</Btn><Btn onClick={save} style={{flex:1}}>Save</Btn></div>
     </Modal>}
-    <Card><div style={{display:"flex",justifyContent:"space-between",marginBottom:16}}><div style={{fontSize:15,fontWeight:700}}>User Management</div><Btn size="sm" onClick={()=>openModal()}>+ New User</Btn></div><DataTable headers={["Name","Username","Role","Status","Actions"]} rows={users.map(u=>[u.name,<span style={{fontFamily:"monospace"}}>{u.username}</span>,<Badge color={u.role==="Admin"?C.danger:u.role==="Manager"?C.warning:C.info} bg={u.role==="Admin"?C.dangerLight:u.role==="Manager"?C.warningLight:C.infoLight}>{u.role}</Badge>,<Badge color={u.active?C.success:C.danger} bg={u.active?C.successLight:C.dangerLight}>{u.active?"Active":"Off"}</Badge>,<div style={{display:"flex",gap:5}}><Btn size="sm" variant="ghost" onClick={()=>openModal(u)}>Edit</Btn><Btn size="sm" variant="danger" onClick={()=>{if(confirm("Delete?"))setUsers(prev=>prev.filter(x=>x.id!==u.id));}}>Del</Btn></div>])}/></Card>
+    {showOwnerModal&&<Modal title="🔐 Owner Access" onClose={()=>{setShowOwnerModal(false);setOwnerAuthedLocal(false);setOwnerPwd("");setOwnerErr("");}} width={ownerAuthedLocal?900:400}>
+      {!ownerAuthedLocal?(
+        <div style={{display:"flex",flexDirection:"column",gap:14}}>
+          <div style={{textAlign:"center",marginBottom:8}}><div style={{fontSize:36,marginBottom:8}}>🏢</div><div style={{fontSize:14,color:C.textMid}}>Enter the owner password to view your client dashboard</div></div>
+          <Inp label="Owner Password" value={ownerPwd} onChange={v=>{setOwnerPwd(v);setOwnerErr("");}} type="password" placeholder="••••••••"/>
+          {ownerErr&&<div style={{fontSize:12,color:C.danger,fontWeight:600}}>⚠️ {ownerErr}</div>}
+          <Btn onClick={handleOwnerLogin}>Unlock Dashboard</Btn>
+        </div>
+      ):(
+        <OwnerDashboardInline/>
+      )}
+    </Modal>}
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20,flexWrap:"wrap",gap:10}}>
+      <div style={{fontSize:18,fontWeight:800,color:C.text}}>👤 User Management</div>
+      <div style={{display:"flex",gap:10}}>
+        <button onClick={()=>setShowOwnerModal(true)} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 18px",background:"linear-gradient(135deg,#0F2340,#1A3A5C)",color:"#fff",border:"none",borderRadius:10,cursor:"pointer",fontFamily:"inherit",fontSize:13,fontWeight:700}}>🏢 Are You the Owner?</button>
+        <Btn size="sm" onClick={()=>openModal()}>+ New User</Btn>
+      </div>
+    </div>
+    <Card><DataTable headers={["Name","Username","Role","Status","Actions"]} rows={users.map(u=>[u.name,<span style={{fontFamily:"monospace"}}>{u.username}</span>,<Badge color={u.role==="Admin"?C.danger:u.role==="Manager"?C.warning:C.info} bg={u.role==="Admin"?C.dangerLight:u.role==="Manager"?C.warningLight:C.infoLight}>{u.role}</Badge>,<Badge color={u.active?C.success:C.danger} bg={u.active?C.successLight:C.dangerLight}>{u.active?"Active":"Off"}</Badge>,<div style={{display:"flex",gap:5}}><Btn size="sm" variant="ghost" onClick={()=>openModal(u)}>Edit</Btn><Btn size="sm" variant="danger" onClick={()=>{if(confirm("Delete?"))setUsers(prev=>prev.filter(x=>x.id!==u.id));}}>Del</Btn></div>])}/></Card>
   </div>);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// OWNER DASHBOARD INLINE (for modal inside UserAdmin)
+// ═══════════════════════════════════════════════════════════════════
+function OwnerDashboardInline(){
+  const [tab,setTab]=useState("activations");const [activations,setActivations]=useState([]);const [licenses,setLicenses]=useState([]);const [loading,setLoading]=useState(true);
+  useEffect(()=>{async function load(){try{const aSnap=await getDocs(collection(db,"pending_activations"));setActivations(aSnap.docs.map(d=>({id:d.id,...d.data()})));const lSnap=await getDocs(collection(db,"licenses"));setLicenses(lSnap.docs.map(d=>({id:d.id,...d.data()})));}catch(e){console.error(e);}setLoading(false);}load();},[]);
+  async function toggleLicense(id,active){try{await updateDoc(doc(db,"licenses",id),{active:!active});setLicenses(prev=>prev.map(l=>l.id===id?{...l,active:!active}:l));}catch(e){alert("Error: "+e.message);}}
+  const statusColor={approved:C.success,pending:C.warning,suspended:C.danger};const statusBg={approved:C.successLight,pending:C.warningLight,suspended:C.dangerLight};
+  if(loading)return<div style={{textAlign:"center",padding:40,color:C.textMid}}>Loading client data…</div>;
+  return(
+    <div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginBottom:20}}>
+        {[[activations.length,"Total Clients","🏢",C.primary,C.primaryLight],[activations.filter(a=>a.status==="approved").length,"Active","✅",C.success,C.successLight],[licenses.filter(l=>!l.active).length,"Suspended","🚫",C.danger,C.dangerLight]].map(([v,l,ic,col,bg])=>(
+          <div key={l} style={{background:bg,border:`1px solid ${col}30`,borderRadius:10,padding:"14px 16px",display:"flex",alignItems:"center",gap:10}}><span style={{fontSize:22}}>{ic}</span><div><div style={{fontSize:20,fontWeight:900,color:col}}>{v}</div><div style={{fontSize:11,color:col,fontWeight:600}}>{l}</div></div></div>
+        ))}
+      </div>
+      <div style={{display:"flex",gap:8,marginBottom:16}}>{[["activations","🏢 Clients"],["licenses","🔑 Licenses"]].map(([id,label])=><button key={id} onClick={()=>setTab(id)} style={{padding:"7px 14px",borderRadius:8,border:`1.5px solid ${tab===id?C.primary:C.border}`,background:tab===id?C.primaryLight:"#fff",color:tab===id?C.primary:C.textMid,fontFamily:"inherit",fontSize:12,fontWeight:600,cursor:"pointer"}}>{label}</button>)}</div>
+      {tab==="activations"&&<div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}><thead><tr style={{background:C.bg}}>{["Business","CR","VAT","License Key","City","Submitted","Status"].map(h=><th key={h} style={{padding:"8px 12px",textAlign:"left",color:C.textMid,fontWeight:700,fontSize:10,textTransform:"uppercase",borderBottom:`1px solid ${C.border}`,whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead><tbody>{activations.map((a,i)=><tr key={a.id} style={{borderBottom:`1px solid ${C.border}`,background:i%2===0?"#fff":"#FAFBFC"}}><td style={{padding:"8px 12px",fontWeight:600}}>{a.businessName}</td><td style={{padding:"8px 12px",fontFamily:"monospace",fontSize:11,color:C.textMid}}>{a.crNumber}</td><td style={{padding:"8px 12px",fontFamily:"monospace",fontSize:11,color:C.textMid}}>{a.vatNumber}</td><td style={{padding:"8px 12px",color:C.accent,fontFamily:"monospace",fontSize:11,fontWeight:700}}>{a.licenseKey}</td><td style={{padding:"8px 12px",color:C.textMid}}>{a.city||"—"}</td><td style={{padding:"8px 12px",color:C.textLight,fontSize:11}}>{a.submittedAt?fmtDate(a.submittedAt):"—"}</td><td style={{padding:"8px 12px"}}><span style={{padding:"3px 10px",borderRadius:20,fontSize:10,fontWeight:700,color:statusColor[a.status]||C.textMid,background:statusBg[a.status]||C.bg}}>{a.status}</span></td></tr>)}</tbody></table></div>}
+      {tab==="licenses"&&<div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}><thead><tr style={{background:C.bg}}>{["Key","Status","Activated By","Activated At","Toggle"].map(h=><th key={h} style={{padding:"8px 12px",textAlign:"left",color:C.textMid,fontWeight:700,fontSize:10,textTransform:"uppercase",borderBottom:`1px solid ${C.border}`,whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead><tbody>{licenses.map((l,i)=><tr key={l.id} style={{borderBottom:`1px solid ${C.border}`,background:i%2===0?"#fff":"#FAFBFC"}}><td style={{padding:"8px 12px",fontFamily:"monospace",color:C.accent,fontWeight:700}}>{l.key}</td><td style={{padding:"8px 12px"}}><span style={{padding:"3px 10px",borderRadius:20,fontSize:10,fontWeight:700,color:l.active?C.success:C.danger,background:l.active?C.successLight:C.dangerLight}}>{l.active?"Active":"Inactive"}</span></td><td style={{padding:"8px 12px",color:C.textMid}}>{l.activatedBy||"—"}</td><td style={{padding:"8px 12px",color:C.textLight,fontSize:11}}>{l.activatedAt?fmtDateTime(l.activatedAt):"—"}</td><td style={{padding:"8px 12px"}}><button onClick={()=>toggleLicense(l.id,l.active)} style={{padding:"5px 12px",background:l.active?C.dangerLight:C.successLight,border:`1px solid ${l.active?C.danger:C.success}`,borderRadius:6,color:l.active?C.danger:C.success,fontSize:11,cursor:"pointer",fontFamily:"inherit",fontWeight:700}}>{l.active?"Deactivate":"Activate"}</button></td></tr>)}</tbody></table></div>}
+    </div>
+  );
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1080,6 +1365,7 @@ export default function App(){
   const [promos,_setPromos]=useState(()=>LS.get("restopos_promos")||[{id:1,code:"SAVE10",type:"%",value:10,active:true,minOrder:30},{id:2,code:"FLAT20",type:"flat",value:20,active:true,minOrder:100}]);
   const [company,_setCompany]=useState(()=>LS.get("restopos_company")||{phone:"",email:"",address:"",city:"Riyadh"});
   const [pins,_setPins]=useState(()=>LS.get("restopos_pins")||DEFAULT_PINS);
+  const [invoiceFormat,_setInvoiceFormat]=useState(()=>LS.get("restopos_invoice_format")||{font:"courier",footer:"Thank you for your visit!",footerAr:"شكراً لزيارتكم",website:"",social:"",tagline:""});
   function setSales(v){_setSales(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_sales",n.slice(-500));return n;});}
   function setItems(v){_setItems(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_items",n);return n;});}
   function setTables(v){_setTables(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_tables",n);return n;});}
@@ -1087,6 +1373,7 @@ export default function App(){
   function setPromos(v){_setPromos(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_promos",n);return n;});}
   function setCompany(v){_setCompany(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_company",n);return n;});}
   function setPins(v){_setPins(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_pins",n);return n;});}
+  function setInvoiceFormat(v){_setInvoiceFormat(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_invoice_format",n);return n;});}
   useEffect(()=>{const saved=LS.get("restopos_license_v2");const pendingId=localStorage.getItem("restopos_pending_id");if(saved){setLicense(saved);setStep("login");}else if(pendingId){setStep("license");}else setStep("register");},[]);
   function handleClearLicense(){LS.del("restopos_license_v2");LS.del("restopos_pins");setLicense(null);setCurrentUser(null);setStep("register");}
   const ALL_NAV=[["dashboard","📊","Dashboard",["Admin","Manager"]],["pos","🖥️","POS",["Admin","Manager","Cashier"]],["settings","⚙️","Settings",["Admin"]],["create","➕","Create",["Admin","Manager"]],["transactions","💳","Transactions",["Admin","Manager"]],["accounts","📈","Accounts",["Admin","Manager"]],["reports","📋","Reports",["Admin","Manager"]],["tools","🔧","Tools",["Admin"]],["useradmin","👤","Users",["Admin"]],["help","❓","Help",["Admin","Manager","Cashier"]]];
@@ -1101,14 +1388,15 @@ export default function App(){
     <div style={{fontFamily:"'Plus Jakarta Sans','Tajawal',sans-serif",background:C.bg,minHeight:"100vh",display:"flex",flexDirection:"column"}}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Tajawal:wght@400;500;700&display=swap');*{box-sizing:border-box;margin:0;padding:0}::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-track{background:${C.bg}}::-webkit-scrollbar-thumb{background:${C.border};border-radius:3px}input,select{outline:none}input:focus,select:focus{border-color:${C.primary}!important}@media print{header,nav{display:none!important}}`}</style>
       <div style={{background:"#fff",borderBottom:`1px solid ${C.border}`,height:52,display:"flex",alignItems:"center",padding:"0 16px",justifyContent:"space-between",position:"sticky",top:0,zIndex:100,boxShadow:"0 1px 8px rgba(0,0,0,0.06)"}}>
-        <div style={{display:"flex",alignItems:"center",gap:8}}><div style={{width:30,height:30,background:"linear-gradient(135deg,#1A6B4A,#F0A500)",borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontSize:15,fontWeight:900}}>R</div><div><div style={{fontSize:14,fontWeight:800,color:C.text,lineHeight:1}}>RestoPOS</div><div style={{fontSize:9,color:C.textLight,letterSpacing:"0.08em"}}>ZATCA PHASE 2 · v8.0</div></div></div>
+        <div style={{display:"flex",alignItems:"center",gap:8}}><div style={{width:30,height:30,background:"linear-gradient(135deg,#1A6B4A,#F0A500)",borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontSize:15,fontWeight:900}}>R</div><div><div style={{fontSize:14,fontWeight:800,color:C.text,lineHeight:1}}>RestoPOS</div><div style={{fontSize:9,color:C.textLight,letterSpacing:"0.08em"}}>ZATCA PHASE 2 · v9.0</div></div></div>
         <div style={{display:"flex",gap:1,overflowX:"auto"}}>{NAV.map(([id,icon,label])=><button key={id} onClick={()=>setScreen(id)} style={{padding:"5px 9px",borderRadius:8,border:"none",background:screen===id?C.primaryLight:"transparent",color:screen===id?C.primary:C.textMid,fontFamily:"inherit",fontSize:11,fontWeight:screen===id?700:500,cursor:"pointer",display:"flex",alignItems:"center",gap:4,whiteSpace:"nowrap"}}><span>{icon}</span><span>{label}</span></button>)}</div>
+
         <div style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontSize:11,background:C.zatcaLight,color:C.zatca,padding:"3px 8px",borderRadius:6,fontWeight:700}}>⬛ ZATCA</span><div style={{fontSize:11,color:C.textMid,fontWeight:700}}>{currentUser?.role}</div><button onClick={()=>setCurrentUser(null)} style={{fontSize:11,background:C.dangerLight,color:C.danger,border:"none",padding:"4px 8px",borderRadius:6,cursor:"pointer",fontFamily:"inherit",fontWeight:700}}>Logout</button></div>
       </div>
-      <div style={{flex:1,padding:screen==="pos"?0:20,overflowY:screen==="pos"?"hidden":"auto",width:"100%"}}>
+      <div style={{flex:1,padding:screen==="pos"?0:20,overflowY:screen==="pos"?"hidden":"auto",width:"100%",minHeight:0,boxSizing:"border-box"}}>
         {screen==="dashboard"&&<Dashboard sales={sales} items={items} license={license}/>}
         {screen==="pos"&&<POS items={items} sales={sales} setSales={setSales} tables={tables} setTables={setTables} promos={promos} license={license}/>}
-        {screen==="settings"&&<Settings company={company} setCompany={setCompany} tables={tables} setTables={setTables} license={license} onClearLicense={handleClearLicense} pins={pins} setPins={setPins}/>}
+        {screen==="settings"&&<Settings company={company} setCompany={setCompany} tables={tables} setTables={setTables} license={license} onClearLicense={handleClearLicense} pins={pins} setPins={setPins} invoiceFormat={invoiceFormat} setInvoiceFormat={setInvoiceFormat}/>}
         {screen==="create"&&<Create items={items} setItems={setItems} promos={promos} setPromos={setPromos}/>}
         {screen==="transactions"&&<Transactions sales={sales} setSales={setSales} license={license}/>}
         {screen==="accounts"&&<Accounts sales={sales} items={items}/>}
