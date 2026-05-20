@@ -223,6 +223,27 @@ function BusinessRegistration({ onNext }) {
             Next — Enter License Key →
           </button>
         </div>
+
+        {/* OWNER LOGIN BOX */}
+        <div style={{ marginTop: 16, background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 16, padding: "20px 24px", backdropFilter: "blur(8px)" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "rgba(255,255,255,0.9)", marginBottom: 2 }}>👑 Are you the owner?</div>
+              <div style={{ fontSize: 11, color: "rgba(255,255,255,0.5)" }}>Access your admin dashboard to manage all clients</div>
+            </div>
+            <button onClick={() => { window._ownerMode = true; window.dispatchEvent(new Event("ownerLogin")); }}
+              style={{ padding: "9px 18px", background: "linear-gradient(135deg,#F0A500,#e09000)", color: "#fff", border: "none", borderRadius: 10, fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>
+              Owner Login →
+            </button>
+          </div>
+        </div>
+
+        {/* CONTACT SUPPORT */}
+        <div style={{ marginTop: 12, display: "flex", alignItems: "center", justifyContent: "center", gap: 20, padding: "14px 0" }}>
+          <a href="mailto:support@restopos.sa" style={{ color: "rgba(255,255,255,0.5)", fontSize: 12, textDecoration: "none", display: "flex", alignItems: "center", gap: 5 }}>📧 support@restopos.sa</a>
+          <span style={{ color: "rgba(255,255,255,0.2)" }}>|</span>
+          <a href="tel:+966500000000" style={{ color: "rgba(255,255,255,0.5)", fontSize: 12, textDecoration: "none", display: "flex", alignItems: "center", gap: 5 }}>📞 +966 50 000 0000</a>
+        </div>
       </div>
     </div>
   );
@@ -900,7 +921,7 @@ function POS({ items, sales, setSales, tables, setTables, promos, license }) {
 
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
         {/* LEFT PANEL */}
-        <div style={{ width: 340, background: "#fff", borderRight: "1px solid #D0D8E4", display: "flex", flexDirection: "column", flexShrink: 0 }}>
+        <div style={{ width: "clamp(300px, 28vw, 420px)", background: "#fff", borderRight: "1px solid #D0D8E4", display: "flex", flexDirection: "column", flexShrink: 0 }}>
           {/* Header info */}
           <div style={{ padding: "8px 12px", borderBottom: "1px solid #E8EDF2", background: "#F8FAFC" }}>
             <div style={{ display: "flex", gap: 16, fontSize: 11, color: "#5A7A9A", marginBottom: 6 }}>
@@ -1789,14 +1810,361 @@ function Help() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// OWNER DASHBOARD — Full client management for you (the product owner)
+// ═══════════════════════════════════════════════════════════════════
+const OWNER_PASSWORD = "RestoOwner2026"; // ← Change this to your real password
+
+function OwnerLogin({ onLogin }) {
+  const [pw, setPw] = useState("");
+  const [err, setErr] = useState("");
+  return (
+    <div style={{ minHeight: "100vh", background: "linear-gradient(135deg,#0a0a1a,#1a0a2e,#0a1a0a)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, fontFamily: "'Plus Jakarta Sans',sans-serif" }}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');*{box-sizing:border-box;margin:0;padding:0}`}</style>
+      <div style={{ width: "100%", maxWidth: 400 }}>
+        <div style={{ textAlign: "center", marginBottom: 32 }}>
+          <div style={{ width: 64, height: 64, background: "linear-gradient(135deg,#F0A500,#e09000)", borderRadius: 20, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 32, margin: "0 auto 16px" }}>👑</div>
+          <div style={{ fontSize: 26, fontWeight: 900, color: "#fff" }}>Owner Dashboard</div>
+          <div style={{ fontSize: 13, color: "rgba(255,255,255,0.4)", marginTop: 4 }}>RestoPOS · Internal Access</div>
+        </div>
+        <div style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 20, padding: 32, backdropFilter: "blur(12px)" }}>
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ fontSize: 12, fontWeight: 700, color: "rgba(255,255,255,0.5)", display: "block", marginBottom: 6 }}>Owner Password</label>
+            <input type="password" value={pw} onChange={e => { setPw(e.target.value); setErr(""); }}
+              onKeyDown={e => e.key === "Enter" && (pw === OWNER_PASSWORD ? onLogin() : setErr("Incorrect password."))}
+              placeholder="Enter owner password"
+              style={{ width: "100%", padding: "12px 16px", background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.2)", borderRadius: 10, fontSize: 14, color: "#fff", fontFamily: "inherit" }} />
+          </div>
+          {err && <div style={{ color: "#ff6b6b", fontSize: 13, marginBottom: 12 }}>⚠️ {err}</div>}
+          <button onClick={() => pw === OWNER_PASSWORD ? onLogin() : setErr("Incorrect password.")}
+            style={{ width: "100%", padding: 14, background: "linear-gradient(135deg,#F0A500,#e09000)", color: "#fff", border: "none", borderRadius: 12, fontSize: 15, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>
+            Enter Dashboard →
+          </button>
+          <button onClick={() => { window._ownerMode = false; window.dispatchEvent(new Event("ownerLogout")); }}
+            style={{ width: "100%", marginTop: 10, padding: 12, background: "transparent", color: "rgba(255,255,255,0.4)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>
+            ← Back to Client Login
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function OwnerDashboard({ onLogout }) {
+  const [tab, setTab] = useState("overview");
+  const [licenses, setLicenses] = useState([]);
+  const [activations, setActivations] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState(null);
+  const [updating, setUpdating] = useState(false);
+  const [rejectReason, setRejectReason] = useState("");
+  const [showRejectBox, setShowRejectBox] = useState(null);
+
+  useEffect(() => { loadAll(); }, []);
+
+  async function loadAll() {
+    setLoading(true);
+    try {
+      const [licSnap, actSnap] = await Promise.all([
+        getDocs(collection(db, "licenses")),
+        getDocs(collection(db, "pending_activations")),
+      ]);
+      setLicenses(licSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+      const acts = actSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      acts.sort((a, b) => new Date(b.submittedAt || 0) - new Date(a.submittedAt || 0));
+      setActivations(acts);
+    } catch (e) { alert("Load failed: " + e.message); }
+    setLoading(false);
+  }
+
+  async function updateStatus(id, status, reason = "") {
+    setUpdating(true);
+    try {
+      await updateDoc(doc(db, "pending_activations", id), {
+        status,
+        reviewedAt: new Date().toISOString(),
+        ...(reason ? { rejectReason: reason } : {}),
+      });
+      setActivations(prev => prev.map(a => a.id === id ? { ...a, status, rejectReason: reason } : a));
+      if (selected?.id === id) setSelected(s => ({ ...s, status }));
+    } catch (e) { alert("Update failed: " + e.message); }
+    setUpdating(false);
+    setShowRejectBox(null);
+    setRejectReason("");
+  }
+
+  async function toggleLicense(id, currentActive) {
+    try {
+      await updateDoc(doc(db, "licenses", id), { active: !currentActive });
+      setLicenses(prev => prev.map(l => l.id === id ? { ...l, active: !currentActive } : l));
+    } catch (e) { alert("Failed: " + e.message); }
+  }
+
+  const pending = activations.filter(a => a.status === "pending");
+  const approved = activations.filter(a => a.status === "approved");
+  const rejected = activations.filter(a => a.status === "rejected");
+  const activeL = licenses.filter(l => l.active);
+
+  const statusColor = { pending: C.warning, approved: C.success, rejected: C.danger };
+  const statusBg = { pending: C.warningLight, approved: C.successLight, rejected: C.dangerLight };
+
+  function DocViewer({ label, data, name, type }) {
+    if (!data) return <div style={{ padding: 12, background: C.bg, borderRadius: 8, fontSize: 12, color: C.textLight }}>No file</div>;
+    const isPdf = (type || "").includes("pdf") || (data || "").includes("application/pdf");
+    return (
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: C.textMid, marginBottom: 6 }}>{label} · <span style={{ fontWeight: 400 }}>{name}</span></div>
+        {isPdf
+          ? <><iframe src={data} style={{ width: "100%", height: 280, border: `1px solid ${C.border}`, borderRadius: 8 }} title={label} /><a href={data} download={name} style={{ fontSize: 11, color: C.primary, fontWeight: 700, display: "inline-block", marginTop: 4 }}>⬇ Download PDF</a></>
+          : <><img src={data} alt={label} style={{ width: "100%", maxHeight: 280, objectFit: "contain", border: `1px solid ${C.border}`, borderRadius: 8, background: "#f8f8f8" }} /><a href={data} download={name} style={{ fontSize: 11, color: C.primary, fontWeight: 700, display: "inline-block", marginTop: 4 }}>⬇ Download</a></>
+        }
+      </div>
+    );
+  }
+
+  const TABS = [["overview", "📊", "Overview"], ["pending", "⏳", `Pending (${pending.length})`], ["clients", "👥", "All Clients"], ["licenses", "🔑", "Licenses"]];
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#0f0f1a", fontFamily: "'Plus Jakarta Sans',sans-serif" }}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');*{box-sizing:border-box;margin:0;padding:0}`}</style>
+
+      {/* Owner Header */}
+      <div style={{ background: "linear-gradient(135deg,#1a0a2e,#0a1628)", borderBottom: "1px solid rgba(255,255,255,0.08)", padding: "0 24px", height: 56, display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, zIndex: 100 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ width: 36, height: 36, background: "linear-gradient(135deg,#F0A500,#e09000)", borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>👑</div>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 800, color: "#fff" }}>RestoPOS Owner</div>
+            <div style={{ fontSize: 10, color: "rgba(255,255,255,0.4)" }}>Internal Dashboard · {new Date().toLocaleDateString("en-SA", { day: "2-digit", month: "short", year: "numeric" })}</div>
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          {TABS.map(([id, icon, label]) => (
+            <button key={id} onClick={() => setTab(id)} style={{ padding: "6px 14px", borderRadius: 8, border: "none", background: tab === id ? "rgba(240,165,0,0.2)" : "transparent", color: tab === id ? "#F0A500" : "rgba(255,255,255,0.5)", fontFamily: "inherit", fontSize: 12, fontWeight: tab === id ? 700 : 500, cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}>
+              <span>{icon}</span><span>{label}</span>
+            </button>
+          ))}
+          <button onClick={loadAll} style={{ padding: "6px 12px", borderRadius: 8, background: "rgba(255,255,255,0.06)", border: "none", color: "rgba(255,255,255,0.5)", fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>↻ Refresh</button>
+          <button onClick={onLogout} style={{ padding: "6px 14px", borderRadius: 8, background: "rgba(217,64,64,0.15)", border: "none", color: "#ff6b6b", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Logout</button>
+        </div>
+      </div>
+
+      <div style={{ padding: 24 }}>
+        {loading ? (
+          <div style={{ textAlign: "center", padding: 80, color: "rgba(255,255,255,0.3)", fontSize: 16 }}>⏳ Loading data…</div>
+        ) : (
+          <>
+            {/* ── OVERVIEW ── */}
+            {tab === "overview" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(200px,1fr))", gap: 14 }}>
+                  {[
+                    ["🔑", "Total Licenses", licenses.length, "#F0A500"],
+                    ["✅", "Active Licenses", activeL.length, "#1A8A4A"],
+                    ["⏳", "Pending Review", pending.length, "#E07B00"],
+                    ["👥", "Total Clients", approved.length, "#2176AE"],
+                    ["✗", "Rejected", rejected.length, "#D94040"],
+                    ["📅", "Today's Signups", activations.filter(a => a.submittedAt?.startsWith(TODAY)).length, "#6366f1"],
+                  ].map(([icon, label, val, color]) => (
+                    <div key={label} style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 14, padding: "18px 20px", display: "flex", alignItems: "center", gap: 14 }}>
+                      <div style={{ width: 44, height: 44, background: color + "20", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, flexShrink: 0 }}>{icon}</div>
+                      <div><div style={{ fontSize: 26, fontWeight: 900, color }}>{val}</div><div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", fontWeight: 600 }}>{label}</div></div>
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 14, padding: 20 }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", marginBottom: 14 }}>⏳ Recent Pending Submissions</div>
+                  {pending.length === 0
+                    ? <div style={{ color: "rgba(255,255,255,0.3)", fontSize: 13 }}>No pending submissions.</div>
+                    : pending.slice(0, 5).map(a => (
+                      <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 14, padding: "10px 0", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: "#fff" }}>{a.businessName}</div>
+                          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.4)" }}>CR: {a.crNumber} · {a.city} · {a.submittedAt ? fmtDateTime(a.submittedAt) : "—"}</div>
+                        </div>
+                        <button onClick={() => { setSelected(a); setTab("pending"); }} style={{ padding: "6px 14px", background: "#F0A50020", border: "1px solid #F0A50040", color: "#F0A500", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Review →</button>
+                      </div>
+                    ))
+                  }
+                </div>
+              </div>
+            )}
+
+            {/* ── PENDING ── */}
+            {tab === "pending" && (
+              <div style={{ display: "flex", gap: 20 }}>
+                {/* List */}
+                <div style={{ width: 340, flexShrink: 0, display: "flex", flexDirection: "column", gap: 10 }}>
+                  {pending.length === 0
+                    ? <div style={{ color: "rgba(255,255,255,0.3)", fontSize: 13, padding: 20 }}>No pending submissions 🎉</div>
+                    : pending.map(a => (
+                      <div key={a.id} onClick={() => setSelected(a)}
+                        style={{ background: selected?.id === a.id ? "rgba(240,165,0,0.12)" : "rgba(255,255,255,0.04)", border: `1px solid ${selected?.id === a.id ? "#F0A500" : "rgba(255,255,255,0.08)"}`, borderRadius: 12, padding: "14px 16px", cursor: "pointer", transition: "all 0.15s" }}>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: "#fff", marginBottom: 4 }}>{a.businessName}</div>
+                        <div style={{ fontSize: 11, color: "rgba(255,255,255,0.4)" }}>CR: {a.crNumber}</div>
+                        <div style={{ fontSize: 11, color: "rgba(255,255,255,0.4)" }}>{a.submittedAt ? fmtDateTime(a.submittedAt) : "—"}</div>
+                      </div>
+                    ))
+                  }
+                </div>
+                {/* Detail */}
+                <div style={{ flex: 1 }}>
+                  {!selected ? (
+                    <div style={{ color: "rgba(255,255,255,0.3)", fontSize: 14, padding: "60px 0", textAlign: "center" }}>← Select a submission to review</div>
+                  ) : (
+                    <div style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 14, padding: 24 }}>
+                      <div style={{ fontSize: 16, fontWeight: 800, color: "#fff", marginBottom: 16 }}>{selected.businessName}</div>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 20 }}>
+                        {[["CR Number", selected.crNumber], ["VAT Number", selected.vatNumber], ["License Key", selected.licenseKey], ["Phone", selected.phone || "—"], ["City", selected.city || "—"], ["Submitted", selected.submittedAt ? fmtDateTime(selected.submittedAt) : "—"], ["Device ID", selected.deviceId || "—"], ["Status", selected.status]].map(([k, v]) => (
+                          <div key={k} style={{ background: "rgba(255,255,255,0.04)", borderRadius: 8, padding: "8px 12px" }}>
+                            <div style={{ fontSize: 10, color: "rgba(255,255,255,0.35)", marginBottom: 2 }}>{k}</div>
+                            <div style={{ fontSize: 12, fontWeight: 700, color: k === "Status" ? (statusColor[selected.status] || "#fff") : "#fff" }}>{v}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <DocViewer label="VAT Certificate" data={selected.vatCertBase64} name={selected.vatCertName} type={selected.vatCertType} />
+                      <DocViewer label="Business License (CR)" data={selected.bizLicenseBase64} name={selected.bizLicenseName} type={selected.bizLicenseType} />
+
+                      {selected.status === "pending" && (
+                        <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+                          {showRejectBox === selected.id ? (
+                            <div style={{ flex: 1 }}>
+                              <input value={rejectReason} onChange={e => setRejectReason(e.target.value)} placeholder="Reason for rejection (optional)"
+                                style={{ width: "100%", padding: "10px 14px", background: "rgba(255,255,255,0.08)", border: "1px solid rgba(217,64,64,0.4)", borderRadius: 10, fontSize: 13, color: "#fff", fontFamily: "inherit", marginBottom: 8 }} />
+                              <div style={{ display: "flex", gap: 8 }}>
+                                <button onClick={() => setShowRejectBox(null)} style={{ flex: 1, padding: 10, background: "rgba(255,255,255,0.06)", border: "none", borderRadius: 8, color: "rgba(255,255,255,0.5)", cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
+                                <button onClick={() => updateStatus(selected.id, "rejected", rejectReason)} disabled={updating}
+                                  style={{ flex: 1, padding: 10, background: "#D94040", border: "none", borderRadius: 8, color: "#fff", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Confirm Reject</button>
+                              </div>
+                            </div>
+                          ) : (
+                            <>
+                              <button onClick={() => setShowRejectBox(selected.id)} style={{ flex: 1, padding: 12, background: "rgba(217,64,64,0.15)", border: "1px solid rgba(217,64,64,0.3)", borderRadius: 10, color: "#ff6b6b", fontWeight: 700, cursor: "pointer", fontFamily: "inherit", fontSize: 14 }}>✗ Reject</button>
+                              <button onClick={() => updateStatus(selected.id, "approved")} disabled={updating}
+                                style={{ flex: 2, padding: 12, background: "linear-gradient(135deg,#1A6B4A,#134D36)", border: "none", borderRadius: 10, color: "#fff", fontWeight: 800, cursor: "pointer", fontFamily: "inherit", fontSize: 14 }}>✓ Approve Client</button>
+                            </>
+                          )}
+                        </div>
+                      )}
+                      {selected.status !== "pending" && (
+                        <div style={{ marginTop: 12, padding: "12px 16px", background: statusBg[selected.status], borderRadius: 10, fontSize: 13, fontWeight: 700, color: statusColor[selected.status], textAlign: "center" }}>
+                          {selected.status === "approved" ? "✅ Approved" : `✗ Rejected${selected.rejectReason ? ": " + selected.rejectReason : ""}`}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* ── ALL CLIENTS ── */}
+            {tab === "clients" && (
+              <div style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 14, overflow: "hidden" }}>
+                <div style={{ padding: "16px 20px", borderBottom: "1px solid rgba(255,255,255,0.08)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "#fff" }}>All Submissions ({activations.length})</div>
+                </div>
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                    <thead>
+                      <tr style={{ background: "rgba(255,255,255,0.04)" }}>
+                        {["Business", "CR", "VAT", "License Key", "City", "Phone", "Submitted", "Duration", "Status", "Docs"].map(h => (
+                          <th key={h} style={{ padding: "10px 14px", textAlign: "left", color: "rgba(255,255,255,0.4)", fontWeight: 700, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em", borderBottom: "1px solid rgba(255,255,255,0.06)", whiteSpace: "nowrap" }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {activations.map((a, i) => {
+                        const subDate = a.submittedAt ? new Date(a.submittedAt) : null;
+                        const daysSince = subDate ? Math.floor((Date.now() - subDate) / 86400000) : null;
+                        return (
+                          <tr key={a.id} style={{ borderBottom: "1px solid rgba(255,255,255,0.04)", background: i % 2 === 0 ? "transparent" : "rgba(255,255,255,0.02)" }}>
+                            <td style={{ padding: "10px 14px", color: "#fff", fontWeight: 600 }}>{a.businessName}</td>
+                            <td style={{ padding: "10px 14px", color: "rgba(255,255,255,0.6)", fontFamily: "monospace", fontSize: 11 }}>{a.crNumber}</td>
+                            <td style={{ padding: "10px 14px", color: "rgba(255,255,255,0.6)", fontFamily: "monospace", fontSize: 11 }}>{a.vatNumber}</td>
+                            <td style={{ padding: "10px 14px", color: "#F0A500", fontFamily: "monospace", fontSize: 11 }}>{a.licenseKey}</td>
+                            <td style={{ padding: "10px 14px", color: "rgba(255,255,255,0.6)" }}>{a.city || "—"}</td>
+                            <td style={{ padding: "10px 14px", color: "rgba(255,255,255,0.6)" }}>{a.phone || "—"}</td>
+                            <td style={{ padding: "10px 14px", color: "rgba(255,255,255,0.5)", fontSize: 11, whiteSpace: "nowrap" }}>{subDate ? fmtDate(a.submittedAt) : "—"}</td>
+                            <td style={{ padding: "10px 14px", color: "#6366f1", fontWeight: 700 }}>{daysSince !== null ? `${daysSince}d` : "—"}</td>
+                            <td style={{ padding: "10px 14px" }}>
+                              <span style={{ padding: "3px 10px", borderRadius: 20, fontSize: 10, fontWeight: 700, color: statusColor[a.status] || "rgba(255,255,255,0.5)", background: (statusBg[a.status] || "rgba(255,255,255,0.05)") + "33", border: `1px solid ${statusColor[a.status] || "rgba(255,255,255,0.1)"}40` }}>{a.status}</span>
+                            </td>
+                            <td style={{ padding: "10px 14px" }}>
+                              <button onClick={() => { setSelected(a); setTab("pending"); }} style={{ padding: "5px 12px", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "rgba(255,255,255,0.7)", fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}>View</button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* ── LICENSES ── */}
+            {tab === "licenses" && (
+              <div style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 14, overflow: "hidden" }}>
+                <div style={{ padding: "16px 20px", borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "#fff" }}>License Keys ({licenses.length})</div>
+                </div>
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                    <thead>
+                      <tr style={{ background: "rgba(255,255,255,0.04)" }}>
+                        {["Key", "Status", "Activated By", "Activated At", "Device ID", "Toggle"].map(h => (
+                          <th key={h} style={{ padding: "10px 14px", textAlign: "left", color: "rgba(255,255,255,0.4)", fontWeight: 700, fontSize: 10, textTransform: "uppercase", borderBottom: "1px solid rgba(255,255,255,0.06)", whiteSpace: "nowrap" }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {licenses.map((l, i) => (
+                        <tr key={l.id} style={{ borderBottom: "1px solid rgba(255,255,255,0.04)", background: i % 2 === 0 ? "transparent" : "rgba(255,255,255,0.02)" }}>
+                          <td style={{ padding: "10px 14px", fontFamily: "monospace", color: "#F0A500", fontWeight: 700 }}>{l.key}</td>
+                          <td style={{ padding: "10px 14px" }}>
+                            <span style={{ padding: "3px 10px", borderRadius: 20, fontSize: 10, fontWeight: 700, color: l.active ? "#1A8A4A" : "#D94040", background: l.active ? "#E6F7ED" : "#FDE8E8" }}>{l.active ? "Active" : "Inactive"}</span>
+                          </td>
+                          <td style={{ padding: "10px 14px", color: "rgba(255,255,255,0.7)" }}>{l.activatedBy || "—"}</td>
+                          <td style={{ padding: "10px 14px", color: "rgba(255,255,255,0.5)", fontSize: 11 }}>{l.activatedAt ? fmtDateTime(l.activatedAt) : "—"}</td>
+                          <td style={{ padding: "10px 14px", color: "rgba(255,255,255,0.4)", fontFamily: "monospace", fontSize: 10 }}>{l.deviceId ? l.deviceId.slice(0, 20) + "…" : "—"}</td>
+                          <td style={{ padding: "10px 14px" }}>
+                            <button onClick={() => toggleLicense(l.id, l.active)}
+                              style={{ padding: "5px 12px", background: l.active ? "rgba(217,64,64,0.15)" : "rgba(26,138,74,0.15)", border: `1px solid ${l.active ? "rgba(217,64,64,0.3)" : "rgba(26,138,74,0.3)"}`, borderRadius: 6, color: l.active ? "#ff6b6b" : "#4ade80", fontSize: 11, cursor: "pointer", fontFamily: "inherit", fontWeight: 700 }}>
+                              {l.active ? "Deactivate" : "Activate"}
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // MAIN APP
 // ═══════════════════════════════════════════════════════════════════
 export default function App() {
   const [step, setStep] = useState("checking");
   const [businessData, setBusinessData] = useState(null);
   const [license, setLicense] = useState(null);
-  const [currentUser, setCurrentUser] = useState(null); // ✅ Never persisted — forces login on every refresh
+  const [currentUser, setCurrentUser] = useState(null);
   const [screen, setScreen] = useState("pos");
+  const [ownerMode, setOwnerMode] = useState(false);
+  const [ownerAuthed, setOwnerAuthed] = useState(false);
+
+  // Listen for owner login/logout events from the registration page button
+  useEffect(() => {
+    const onOwner = () => setOwnerMode(true);
+    const onOwnerOut = () => { setOwnerMode(false); setOwnerAuthed(false); };
+    window.addEventListener("ownerLogin", onOwner);
+    window.addEventListener("ownerLogout", onOwnerOut);
+    return () => { window.removeEventListener("ownerLogin", onOwner); window.removeEventListener("ownerLogout", onOwnerOut); };
+  }, []);
 
   // ✅ All state loads from localStorage on boot so data survives refresh/logout
   const [sales, _setSales] = useState(() => LS.get("restopos_sales") || []);
@@ -1852,6 +2220,9 @@ export default function App() {
   ];
   const NAV = ALL_NAV.filter(([, , , roles]) => currentUser && roles.includes(currentUser.role));
 
+  if (ownerMode && !ownerAuthed) return <OwnerLogin onLogin={() => setOwnerAuthed(true)} />;
+  if (ownerMode && ownerAuthed) return <OwnerDashboard onLogout={() => { setOwnerMode(false); setOwnerAuthed(false); }} />;
+
   if (step === "checking") return <div style={{ minHeight: "100vh", background: "#0a1628", display: "flex", alignItems: "center", justifyContent: "center" }}><div style={{ color: "#fff", fontSize: 16 }}>Loading…</div></div>;
   if (step === "register") return <BusinessRegistration onNext={(data) => { setBusinessData(data); setStep("license"); }} />;
   if (step === "license") return <LicenseVerification businessData={businessData || { businessName: "", crNumber: "", vatNumber: "", address: "", city: "", phone: "" }} onSuccess={(lic) => { setLicense(lic); setStep("login"); }} onBack={() => setStep("register")} />;
@@ -1881,7 +2252,7 @@ export default function App() {
       </div>
 
       {/* Main */}
-      <div style={{ flex: 1, padding: screen === "pos" ? 0 : 24, overflowY: screen === "pos" ? "hidden" : "auto" }}>
+      <div style={{ flex: 1, padding: screen === "pos" ? 0 : 20, overflowY: screen === "pos" ? "hidden" : "auto", width: "100%" }}>
         {screen === "dashboard" && <Dashboard sales={sales} items={items} license={license} />}
         {screen === "pos" && <POS items={items} sales={sales} setSales={setSales} tables={tables} setTables={setTables} promos={promos} license={license} />}
         {screen === "settings" && <Settings company={company} setCompany={setCompany} tables={tables} setTables={setTables} license={license} onClearLicense={handleClearLicense} pins={pins} setPins={setPins} />}
