@@ -212,6 +212,31 @@ function ZATCAInvoiceHistory(){
 // LOCAL STORAGE HELPERS + CONSTANTS
 // ═══════════════════════════════════════════════════════════════════
 const LS={get:(k)=>{try{return JSON.parse(localStorage.getItem(k));}catch{return null;}},set:(k,v)=>localStorage.setItem(k,JSON.stringify(v)),del:(k)=>localStorage.removeItem(k)};
+
+// ═══════════════════════════════════════════════════════════════════
+// SUBSCRIPTION PLANS
+// ═══════════════════════════════════════════════════════════════════
+const SUBSCRIPTION_PLANS={
+  basic:{id:"basic",name:"Basic",nameAr:"الأساسية",price:150,color:"#6366f1",features:["1 device/location","2 users (Admin + Cashier)","Up to 100 items","Up to 10 tables","Basic reports (daily/weekly/monthly)","Standard receipt printing","ZATCA Phase 2 compliance","Email support (48h response)","Data retention: 3 months"],limits:{devices:1,users:2,items:100,tables:10}},
+  professional:{id:"professional",name:"Professional",nameAr:"الاحترافية",price:299,color:"#F0A500",features:["3 devices/locations","5 users","Up to 500 items","Up to 30 tables","Advanced reports & analytics","Custom receipt branding","Multi-location sync","Inventory tracking & alerts","Priority support (24h response)","Data retention: 12 months","Export data (Excel/PDF)"],limits:{devices:3,users:5,items:500,tables:30}},
+  premium:{id:"premium",name:"Premium",nameAr:"المميزة",price:399,color:"#1A8A4A",features:["5 devices/locations","10 users","Up to 2000 items","Up to 100 tables","Real-time analytics & insights","Advanced inventory management","Customer loyalty program","Employee performance tracking","WhatsApp/SMS receipts","Priority phone support (12h response)","Data retention: Lifetime","API access"],limits:{devices:5,users:10,items:2000,tables:100}}
+};
+
+// Activity log helper
+function logActivity(action,details,user="System"){
+  const logs=LS.get("restopos_activity_log")||[];
+  logs.unshift({id:Date.now(),timestamp:new Date().toISOString(),action,details,user,before:details.before,after:details.after});
+  LS.set("restopos_activity_log",logs.slice(0,500));
+}
+
+// Device fingerprint helper
+function getDeviceInfo(){
+  const ua=navigator.userAgent;
+  const brand=ua.includes("iPhone")||ua.includes("iPad")?"Apple":ua.includes("Samsung")?"Samsung":ua.includes("Huawei")?"Huawei":"Unknown";
+  const os=ua.includes("iPhone")||ua.includes("iPad")?"iOS":ua.includes("Android")?"Android":ua.includes("Windows")?"Windows":ua.includes("Mac")?"macOS":"Other";
+  const browser=ua.includes("Chrome")?"Chrome":ua.includes("Firefox")?"Firefox":ua.includes("Safari")?"Safari":ua.includes("Edge")?"Edge":"Other";
+  return{brand,os,browser,userAgent:ua.slice(0,120),screenW:screen.width,screenH:screen.height};
+}
 const C={bg:"#F8F9FB",card:"#FFFFFF",border:"#E8EBF0",primary:"#1A6B4A",primaryLight:"#E8F5EE",primaryDark:"#134D36",accent:"#F0A500",accentLight:"#FEF6E4",danger:"#D94040",dangerLight:"#FDE8E8",info:"#2176AE",infoLight:"#E6F0F8",text:"#1A1D23",textMid:"#5A6070",textLight:"#9AA0AD",success:"#1A8A4A",successLight:"#E6F7ED",warning:"#E07B00",warningLight:"#FFF3E0",zatca:"#6366f1",zatcaLight:"#eef2ff"};
 const SEED_ITEMS=[{id:1,name:"Broasted Chicken Half",nameAr:"دجاج مبروست نصف",category:"Broasted",price:28,cost:14,stock:50,active:true,barcode:""},{id:2,name:"Broasted Chicken Full",nameAr:"دجاج مبروست كامل",category:"Broasted",price:52,cost:26,stock:30,active:true,barcode:""},{id:3,name:"Crispy Wings 6pc",nameAr:"أجنحة مقرمشة",category:"Broasted",price:22,cost:10,stock:40,active:true,barcode:""},{id:4,name:"Mixed Grill Platter",nameAr:"مشاوي مشكلة",category:"Grills",price:65,cost:30,stock:20,active:true,barcode:""},{id:5,name:"Shish Tawook",nameAr:"شيش طاووق",category:"Grills",price:38,cost:18,stock:25,active:true,barcode:""},{id:6,name:"French Fries",nameAr:"بطاطس مقلية",category:"Sides",price:10,cost:3,stock:100,active:true,barcode:""},{id:7,name:"Coleslaw",nameAr:"كول سلو",category:"Sides",price:8,cost:2,stock:60,active:true,barcode:""},{id:8,name:"Pepsi Can",nameAr:"بيبسي",category:"Drinks",price:5,cost:2,stock:120,active:true,barcode:""},{id:9,name:"Fresh Lemon Juice",nameAr:"عصير ليمون",category:"Drinks",price:14,cost:4,stock:40,active:true,barcode:""},{id:10,name:"Umm Ali",nameAr:"أم علي",category:"Desserts",price:18,cost:6,stock:15,active:true,barcode:""},{id:11,name:"Family Box",nameAr:"وجبة عائلية",category:"Combos",price:85,cost:40,stock:20,active:true,barcode:""},{id:12,name:"Solo Meal",nameAr:"وجبة فردية",category:"Combos",price:32,cost:15,stock:30,active:true,barcode:""}];
 const SEED_CATEGORIES=["Broasted","Grills","Sides","Drinks","Desserts","Combos"];
@@ -332,8 +357,9 @@ function LicenseVerification({businessData,onSuccess,onBack}){
       const licDoc=snap.docs[0]; const licData=licDoc.data();
       if(licData.activatedBy&&licData.activatedBy!==businessData.crNumber){setError("This license key is already activated by another business.");setLoading(false);return;}
       const licensePayload={...businessData,licenseKey:cleanKey,activatedAt:new Date().toISOString()};
-      await updateDoc(doc(db,"licenses",licDoc.id),{activatedBy:businessData.crNumber,activatedAt:new Date().toISOString(),businessName:businessData.businessName,vatNumber:businessData.vatNumber,deviceId:navigator.userAgent.slice(0,100)});
-      await addDoc(collection(db,"pending_activations"),{...businessData,licenseKey:cleanKey,submittedAt:new Date().toISOString(),status:"approved"});
+      const devInfo=getDeviceInfo();
+      await updateDoc(doc(db,"licenses",licDoc.id),{activatedBy:businessData.crNumber,activatedAt:new Date().toISOString(),businessName:businessData.businessName,vatNumber:businessData.vatNumber,deviceId:navigator.userAgent.slice(0,100),deviceInfo:devInfo});
+      await addDoc(collection(db,"pending_activations"),{...businessData,licenseKey:cleanKey,submittedAt:new Date().toISOString(),status:"approved",subscriptionPlan:"basic",deviceId:navigator.userAgent.slice(0,100),deviceInfo:devInfo});
       LS.set("restopos_license_v2",licensePayload);
       localStorage.removeItem("restopos_pending_id");
       onSuccess(licensePayload);
@@ -388,6 +414,7 @@ function RoleLogin({license,onLogin}){
           <div style={{fontSize:13,color:"rgba(255,255,255,0.5)"}}>{license.businessName}</div>
           <button onClick={()=>window.dispatchEvent(new Event("ownerLogin"))} style={{marginTop:8,background:"none",border:"none",color:"rgba(255,255,255,0.2)",fontSize:11,cursor:"pointer",fontFamily:"inherit"}}>⚙ Owner</button>
         </div>
+        {LS.get("restopos_announcement")&&<div style={{background:"rgba(240,165,0,0.15)",border:"1px solid rgba(240,165,0,0.3)",borderRadius:10,padding:"10px 16px",marginBottom:16,fontSize:12,color:"#F0A500",fontWeight:600}}>📢 {LS.get("restopos_announcement")}</div>}
         <div style={{background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:20,padding:28}}>
           {!selectedRole?(
             <>
@@ -1378,37 +1405,473 @@ function UserAdmin({users,setUsers}){
 // OWNER DASHBOARD INLINE (for modal inside UserAdmin)
 // ═══════════════════════════════════════════════════════════════════
 function OwnerDashboardInline(){
-  const [tab,setTab]=useState("activations");const [activations,setActivations]=useState([]);const [licenses,setLicenses]=useState([]);const [loading,setLoading]=useState(true);const [clientIP,setClientIP]=useState("Fetching...");
+  const [tab,setTab]=useState("overview");
+  const [activations,setActivations]=useState([]);
+  const [licenses,setLicenses]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [selectedClient,setSelectedClient]=useState(null);
+  const [notifyMsg,setNotifyMsg]=useState("");
+  const [announcementText,setAnnouncementText]=useState(LS.get("restopos_announcement")||"");
+  const [searchQ,setSearchQ]=useState("");
+  const [activityLog,setActivityLog]=useState(()=>LS.get("restopos_activity_log")||[]);
+  const [actFilter,setActFilter]=useState({client:"",type:"",date:""});
+  const [planFilter,setPlanFilter]=useState("all");
+  const [showSendNotif,setShowSendNotif]=useState(false);
+  const [notifClient,setNotifClient]=useState(null);
+
   useEffect(()=>{
     async function load(){
-      try{const aSnap=await getDocs(collection(db,"pending_activations"));setActivations(aSnap.docs.map(d=>({id:d.id,...d.data()})));const lSnap=await getDocs(collection(db,"licenses"));setLicenses(lSnap.docs.map(d=>({id:d.id,...d.data()})));}catch(e){console.error(e);}
+      try{
+        const aSnap=await getDocs(collection(db,"pending_activations"));
+        const acts=aSnap.docs.map(d=>({id:d.id,...d.data()}));
+        setActivations(acts);
+        const lSnap=await getDocs(collection(db,"licenses"));
+        setLicenses(lSnap.docs.map(d=>({id:d.id,...d.data()})));
+      }catch(e){console.error(e);}
       setLoading(false);
     }
     load();
-    // Fetch current device IP
-    fetch("https://api.ipify.org?format=json").then(r=>r.json()).then(d=>setClientIP(d.ip)).catch(()=>setClientIP("Unavailable"));
   },[]);
-  async function toggleLicense(id,active){try{await updateDoc(doc(db,"licenses",id),{active:!active});setLicenses(prev=>prev.map(l=>l.id===id?{...l,active:!active}:l));}catch(e){alert("Error: "+e.message);}}
-  // Count unique device IDs across activations
-  const uniqueDevices=[...new Set(activations.filter(a=>a.deviceId).map(a=>a.deviceId))].length;
-  const statusColor={approved:C.success,pending:C.warning,suspended:C.danger};const statusBg={approved:C.successLight,pending:C.warningLight,suspended:C.dangerLight};
-  if(loading)return<div style={{textAlign:"center",padding:40,color:C.textMid}}>Loading client data…</div>;
+
+  async function toggleLicense(id,active){
+    try{
+      await updateDoc(doc(db,"licenses",id),{active:!active,updatedAt:new Date().toISOString()});
+      setLicenses(prev=>prev.map(l=>l.id===id?{...l,active:!active}:l));
+      logActivity("LICENSE_TOGGLE",{licenseId:id,before:{active},after:{active:!active}},"Owner");
+    }catch(e){alert("Error: "+e.message);}
+  }
+
+  async function upgradeSubscription(clientId,newPlan){
+    try{
+      await updateDoc(doc(db,"pending_activations",clientId),{subscriptionPlan:newPlan,planUpdatedAt:new Date().toISOString()});
+      setActivations(prev=>prev.map(a=>a.id===clientId?{...a,subscriptionPlan:newPlan}:a));
+      logActivity("PLAN_CHANGE",{clientId,after:{plan:newPlan}},"Owner");
+    }catch(e){alert("Error: "+e.message);}
+  }
+
+  async function suspendClient(clientId,suspend){
+    try{
+      await updateDoc(doc(db,"pending_activations",clientId),{status:suspend?"suspended":"approved",statusUpdatedAt:new Date().toISOString()});
+      setActivations(prev=>prev.map(a=>a.id===clientId?{...a,status:suspend?"suspended":"approved"}:a));
+      logActivity(suspend?"CLIENT_SUSPENDED":"CLIENT_REACTIVATED",{clientId},"Owner");
+    }catch(e){alert("Error: "+e.message);}
+  }
+
+  function saveAnnouncement(){
+    LS.set("restopos_announcement",announcementText);
+    alert("Announcement saved! Clients will see it on login.");
+  }
+
+  const statusColor={approved:C.success,pending:C.warning,suspended:C.danger,rejected:"#999"};
+  const statusBg={approved:C.successLight,pending:C.warningLight,suspended:C.dangerLight,rejected:"#f5f5f5"};
+  const pending=activations.filter(a=>a.status==="pending");
+  const active=activations.filter(a=>a.status==="approved");
+  const suspended=activations.filter(a=>a.status==="suspended");
+
+  // Revenue calc: sum up subscription plan prices
+  const totalMRR=activations.filter(a=>a.status==="approved").reduce((s,a)=>{
+    const plan=SUBSCRIPTION_PLANS[a.subscriptionPlan||"basic"];
+    return s+(plan?.price||150);
+  },0);
+
+  const filteredClients=activations.filter(a=>{
+    const q=searchQ.toLowerCase();
+    const matchQ=!q||a.businessName?.toLowerCase().includes(q)||a.crNumber?.includes(q)||a.licenseKey?.includes(q);
+    const matchPlan=planFilter==="all"||a.subscriptionPlan===planFilter;
+    return matchQ&&matchPlan;
+  });
+
+  const filteredLog=activityLog.filter(l=>{
+    const matchClient=!actFilter.client||l.details?.clientId?.includes(actFilter.client)||l.user?.toLowerCase().includes(actFilter.client.toLowerCase());
+    const matchType=!actFilter.type||l.action===actFilter.type;
+    const matchDate=!actFilter.date||l.timestamp.startsWith(actFilter.date);
+    return matchClient&&matchType&&matchDate;
+  });
+
+  const OTab=({id,label,count})=>(
+    <button onClick={()=>setTab(id)} style={{padding:"8px 14px",background:tab===id?"rgba(99,102,241,0.25)":"rgba(255,255,255,0.04)",border:`1px solid ${tab===id?"rgba(99,102,241,0.6)":"rgba(255,255,255,0.08)"}`,borderRadius:8,color:tab===id?"#a5b4fc":"rgba(255,255,255,0.55)",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:"inherit",display:"flex",alignItems:"center",gap:5}}>
+      {label}{count>0&&<span style={{background:tab===id?"#6366f1":"rgba(255,255,255,0.1)",color:tab===id?"#fff":"rgba(255,255,255,0.6)",borderRadius:20,padding:"1px 6px",fontSize:10,fontWeight:700}}>{count}</span>}
+    </button>
+  );
+
+  const PlanBadge=({plan})=>{
+    const p=SUBSCRIPTION_PLANS[plan||"basic"];
+    return <span style={{padding:"2px 8px",borderRadius:20,fontSize:10,fontWeight:700,background:p.color+"22",color:p.color,border:`1px solid ${p.color}44`}}>{p.name}</span>;
+  };
+  if(loading)return<div style={{textAlign:"center",padding:40,color:C.textMid}}>Loading client data from Firestore…</div>;
+
+  const DS={bg:"#060d1f",card:"rgba(255,255,255,0.04)",border:"rgba(255,255,255,0.08)",text:"#fff",sub:"rgba(255,255,255,0.5)",accent:"#F0A500"};
+
+  const DCard=({children,style={}})=>(
+    <div style={{background:DS.card,border:`1px solid ${DS.border}`,borderRadius:12,padding:16,...style}}>{children}</div>
+  );
+
+  const DTable=({headers,rows})=>(
+    <div style={{overflowX:"auto"}}>
+      <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+        <thead><tr style={{background:"rgba(255,255,255,0.03)"}}>
+          {headers.map(h=><th key={h} style={{padding:"9px 12px",textAlign:"left",color:DS.sub,fontWeight:700,fontSize:10,textTransform:"uppercase",borderBottom:`1px solid ${DS.border}`,whiteSpace:"nowrap"}}>{h}</th>)}
+        </tr></thead>
+        <tbody>{rows.length===0?<tr><td colSpan={headers.length} style={{textAlign:"center",padding:32,color:DS.sub}}>No data</td></tr>:rows.map((row,i)=>(
+          <tr key={i} style={{borderBottom:`1px solid ${DS.border}`}}>
+            {row.map((cell,j)=><td key={j} style={{padding:"9px 12px",color:DS.text,verticalAlign:"middle"}}>{cell}</td>)}
+          </tr>
+        ))}</tbody>
+      </table>
+    </div>
+  );
+
   return(
-    <div>
-      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:20}}>
-        {[[activations.length,"Total Clients","🏢",C.primary,C.primaryLight],[activations.filter(a=>a.status==="approved").length,"Active","✅",C.success,C.successLight],[licenses.filter(l=>!l.active).length,"Suspended","🚫",C.danger,C.dangerLight],[uniqueDevices,"Devices","📱",C.info,C.infoLight]].map(([v,l,ic,col,bg])=>(
-          <div key={l} style={{background:bg,border:`1px solid ${col}30`,borderRadius:10,padding:"12px 14px",display:"flex",alignItems:"center",gap:10}}><span style={{fontSize:20}}>{ic}</span><div><div style={{fontSize:18,fontWeight:900,color:col}}>{v}</div><div style={{fontSize:11,color:col,fontWeight:600}}>{l}</div></div></div>
+    <div style={{fontFamily:"'Plus Jakarta Sans',sans-serif",color:DS.text}}>
+      {/* KPI Row */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(150px,1fr))",gap:10,marginBottom:16}}>
+        {[
+          [activations.length,"Total Clients","🏢","#6366f1"],
+          [active.length,"Active","✅","#1A8A4A"],
+          [pending.length,"Pending Review","⏳","#F0A500"],
+          [suspended.length,"Suspended","🚫","#D94040"],
+          [`SAR ${totalMRR.toLocaleString()}`,`MRR (Est.)`, "💰","#F0A500"],
+          [licenses.filter(l=>l.active&&!l.activatedBy).length,"Keys Available","🔑","#6366f1"]
+        ].map(([v,l,ic,col])=>(
+          <div key={l} style={{background:col+"15",border:`1px solid ${col}30`,borderRadius:10,padding:"12px 14px"}}>
+            <div style={{fontSize:11,color:col,fontWeight:700,marginBottom:4}}>{ic} {l}</div>
+            <div style={{fontSize:18,fontWeight:900,color:col}}>{v}</div>
+          </div>
         ))}
       </div>
-      <div style={{marginBottom:16,padding:"10px 14px",background:C.infoLight,border:`1px solid ${C.info}30`,borderRadius:10,display:"flex",alignItems:"center",gap:10}}>
-        <span style={{fontSize:18}}>🌐</span>
-        <div><div style={{fontSize:11,fontWeight:700,color:C.textMid}}>YOUR CURRENT DEVICE IP</div><div style={{fontSize:14,fontWeight:800,fontFamily:"monospace",color:C.info}}>{clientIP}</div></div>
-        <div style={{marginLeft:"auto",fontSize:11,color:C.textMid}}>Device: {navigator.userAgent.slice(0,40)}...</div>
+
+      {/* Tabs */}
+      <div style={{display:"flex",gap:6,marginBottom:16,flexWrap:"wrap"}}>
+        <OTab id="overview" label="📊 Overview" count={0}/>
+        <OTab id="clients" label="👥 Clients" count={active.length}/>
+        <OTab id="pending" label="⏳ Pending" count={pending.length}/>
+        <OTab id="licenses" label="🔑 Licenses" count={0}/>
+        <OTab id="devices" label="📱 Devices" count={0}/>
+        <OTab id="activity" label="📋 Activity Log" count={0}/>
+        <OTab id="plans" label="💳 Plans" count={0}/>
+        <OTab id="admin" label="⚙️ Admin Tools" count={0}/>
       </div>
-      <div style={{display:"flex",gap:8,marginBottom:16}}>{[["activations","🏢 Clients"],["licenses","🔑 Licenses"],["devices","📱 Devices & IPs"]].map(([id,label])=><button key={id} onClick={()=>setTab(id)} style={{padding:"7px 14px",borderRadius:8,border:`1.5px solid ${tab===id?C.primary:C.border}`,background:tab===id?C.primaryLight:"#fff",color:tab===id?C.primary:C.textMid,fontFamily:"inherit",fontSize:12,fontWeight:600,cursor:"pointer"}}>{label}</button>)}</div>
-      {tab==="activations"&&<div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}><thead><tr style={{background:C.bg}}>{["Business","CR","VAT","License Key","City","Submitted","Status"].map(h=><th key={h} style={{padding:"8px 12px",textAlign:"left",color:C.textMid,fontWeight:700,fontSize:10,textTransform:"uppercase",borderBottom:`1px solid ${C.border}`,whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead><tbody>{activations.map((a,i)=><tr key={a.id} style={{borderBottom:`1px solid ${C.border}`,background:i%2===0?"#fff":"#FAFBFC"}}><td style={{padding:"8px 12px",fontWeight:600}}>{a.businessName}</td><td style={{padding:"8px 12px",fontFamily:"monospace",fontSize:11,color:C.textMid}}>{a.crNumber}</td><td style={{padding:"8px 12px",fontFamily:"monospace",fontSize:11,color:C.textMid}}>{a.vatNumber}</td><td style={{padding:"8px 12px",color:C.accent,fontFamily:"monospace",fontSize:11,fontWeight:700}}>{a.licenseKey}</td><td style={{padding:"8px 12px",color:C.textMid}}>{a.city||"—"}</td><td style={{padding:"8px 12px",color:C.textLight,fontSize:11}}>{a.submittedAt?fmtDate(a.submittedAt):"—"}</td><td style={{padding:"8px 12px"}}><span style={{padding:"3px 10px",borderRadius:20,fontSize:10,fontWeight:700,color:statusColor[a.status]||C.textMid,background:statusBg[a.status]||C.bg}}>{a.status}</span></td></tr>)}</tbody></table></div>}
-      {tab==="licenses"&&<div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}><thead><tr style={{background:C.bg}}>{["Key","Status","Activated By","Activated At","Toggle"].map(h=><th key={h} style={{padding:"8px 12px",textAlign:"left",color:C.textMid,fontWeight:700,fontSize:10,textTransform:"uppercase",borderBottom:`1px solid ${C.border}`,whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead><tbody>{licenses.map((l,i)=><tr key={l.id} style={{borderBottom:`1px solid ${C.border}`,background:i%2===0?"#fff":"#FAFBFC"}}><td style={{padding:"8px 12px",fontFamily:"monospace",color:C.accent,fontWeight:700}}>{l.key}</td><td style={{padding:"8px 12px"}}><span style={{padding:"3px 10px",borderRadius:20,fontSize:10,fontWeight:700,color:l.active?C.success:C.danger,background:l.active?C.successLight:C.dangerLight}}>{l.active?"Active":"Inactive"}</span></td><td style={{padding:"8px 12px",color:C.textMid}}>{l.activatedBy||"—"}</td><td style={{padding:"8px 12px",color:C.textLight,fontSize:11}}>{l.activatedAt?fmtDateTime(l.activatedAt):"—"}</td><td style={{padding:"8px 12px"}}><button onClick={()=>toggleLicense(l.id,l.active)} style={{padding:"5px 12px",background:l.active?C.dangerLight:C.successLight,border:`1px solid ${l.active?C.danger:C.success}`,borderRadius:6,color:l.active?C.danger:C.success,fontSize:11,cursor:"pointer",fontFamily:"inherit",fontWeight:700}}>{l.active?"Deactivate":"Activate"}</button></td></tr>)}</tbody></table></div>}
-      {tab==="devices"&&<div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}><thead><tr style={{background:C.bg}}>{["Business","License Key","Device ID (User Agent)","Activated At"].map(h=><th key={h} style={{padding:"8px 12px",textAlign:"left",color:C.textMid,fontWeight:700,fontSize:10,textTransform:"uppercase",borderBottom:`1px solid ${C.border}`,whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead><tbody>{activations.filter(a=>a.deviceId).map((a,i)=><tr key={a.id} style={{borderBottom:`1px solid ${C.border}`,background:i%2===0?"#fff":"#FAFBFC"}}><td style={{padding:"8px 12px",fontWeight:600}}>{a.businessName}</td><td style={{padding:"8px 12px",color:C.accent,fontFamily:"monospace",fontSize:11,fontWeight:700}}>{a.licenseKey}</td><td style={{padding:"8px 12px",color:C.textMid,fontSize:11,maxWidth:260,wordBreak:"break-all"}}>{a.deviceId}</td><td style={{padding:"8px 12px",color:C.textLight,fontSize:11}}>{a.activatedAt?fmtDateTime(a.activatedAt):"—"}</td></tr>)}</tbody></table></div>}
+
+      {/* OVERVIEW */}
+      {tab==="overview"&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+        <DCard>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>📊 Subscription Breakdown</div>
+          {Object.values(SUBSCRIPTION_PLANS).map(p=>{
+            const count=activations.filter(a=>a.status==="approved"&&(a.subscriptionPlan||"basic")===p.id).length;
+            return(
+              <div key={p.id} style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+                <span style={{width:10,height:10,borderRadius:"50%",background:p.color,flexShrink:0,display:"inline-block"}}/>
+                <span style={{flex:1,fontSize:12,color:DS.sub}}>{p.name}</span>
+                <span style={{fontSize:12,fontWeight:700,color:p.color}}>{count} clients</span>
+                <span style={{fontSize:11,color:DS.sub}}>SAR {(count*p.price).toLocaleString()}/mo</span>
+              </div>
+            );
+          })}
+          <div style={{marginTop:12,paddingTop:10,borderTop:`1px solid ${DS.border}`,display:"flex",justifyContent:"space-between",fontSize:13,fontWeight:800}}>
+            <span style={{color:DS.sub}}>Total MRR</span>
+            <span style={{color:"#F0A500"}}>SAR {totalMRR.toLocaleString()}</span>
+          </div>
+        </DCard>
+        <DCard>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>🕐 Recent Activity</div>
+          {activityLog.slice(0,8).map((l,i)=>(
+            <div key={i} style={{fontSize:11,padding:"6px 0",borderBottom:`1px solid ${DS.border}`,display:"flex",justifyContent:"space-between"}}>
+              <span style={{color:DS.sub}}>{l.action.replace(/_/g," ")}</span>
+              <span style={{color:"rgba(255,255,255,0.35)",fontSize:10}}>{l.timestamp?.slice(0,16).replace("T"," ")}</span>
+            </div>
+          ))}
+          {activityLog.length===0&&<div style={{fontSize:12,color:DS.sub,textAlign:"center",padding:"20px 0"}}>No activity yet</div>}
+        </DCard>
+        <DCard>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>📅 Client Status</div>
+          {[["Approved",active.length,"#1A8A4A"],["Pending",pending.length,"#F0A500"],["Suspended",suspended.length,"#D94040"]].map(([l,v,c])=>(
+            <div key={l} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:`1px solid ${DS.border}`}}>
+              <span style={{fontSize:12,color:DS.sub}}>{l}</span>
+              <span style={{fontSize:14,fontWeight:800,color:c}}>{v}</span>
+            </div>
+          ))}
+        </DCard>
+        <DCard>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>📢 System Announcement</div>
+          <textarea value={announcementText} onChange={e=>setAnnouncementText(e.target.value)}
+            placeholder="Enter a system-wide announcement for all clients..."
+            style={{width:"100%",height:80,padding:"8px 12px",background:"rgba(255,255,255,0.06)",border:`1px solid ${DS.border}`,borderRadius:8,color:"#fff",fontSize:12,fontFamily:"inherit",resize:"none"}}/>
+          <button onClick={saveAnnouncement} style={{marginTop:8,padding:"8px 16px",background:"rgba(240,165,0,0.2)",border:"1px solid rgba(240,165,0,0.4)",borderRadius:8,color:"#F0A500",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>💾 Save Announcement</button>
+        </DCard>
+      </div>}
+
+      {/* CLIENTS */}
+      {tab==="clients"&&<div>
+        <div style={{display:"flex",gap:8,marginBottom:12,flexWrap:"wrap"}}>
+          <input value={searchQ} onChange={e=>setSearchQ(e.target.value)} placeholder="🔍 Search by name, CR, license key…"
+            style={{flex:1,padding:"8px 12px",background:"rgba(255,255,255,0.06)",border:`1px solid ${DS.border}`,borderRadius:8,color:"#fff",fontSize:12,fontFamily:"inherit",minWidth:200}}/>
+          <select value={planFilter} onChange={e=>setPlanFilter(e.target.value)}
+            style={{padding:"8px 12px",background:"rgba(255,255,255,0.06)",border:`1px solid ${DS.border}`,borderRadius:8,color:"#fff",fontSize:12,fontFamily:"inherit"}}>
+            <option value="all">All Plans</option>
+            {Object.values(SUBSCRIPTION_PLANS).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+        </div>
+        <div style={{display:"grid",gap:10}}>
+          {filteredClients.map(a=>(
+            <div key={a.id} onClick={()=>setSelectedClient(selectedClient?.id===a.id?null:a)}
+              style={{background:selectedClient?.id===a.id?"rgba(99,102,241,0.12)":"rgba(255,255,255,0.03)",border:`1px solid ${selectedClient?.id===a.id?"rgba(99,102,241,0.5)":DS.border}`,borderRadius:10,padding:"12px 16px",cursor:"pointer"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
+                <div style={{display:"flex",alignItems:"center",gap:10}}>
+                  <div style={{width:36,height:36,background:"rgba(99,102,241,0.2)",borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>🏢</div>
+                  <div>
+                    <div style={{fontSize:13,fontWeight:700}}>{a.businessName}</div>
+                    <div style={{fontSize:11,color:DS.sub}}>CR: {a.crNumber} · VAT: {a.vatNumber}</div>
+                  </div>
+                </div>
+                <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                  <PlanBadge plan={a.subscriptionPlan}/>
+                  <span style={{padding:"3px 10px",borderRadius:20,fontSize:10,fontWeight:700,color:statusColor[a.status]||"#999",background:statusBg[a.status]||"rgba(255,255,255,0.05)"}}>{a.status}</span>
+                  <span style={{fontSize:11,color:"#F0A500",fontFamily:"monospace"}}>{a.licenseKey}</span>
+                </div>
+              </div>
+              {selectedClient?.id===a.id&&(
+                <div style={{marginTop:14,paddingTop:14,borderTop:`1px solid ${DS.border}`}}>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:12}}>
+                    {[["City",a.city||"—"],["Phone",a.phone||"—"],["Activated",a.activatedAt?fmtDate(a.activatedAt):"—"],["Location",a.location?`📍 ${a.location.lat?.toFixed(3)}, ${a.location.lng?.toFixed(3)}`:"Not shared"],["Device",a.deviceId?.slice(0,40)||"—"],["Submitted",a.submittedAt?fmtDateTime(a.submittedAt):"—"]].map(([k,v])=>(
+                      <div key={k} style={{background:"rgba(255,255,255,0.04)",borderRadius:8,padding:"8px 12px"}}>
+                        <div style={{fontSize:10,color:DS.sub,fontWeight:700,marginBottom:2}}>{k}</div>
+                        <div style={{fontSize:11,wordBreak:"break-all"}}>{v}</div>
+                      </div>
+                    ))}
+                  </div>
+                  {/* Plan upgrade */}
+                  <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:10}}>
+                    <span style={{fontSize:11,color:DS.sub,alignSelf:"center"}}>Change Plan:</span>
+                    {Object.values(SUBSCRIPTION_PLANS).map(p=>(
+                      <button key={p.id} onClick={e=>{e.stopPropagation();upgradeSubscription(a.id,p.id);}}
+                        style={{padding:"5px 12px",background:(a.subscriptionPlan||"basic")===p.id?p.color+"33":"rgba(255,255,255,0.05)",border:`1px solid ${p.color}44`,borderRadius:6,color:p.color,fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
+                        {p.name} · SAR {p.price}
+                      </button>
+                    ))}
+                  </div>
+                  {/* Actions */}
+                  <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                    {a.status==="approved"&&(
+                      <button onClick={e=>{e.stopPropagation();if(confirm("Suspend this client?"))suspendClient(a.id,true);}}
+                        style={{padding:"6px 14px",background:"rgba(217,64,64,0.15)",border:"1px solid rgba(217,64,64,0.35)",borderRadius:6,color:"#ff6b6b",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>🚫 Suspend</button>
+                    )}
+                    {a.status==="suspended"&&(
+                      <button onClick={e=>{e.stopPropagation();suspendClient(a.id,false);}}
+                        style={{padding:"6px 14px",background:"rgba(26,138,74,0.15)",border:"1px solid rgba(26,138,74,0.35)",borderRadius:6,color:"#4ade80",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>✅ Reactivate</button>
+                    )}
+                    {a.location&&(
+                      <a href={`https://maps.google.com/?q=${a.location.lat},${a.location.lng}`} target="_blank" rel="noreferrer"
+                        style={{padding:"6px 14px",background:"rgba(99,102,241,0.15)",border:"1px solid rgba(99,102,241,0.35)",borderRadius:6,color:"#a5b4fc",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit",textDecoration:"none"}} onClick={e=>e.stopPropagation()}>📍 View Map</a>
+                    )}
+                    <button onClick={e=>{e.stopPropagation();setNotifClient(a);setShowSendNotif(true);}}
+                      style={{padding:"6px 14px",background:"rgba(240,165,0,0.15)",border:"1px solid rgba(240,165,0,0.35)",borderRadius:6,color:"#F0A500",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>📢 Notify</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+          {filteredClients.length===0&&<div style={{textAlign:"center",padding:"40px 0",color:DS.sub}}>No clients found</div>}
+        </div>
+      </div>}
+
+      {/* PENDING */}
+      {tab==="pending"&&<div>
+        {pending.length===0?(
+          <div style={{textAlign:"center",padding:"60px 0",color:DS.sub}}>
+            <div style={{fontSize:48,marginBottom:12}}>✅</div>
+            <div>No pending reviews</div>
+          </div>
+        ):(
+          <div style={{display:"grid",gap:10}}>
+            {pending.map(a=>(
+              <DCard key={a.id} style={{padding:"14px 18px"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
+                  <div>
+                    <div style={{fontSize:14,fontWeight:700}}>{a.businessName}</div>
+                    <div style={{fontSize:11,color:DS.sub}}>CR: {a.crNumber} · VAT: {a.vatNumber} · 🔑 {a.licenseKey}</div>
+                    <div style={{fontSize:11,color:"rgba(255,255,255,0.35)",marginTop:3}}>Submitted: {a.submittedAt?fmtDateTime(a.submittedAt):"—"} · City: {a.city||"—"}</div>
+                  </div>
+                  <div style={{display:"flex",gap:8}}>
+                    <button onClick={async()=>{if(confirm("Approve this activation?"))await updateDoc(doc(db,"pending_activations",a.id),{status:"approved",reviewedAt:new Date().toISOString()}).then(()=>setActivations(prev=>prev.map(x=>x.id===a.id?{...x,status:"approved"}:x)));}}
+                      style={{padding:"7px 16px",background:"rgba(26,138,74,0.2)",border:"1px solid rgba(26,138,74,0.4)",borderRadius:8,color:"#4ade80",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>✓ Approve</button>
+                    <button onClick={async()=>{const reason=prompt("Rejection reason (optional):");await updateDoc(doc(db,"pending_activations",a.id),{status:"rejected",rejectReason:reason||"",reviewedAt:new Date().toISOString()}).then(()=>setActivations(prev=>prev.map(x=>x.id===a.id?{...x,status:"rejected"}:x)));}}
+                      style={{padding:"7px 16px",background:"rgba(217,64,64,0.2)",border:"1px solid rgba(217,64,64,0.4)",borderRadius:8,color:"#ff6b6b",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>✕ Reject</button>
+                  </div>
+                </div>
+              </DCard>
+            ))}
+          </div>
+        )}
+      </div>}
+
+      {/* LICENSES */}
+      {tab==="licenses"&&<DCard>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+          <div style={{fontSize:13,fontWeight:700}}>License Keys ({licenses.length})</div>
+          <div style={{display:"flex",gap:8,fontSize:11}}>
+            <span style={{color:"#1A8A4A"}}>✅ {licenses.filter(l=>l.active&&l.activatedBy).length} Used</span>
+            <span style={{color:"#6366f1"}}>🔑 {licenses.filter(l=>l.active&&!l.activatedBy).length} Available</span>
+            <span style={{color:"#D94040"}}>❌ {licenses.filter(l=>!l.active).length} Inactive</span>
+          </div>
+        </div>
+        <DTable
+          headers={["Key","Status","Plan","Business","Activated","Toggle"]}
+          rows={licenses.map(l=>{
+            const client=activations.find(a=>a.licenseKey===l.key);
+            return[
+              <span style={{fontFamily:"monospace",color:"#F0A500",fontWeight:700,fontSize:11}}>{l.key}</span>,
+              <span style={{padding:"2px 8px",borderRadius:20,fontSize:10,fontWeight:700,color:l.active?"#1A8A4A":"#D94040",background:l.active?"#1A8A4A22":"#D9404022"}}>{l.active?"Active":"Inactive"}</span>,
+              client?<PlanBadge plan={client.subscriptionPlan}/>:<span style={{color:DS.sub,fontSize:10}}>—</span>,
+              <span style={{fontSize:11}}>{l.activatedBy||l.businessName||"—"}</span>,
+              <span style={{fontSize:10,color:DS.sub}}>{l.activatedAt?fmtDate(l.activatedAt):"—"}</span>,
+              <button onClick={()=>toggleLicense(l.id,l.active)} style={{padding:"4px 10px",background:l.active?"rgba(217,64,64,0.15)":"rgba(26,138,74,0.15)",border:`1px solid ${l.active?"rgba(217,64,64,0.3)":"rgba(26,138,74,0.3)"}`,borderRadius:5,color:l.active?"#ff6b6b":"#4ade80",fontSize:10,cursor:"pointer",fontFamily:"inherit",fontWeight:700}}>{l.active?"Deactivate":"Activate"}</button>
+            ];
+          })}
+        />
+      </DCard>}
+
+      {/* DEVICES */}
+      {tab==="devices"&&<DCard>
+        <div style={{fontSize:13,fontWeight:700,marginBottom:14}}>📱 Device Registry</div>
+        <DTable
+          headers={["Business","License","Browser","OS","Activated","Location"]}
+          rows={activations.filter(a=>a.deviceId||a.deviceInfo).map(a=>{
+            const di=a.deviceInfo||{};
+            return[
+              <span style={{fontWeight:600}}>{a.businessName}</span>,
+              <span style={{fontFamily:"monospace",color:"#F0A500",fontSize:10}}>{a.licenseKey}</span>,
+              <span style={{fontSize:11}}>{di.browser||"—"}</span>,
+              <span style={{fontSize:11}}>{di.os||a.deviceId?.slice(0,30)||"—"}</span>,
+              <span style={{fontSize:10,color:DS.sub}}>{a.activatedAt?fmtDate(a.activatedAt):"—"}</span>,
+              a.location?(
+                <a href={`https://maps.google.com/?q=${a.location.lat},${a.location.lng}`} target="_blank" rel="noreferrer" style={{color:"#4ade80",fontSize:10,fontWeight:700}}>📍 Map</a>
+              ):<span style={{color:"rgba(255,255,255,0.2)",fontSize:10}}>—</span>
+            ];
+          })}
+        />
+        {activations.filter(a=>a.deviceId||a.deviceInfo).length===0&&<div style={{textAlign:"center",padding:20,color:DS.sub,fontSize:12}}>No device data yet. Devices are logged on first activation.</div>}
+      </DCard>}
+
+      {/* ACTIVITY LOG */}
+      {tab==="activity"&&<div>
+        <DCard style={{marginBottom:10}}>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+            <input value={actFilter.client} onChange={e=>setActFilter(f=>({...f,client:e.target.value}))} placeholder="Filter by client/user…"
+              style={{flex:1,padding:"7px 10px",background:"rgba(255,255,255,0.06)",border:`1px solid ${DS.border}`,borderRadius:6,color:"#fff",fontSize:11,fontFamily:"inherit",minWidth:140}}/>
+            <select value={actFilter.type} onChange={e=>setActFilter(f=>({...f,type:e.target.value}))}
+              style={{padding:"7px 10px",background:"rgba(255,255,255,0.06)",border:`1px solid ${DS.border}`,borderRadius:6,color:"#fff",fontSize:11,fontFamily:"inherit"}}>
+              <option value="">All Types</option>
+              {["LICENSE_TOGGLE","PLAN_CHANGE","CLIENT_SUSPENDED","CLIENT_REACTIVATED","ITEM_ADDED","ITEM_EDITED","SETTING_CHANGED"].map(t=><option key={t} value={t}>{t.replace(/_/g," ")}</option>)}
+            </select>
+            <input type="date" value={actFilter.date} onChange={e=>setActFilter(f=>({...f,date:e.target.value}))}
+              style={{padding:"7px 10px",background:"rgba(255,255,255,0.06)",border:`1px solid ${DS.border}`,borderRadius:6,color:"#fff",fontSize:11,fontFamily:"inherit"}}/>
+            <button onClick={()=>setActFilter({client:"",type:"",date:""})} style={{padding:"7px 12px",background:"rgba(255,255,255,0.05)",border:`1px solid ${DS.border}`,borderRadius:6,color:DS.sub,fontSize:11,cursor:"pointer",fontFamily:"inherit"}}>Clear</button>
+          </div>
+        </DCard>
+        <DCard>
+          {filteredLog.length===0?(
+            <div style={{textAlign:"center",padding:"30px 0",color:DS.sub}}>No activity matching filters</div>
+          ):(
+            filteredLog.slice(0,50).map((l,i)=>(
+              <div key={i} style={{display:"flex",gap:12,padding:"8px 0",borderBottom:`1px solid ${DS.border}`,alignItems:"flex-start"}}>
+                <span style={{fontSize:10,fontFamily:"monospace",color:"rgba(255,255,255,0.3)",flexShrink:0,paddingTop:1,minWidth:130}}>{l.timestamp?.slice(0,16).replace("T"," ")}</span>
+                <span style={{flex:1,fontSize:11}}><strong style={{color:"#a5b4fc"}}>{l.action.replace(/_/g," ")}</strong>{l.details?.after&&<span style={{color:DS.sub}}> → {JSON.stringify(l.details.after)}</span>}</span>
+                <span style={{fontSize:10,color:DS.sub,flexShrink:0}}>{l.user}</span>
+              </div>
+            ))
+          )}
+        </DCard>
+      </div>}
+
+      {/* PLANS */}
+      {tab==="plans"&&<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))",gap:16}}>
+        {Object.values(SUBSCRIPTION_PLANS).map(p=>(
+          <DCard key={p.id} style={{border:`1px solid ${p.color}44`}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:12}}>
+              <div>
+                <div style={{fontSize:16,fontWeight:800,color:p.color}}>{p.name}</div>
+                <div style={{fontSize:11,color:DS.sub}}>{p.nameAr}</div>
+              </div>
+              <div style={{textAlign:"right"}}>
+                <div style={{fontSize:22,fontWeight:900,color:p.color}}>SAR {p.price}</div>
+                <div style={{fontSize:10,color:DS.sub}}>/month</div>
+              </div>
+            </div>
+            <div style={{marginBottom:12}}>
+              {p.features.map((f,i)=><div key={i} style={{fontSize:11,color:"rgba(255,255,255,0.7)",padding:"3px 0",display:"flex",gap:6}}>
+                <span style={{color:p.color,flexShrink:0}}>✓</span>{f}
+              </div>)}
+            </div>
+            <div style={{borderTop:`1px solid ${DS.border}`,paddingTop:10,fontSize:11,color:DS.sub}}>
+              Active clients: <strong style={{color:p.color}}>{activations.filter(a=>a.status==="approved"&&(a.subscriptionPlan||"basic")===p.id).length}</strong>
+              &nbsp;· MRR: <strong style={{color:p.color}}>SAR {(activations.filter(a=>a.status==="approved"&&(a.subscriptionPlan||"basic")===p.id).length*p.price).toLocaleString()}</strong>
+            </div>
+          </DCard>
+        ))}
+      </div>}
+
+      {/* ADMIN TOOLS */}
+      {tab==="admin"&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+        <DCard>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>📢 System Announcement</div>
+          <textarea value={announcementText} onChange={e=>setAnnouncementText(e.target.value)}
+            placeholder="Broadcast a message to all clients..."
+            style={{width:"100%",height:100,padding:"10px 12px",background:"rgba(255,255,255,0.06)",border:`1px solid ${DS.border}`,borderRadius:8,color:"#fff",fontSize:12,fontFamily:"inherit",resize:"none"}}/>
+          <button onClick={saveAnnouncement} style={{marginTop:8,width:"100%",padding:"10px",background:"rgba(240,165,0,0.2)",border:"1px solid rgba(240,165,0,0.4)",borderRadius:8,color:"#F0A500",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>💾 Save & Broadcast</button>
+        </DCard>
+        <DCard>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>📊 System Stats</div>
+          {[
+            ["Total Licenses",licenses.length],
+            ["Active Clients",active.length],
+            ["Pending Reviews",pending.length],
+            ["Suspended",suspended.length],
+            ["Available Keys",licenses.filter(l=>l.active&&!l.activatedBy).length],
+            ["Activity Logs",activityLog.length],
+          ].map(([k,v])=>(
+            <div key={k} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:`1px solid ${DS.border}`,fontSize:12}}>
+              <span style={{color:DS.sub}}>{k}</span><strong>{v}</strong>
+            </div>
+          ))}
+        </DCard>
+        <DCard>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>📥 Bulk Export</div>
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            {[["Export All Clients CSV",()=>{const rows=activations.map(a=>[a.businessName,a.crNumber,a.vatNumber,a.licenseKey,a.city,a.status,a.subscriptionPlan||"basic",a.submittedAt].join(","));const csv="Business,CR,VAT,License,City,Status,Plan,Date\n"+rows.join("\n");const blob=new Blob([csv],{type:"text/csv"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="restopos-clients.csv";a.click();},"📋"],
+              ["Export License Keys CSV",()=>{const rows=licenses.map(l=>[l.key,l.active?"Active":"Inactive",l.activatedBy||"",l.activatedAt||""].join(","));const csv="Key,Status,ActivatedBy,Date\n"+rows.join("\n");const blob=new Blob([csv],{type:"text/csv"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="restopos-licenses.csv";a.click();},"🔑"],
+              ["Export Activity Log",()=>{const rows=activityLog.map(l=>[l.timestamp,l.action,l.user,JSON.stringify(l.details)].join(","));const csv="Timestamp,Action,User,Details\n"+rows.join("\n");const blob=new Blob([csv],{type:"text/csv"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="restopos-activity.csv";a.click();},"📊"]
+            ].map(([label,fn,ic])=>(
+              <button key={label} onClick={fn} style={{padding:"10px 14px",background:"rgba(255,255,255,0.05)",border:`1px solid ${DS.border}`,borderRadius:8,color:"#fff",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:"inherit",textAlign:"left"}}>
+                {ic} {label}
+              </button>
+            ))}
+          </div>
+        </DCard>
+        <DCard>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>⚡ Quick Actions</div>
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            <button onClick={()=>{if(confirm("Clear local activity log?"))LS.del("restopos_activity_log");setActivityLog([]);}} style={{padding:"10px 14px",background:"rgba(217,64,64,0.1)",border:"1px solid rgba(217,64,64,0.3)",borderRadius:8,color:"#ff6b6b",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:"inherit",textAlign:"left"}}>🗑 Clear Activity Log</button>
+            <button onClick={()=>{logActivity("MANUAL_TEST",{msg:"Owner triggered test log"},"Owner");setActivityLog(LS.get("restopos_activity_log")||[]);alert("Test log entry added!");}} style={{padding:"10px 14px",background:"rgba(99,102,241,0.1)",border:"1px solid rgba(99,102,241,0.3)",borderRadius:8,color:"#a5b4fc",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:"inherit",textAlign:"left"}}>🧪 Add Test Log Entry</button>
+          </div>
+        </DCard>
+      </div>}
+
+      {/* Send Notification Modal */}
+      {showSendNotif&&notifClient&&(
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+          <div style={{background:"#1a2035",border:"1px solid rgba(255,255,255,0.12)",borderRadius:16,padding:24,width:420,maxWidth:"95vw"}}>
+            <div style={{fontSize:14,fontWeight:700,marginBottom:12}}>📢 Notify: {notifClient.businessName}</div>
+            <textarea value={notifyMsg} onChange={e=>setNotifyMsg(e.target.value)} placeholder="Type your message..." rows={4}
+              style={{width:"100%",padding:"10px",background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:8,color:"#fff",fontSize:12,fontFamily:"inherit",resize:"none"}}/>
+            <div style={{display:"flex",gap:10,marginTop:14}}>
+              <button onClick={()=>{logActivity("NOTIFICATION_SENT",{clientId:notifClient.id,msg:notifyMsg},"Owner");setNotifyMsg("");setShowSendNotif(false);alert("Notification logged for "+notifClient.businessName);}}
+                style={{flex:1,padding:"10px",background:"rgba(240,165,0,0.2)",border:"1px solid rgba(240,165,0,0.4)",borderRadius:8,color:"#F0A500",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>Send</button>
+              <button onClick={()=>{setShowSendNotif(false);setNotifyMsg("");}}
+                style={{flex:1,padding:"10px",background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:8,color:DS.sub,fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1472,56 +1935,26 @@ function OwnerLogin({onLogin}){
 }
 
 function OwnerDashboard({onLogout}){
-  const [tab,setTab]=useState("overview");const [licenses,setLicenses]=useState([]);const [activations,setActivations]=useState([]);const [loading,setLoading]=useState(true);const [selected,setSelected]=useState(null);const [updating,setUpdating]=useState(false);const [rejectReason,setRejectReason]=useState("");const [showRejectBox,setShowRejectBox]=useState(null);
-  useEffect(()=>{loadAll();},[]);
-  async function loadAll(){setLoading(true);try{const[licSnap,actSnap]=await Promise.all([getDocs(collection(db,"licenses")),getDocs(collection(db,"pending_activations"))]);setLicenses(licSnap.docs.map(d=>({id:d.id,...d.data()})));const acts=actSnap.docs.map(d=>({id:d.id,...d.data()}));acts.sort((a,b)=>new Date(b.submittedAt||0)-new Date(a.submittedAt||0));setActivations(acts);}catch(e){alert("Load failed: "+e.message);}setLoading(false);}
-  async function updateStatus(id,status,reason=""){setUpdating(true);try{await updateDoc(doc(db,"pending_activations",id),{status,reviewedAt:new Date().toISOString(),...(reason?{rejectReason:reason}:{})});setActivations(prev=>prev.map(a=>a.id===id?{...a,status,rejectReason:reason}:a));if(selected?.id===id)setSelected(s=>({...s,status}));}catch(e){alert("Update failed: "+e.message);}setUpdating(false);setShowRejectBox(null);setRejectReason("");}
-  async function toggleLicense(id,currentActive){try{await updateDoc(doc(db,"licenses",id),{active:!currentActive});setLicenses(prev=>prev.map(l=>l.id===id?{...l,active:!currentActive}:l));}catch(e){alert("Failed: "+e.message);}}
-  const pending=activations.filter(a=>a.status==="pending");
-  const statusColor={pending:"#F0A500",approved:"#1A8A4A",rejected:"#D94040",active:"#1A8A4A"};
-  const statusBg={pending:"#FEF6E4",approved:"#E6F7ED",rejected:"#FDE8E8",active:"#E6F7ED"};
-  return(<div style={{fontFamily:"'Plus Jakarta Sans',sans-serif",background:"#060d1f",minHeight:"100vh",color:"#fff"}}>
-    <style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');*{box-sizing:border-box;margin:0;padding:0}`}</style>
-    <div style={{background:"#0a1628",borderBottom:"1px solid rgba(255,255,255,0.08)",padding:"0 24px",height:56,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-      <div style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:32,height:32,background:"linear-gradient(135deg,#F0A500,#e09000)",borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16}}>👑</div><div style={{fontSize:15,fontWeight:800}}>Owner Dashboard</div>{loading&&<span style={{fontSize:12,color:"rgba(255,255,255,0.4)",marginLeft:8}}>Loading…</span>}</div>
-      <div style={{display:"flex",gap:8}}><button onClick={loadAll} style={{padding:"6px 14px",background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:8,color:"rgba(255,255,255,0.7)",fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>🔄 Refresh</button><button onClick={onLogout} style={{padding:"6px 14px",background:"rgba(217,64,64,0.15)",border:"1px solid rgba(217,64,64,0.3)",borderRadius:8,color:"#ff6b6b",fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>Logout</button></div>
-    </div>
-    <div style={{padding:24}}>
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(180px,1fr))",gap:14,marginBottom:24}}>
-        {[["Total Licenses",licenses.length,"#6366f1"],["Active",licenses.filter(l=>l.active).length,"#1A8A4A"],["Clients",activations.length,"#F0A500"],["Pending",pending.length,"#D94040"]].map(([l,v,c])=>(<div key={l} style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:12,padding:"16px 20px"}}><div style={{fontSize:28,fontWeight:900,color:c}}>{v}</div><div style={{fontSize:12,color:"rgba(255,255,255,0.5)",marginTop:2}}>{l}</div></div>))}
+  const [refreshKey,setRefreshKey]=useState(0);
+  return(
+    <div style={{fontFamily:"'Plus Jakarta Sans',sans-serif",background:"#060d1f",minHeight:"100vh",color:"#fff"}}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');*{box-sizing:border-box;margin:0;padding:0}::-webkit-scrollbar{width:5px}::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.15);border-radius:3px}`}</style>
+      <div style={{background:"#0a1628",borderBottom:"1px solid rgba(255,255,255,0.08)",padding:"0 24px",height:56,display:"flex",alignItems:"center",justifyContent:"space-between",position:"sticky",top:0,zIndex:100}}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <div style={{width:32,height:32,background:"linear-gradient(135deg,#F0A500,#e09000)",borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16}}>👑</div>
+          <div style={{fontSize:15,fontWeight:800}}>Owner Dashboard</div>
+          <span style={{fontSize:10,background:"rgba(240,165,0,0.15)",color:"#F0A500",padding:"2px 8px",borderRadius:20,fontWeight:700,border:"1px solid rgba(240,165,0,0.3)"}}>RestoPOS v12</span>
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={()=>setRefreshKey(k=>k+1)} style={{padding:"6px 14px",background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:8,color:"rgba(255,255,255,0.7)",fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>🔄 Refresh</button>
+          <button onClick={onLogout} style={{padding:"6px 14px",background:"rgba(217,64,64,0.15)",border:"1px solid rgba(217,64,64,0.3)",borderRadius:8,color:"#ff6b6b",fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>← Exit</button>
+        </div>
       </div>
-      <div style={{display:"flex",gap:6,marginBottom:20}}>{[["overview","📊 Overview"],["pending","⏳ Pending"],["clients","👥 All Clients"],["licenses","🔑 Licenses"]].map(([id,label])=>(<button key={id} onClick={()=>setTab(id)} style={{padding:"8px 16px",background:tab===id?"rgba(99,102,241,0.2)":"rgba(255,255,255,0.04)",border:`1px solid ${tab===id?"rgba(99,102,241,0.5)":"rgba(255,255,255,0.08)"}`,borderRadius:8,color:tab===id?"#a5b4fc":"rgba(255,255,255,0.5)",fontSize:13,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}>{label}{id==="pending"&&pending.length>0&&<span style={{background:"#D94040",color:"#fff",borderRadius:20,padding:"1px 7px",fontSize:11,marginLeft:4}}>{pending.length}</span>}</button>))}</div>
-      {tab==="overview"&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
-        <div style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:14,padding:20}}><div style={{fontSize:14,fontWeight:700,marginBottom:14}}>Recent Activations</div>{activations.slice(0,8).map((a,i)=>(<div key={a.id} style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:"1px solid rgba(255,255,255,0.04)",fontSize:13}}><span style={{color:"rgba(255,255,255,0.8)"}}>{a.businessName}</span><span style={{color:statusColor[a.status]||"rgba(255,255,255,0.4)",fontSize:11,fontWeight:700}}>{a.status}</span></div>))}</div>
-        <div style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:14,padding:20}}><div style={{fontSize:14,fontWeight:700,marginBottom:14}}>License Key Status</div><div style={{display:"flex",gap:16}}><div style={{textAlign:"center"}}><div style={{fontSize:32,fontWeight:900,color:"#1A8A4A"}}>{licenses.filter(l=>l.active&&l.activatedBy).length}</div><div style={{fontSize:11,color:"rgba(255,255,255,0.4)"}}>Used</div></div><div style={{textAlign:"center"}}><div style={{fontSize:32,fontWeight:900,color:"#6366f1"}}>{licenses.filter(l=>l.active&&!l.activatedBy).length}</div><div style={{fontSize:11,color:"rgba(255,255,255,0.4)"}}>Available</div></div><div style={{textAlign:"center"}}><div style={{fontSize:32,fontWeight:900,color:"#D94040"}}>{licenses.filter(l=>!l.active).length}</div><div style={{fontSize:11,color:"rgba(255,255,255,0.4)"}}>Inactive</div></div></div></div>
-      </div>}
-      {tab==="pending"&&<div style={{display:"grid",gridTemplateColumns:selected?"1fr 1fr":"1fr",gap:16}}>
-        <div>{pending.length===0?<div style={{textAlign:"center",padding:"60px 0",color:"rgba(255,255,255,0.3)"}}><div style={{fontSize:48,marginBottom:12}}>✅</div><div>No pending reviews</div></div>:pending.map(a=>(<div key={a.id} onClick={()=>setSelected(a)} style={{background:selected?.id===a.id?"rgba(99,102,241,0.1)":"rgba(255,255,255,0.04)",border:`1px solid ${selected?.id===a.id?"rgba(99,102,241,0.4)":"rgba(255,255,255,0.08)"}`,borderRadius:12,padding:16,marginBottom:10,cursor:"pointer"}}><div style={{fontSize:15,fontWeight:700}}>{a.businessName}</div><div style={{fontSize:12,color:"rgba(255,255,255,0.5)",marginTop:4}}>CR: {a.crNumber} · VAT: {a.vatNumber}</div><div style={{fontSize:11,color:"#F0A500",marginTop:4}}>🔑 {a.licenseKey}</div></div>))}</div>
-        {selected&&<div style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:14,padding:20,height:"fit-content"}}>
-          <div style={{fontSize:16,fontWeight:800,marginBottom:16}}>{selected.businessName}</div>
-          {[["CR Number",selected.crNumber],["VAT Number",selected.vatNumber],["License Key",selected.licenseKey],["City",selected.city||"—"],["Phone",selected.phone||"—"],["Submitted",selected.submittedAt?fmtDateTime(selected.submittedAt):"—"],["Status",selected.status]].map(([l,v])=>(<div key={l} style={{display:"flex",gap:12,padding:"8px 0",borderBottom:"1px solid rgba(255,255,255,0.06)",fontSize:13}}><span style={{color:"rgba(255,255,255,0.4)",width:110,flexShrink:0}}>{l}</span><span style={{color:"#fff",fontFamily:["CR Number","VAT Number","License Key"].includes(l)?"monospace":"inherit"}}>{v}</span></div>))}
-          {selected.status==="pending"&&<div style={{marginTop:16,display:"flex",flexDirection:"column",gap:8}}>
-            <button onClick={()=>updateStatus(selected.id,"approved")} disabled={updating} style={{padding:"10px 20px",background:"rgba(26,138,74,0.2)",border:"1px solid rgba(26,138,74,0.4)",borderRadius:8,color:"#4ade80",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>✓ Approve</button>
-            {showRejectBox===selected.id?<div><input value={rejectReason} onChange={e=>setRejectReason(e.target.value)} placeholder="Rejection reason…" style={{width:"100%",padding:"8px 12px",background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:8,color:"#fff",fontSize:13,fontFamily:"inherit",marginBottom:6}}/><button onClick={()=>updateStatus(selected.id,"rejected",rejectReason)} disabled={updating} style={{width:"100%",padding:"8px",background:"rgba(217,64,64,0.2)",border:"1px solid rgba(217,64,64,0.4)",borderRadius:8,color:"#ff6b6b",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>Confirm Reject</button></div>:<button onClick={()=>setShowRejectBox(selected.id)} style={{padding:"10px 20px",background:"rgba(217,64,64,0.1)",border:"1px solid rgba(217,64,64,0.3)",borderRadius:8,color:"#ff6b6b",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>✕ Reject</button>}
-          </div>}
-        </div>}
-      </div>}
-      {tab==="clients"&&<div style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:14,overflow:"hidden"}}>
-        <div style={{padding:"16px 20px",borderBottom:"1px solid rgba(255,255,255,0.08)"}}><div style={{fontSize:14,fontWeight:700}}>All Clients ({activations.length})</div></div>
-        <div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-          <thead><tr style={{background:"rgba(255,255,255,0.04)"}}>{["Business","CR","VAT","License Key","City","Submitted","Status","Location"].map(h=><th key={h} style={{padding:"10px 14px",textAlign:"left",color:"rgba(255,255,255,0.4)",fontWeight:700,fontSize:10,textTransform:"uppercase",borderBottom:"1px solid rgba(255,255,255,0.06)",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
-          <tbody>{activations.map((a,i)=>(<tr key={a.id} style={{borderBottom:"1px solid rgba(255,255,255,0.04)",background:i%2===0?"transparent":"rgba(255,255,255,0.02)"}}><td style={{padding:"10px 14px",color:"#fff",fontWeight:600}}>{a.businessName}</td><td style={{padding:"10px 14px",color:"rgba(255,255,255,0.6)",fontFamily:"monospace",fontSize:11}}>{a.crNumber}</td><td style={{padding:"10px 14px",color:"rgba(255,255,255,0.6)",fontFamily:"monospace",fontSize:11}}>{a.vatNumber}</td><td style={{padding:"10px 14px",color:"#F0A500",fontFamily:"monospace",fontSize:11}}>{a.licenseKey}</td><td style={{padding:"10px 14px",color:"rgba(255,255,255,0.6)"}}>{a.city||"—"}</td><td style={{padding:"10px 14px"}}>{a.location?<a href={`https://maps.google.com/?q=${a.location.lat},${a.location.lng}`} target="_blank" rel="noreferrer" style={{color:"#4ade80",fontSize:11,fontWeight:700,textDecoration:"none"}}>📍 View Map</a>:<span style={{color:"rgba(255,255,255,0.3)",fontSize:11}}>Not shared</span>}</td><td style={{padding:"10px 14px",color:"rgba(255,255,255,0.5)",fontSize:11}}>{a.submittedAt?fmtDate(a.submittedAt):"—"}</td><td style={{padding:"10px 14px"}}><span style={{padding:"3px 10px",borderRadius:20,fontSize:10,fontWeight:700,color:statusColor[a.status]||"rgba(255,255,255,0.5)",background:statusBg[a.status]||"rgba(255,255,255,0.05)"}}>{a.status}</span></td><td style={{padding:"10px 14px"}}>{a.location?<a href={`https://maps.google.com/?q=${a.location.lat},${a.location.lng}`} target="_blank" rel="noreferrer" style={{color:"#4ade80",fontSize:11,fontWeight:700,textDecoration:"none"}}>📍 Map</a>:<span style={{color:"rgba(255,255,255,0.25)",fontSize:11}}>—</span>}</td></tr>))}</tbody>
-        </table></div>
-      </div>}
-      {tab==="licenses"&&<div style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:14,overflow:"hidden"}}>
-        <div style={{padding:"16px 20px",borderBottom:"1px solid rgba(255,255,255,0.08)"}}><div style={{fontSize:14,fontWeight:700}}>License Keys ({licenses.length})</div></div>
-        <div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-          <thead><tr style={{background:"rgba(255,255,255,0.04)"}}>{["Key","Status","Activated By","Activated At","Toggle"].map(h=><th key={h} style={{padding:"10px 14px",textAlign:"left",color:"rgba(255,255,255,0.4)",fontWeight:700,fontSize:10,textTransform:"uppercase",borderBottom:"1px solid rgba(255,255,255,0.06)",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
-          <tbody>{licenses.map((l,i)=>(<tr key={l.id} style={{borderBottom:"1px solid rgba(255,255,255,0.04)",background:i%2===0?"transparent":"rgba(255,255,255,0.02)"}}><td style={{padding:"10px 14px",fontFamily:"monospace",color:"#F0A500",fontWeight:700}}>{l.key}</td><td style={{padding:"10px 14px"}}><span style={{padding:"3px 10px",borderRadius:20,fontSize:10,fontWeight:700,color:l.active?"#1A8A4A":"#D94040",background:l.active?"#E6F7ED":"#FDE8E8"}}>{l.active?"Active":"Inactive"}</span></td><td style={{padding:"10px 14px",color:"rgba(255,255,255,0.7)"}}>{l.activatedBy||"—"}</td><td style={{padding:"10px 14px",color:"rgba(255,255,255,0.5)",fontSize:11}}>{l.activatedAt?fmtDateTime(l.activatedAt):"—"}</td><td style={{padding:"10px 14px"}}><button onClick={()=>toggleLicense(l.id,l.active)} style={{padding:"5px 12px",background:l.active?"rgba(217,64,64,0.15)":"rgba(26,138,74,0.15)",border:`1px solid ${l.active?"rgba(217,64,64,0.3)":"rgba(26,138,74,0.3)"}`,borderRadius:6,color:l.active?"#ff6b6b":"#4ade80",fontSize:11,cursor:"pointer",fontFamily:"inherit",fontWeight:700}}>{l.active?"Deactivate":"Activate"}</button></td></tr>))}</tbody>
-        </table></div>
-      </div>}
+      <div style={{padding:24,overflowY:"auto"}}>
+        <OwnerDashboardInline key={refreshKey}/>
+      </div>
     </div>
-  </div>);
+  );
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1539,12 +1972,12 @@ export default function App(){
   const [pins,_setPins]=useState(()=>LS.get("restopos_pins")||DEFAULT_PINS);
   const [invoiceFormat,_setInvoiceFormat]=useState(()=>LS.get("restopos_invoice_format")||{font:"courier",fontSize:12,shopNameOverride:"",footer:"Thank you for your visit!",footerAr:"شكراً لزيارتكم",website:"",social:"",tagline:""});
   function setSales(v){_setSales(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_sales",n.slice(-500));return n;});}
-  function setItems(v){_setItems(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_items",n);return n;});}
+  function setItems(v){_setItems(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_items",n);if(n.length!==p.length)logActivity(n.length>p.length?"ITEM_ADDED":"ITEM_DELETED",{after:{itemCount:n.length}},currentUser?.role||"System");return n;});}
   function setTables(v){_setTables(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_tables",n);return n;});}
-  function setUsers(v){_setUsers(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_users",n);return n;});}
+  function setUsers(v){_setUsers(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_users",n);if(n.length!==p.length)logActivity(n.length>p.length?"USER_ADDED":"USER_DELETED",{after:{userCount:n.length}},currentUser?.role||"System");return n;});}
   function setPromos(v){_setPromos(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_promos",n);return n;});}
-  function setCompany(v){_setCompany(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_company",n);return n;});}
-  function setPins(v){_setPins(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_pins",n);return n;});}
+  function setCompany(v){_setCompany(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_company",n);logActivity("SETTINGS_CHANGED",{after:{company:"updated"}},currentUser?.role||"System");return n;});}
+  function setPins(v){_setPins(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_pins",n);logActivity("PINS_CHANGED",{after:{pins:"updated"}},currentUser?.role||"System");return n;});}
   function setInvoiceFormat(v){_setInvoiceFormat(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_invoice_format",n);return n;});}
   const [uiScale,setUiScale]=useState(()=>parseInt(LS.get("restopos_ui_scale")||"100"));
   function handleScaleChange(v){const s=Math.max(70,Math.min(130,parseInt(v)||100));setUiScale(s);LS.set("restopos_ui_scale",String(s));}
@@ -1564,7 +1997,7 @@ export default function App(){
       <div style={{display:"flex",alignItems:"stretch",flexShrink:0,zIndex:100,boxShadow:"0 2px 12px rgba(0,0,0,0.18)",height:50,width:"100%"}}>
         <div style={{background:"linear-gradient(135deg,#1A3D2B 0%,#1F4D36 100%)",display:"flex",alignItems:"center",gap:8,padding:"0 14px",flexShrink:0,borderRight:"1px solid rgba(255,255,255,0.1)"}}>
           <div style={{width:28,height:28,background:"linear-gradient(135deg,#2ECC71,#F0A500)",borderRadius:7,display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontSize:14,fontWeight:900,flexShrink:0}}>R</div>
-          <div><div style={{fontSize:13,fontWeight:800,color:"#fff",lineHeight:1,whiteSpace:"nowrap"}}>RestoPOS</div><div style={{fontSize:8,color:"rgba(255,255,255,0.5)",letterSpacing:"0.1em",whiteSpace:"nowrap"}}>ZATCA PHASE 2 · v11.0</div></div>
+          <div><div style={{fontSize:13,fontWeight:800,color:"#fff",lineHeight:1,whiteSpace:"nowrap"}}>RestoPOS</div><div style={{fontSize:8,color:"rgba(255,255,255,0.5)",letterSpacing:"0.1em",whiteSpace:"nowrap"}}>ZATCA PHASE 2 · v12.0</div></div>
         </div>
         <div style={{background:"linear-gradient(90deg,#E8F4EE 0%,#F0F9F4 100%)",flex:1,display:"flex",alignItems:"center",padding:"0 6px",overflowX:"auto",borderRight:"1px solid #C8E6D4",minWidth:0}}>
           {NAV.map(([id,icon,label])=>(
