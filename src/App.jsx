@@ -498,24 +498,70 @@ function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose}){
 function ReceiptModal({order,license,zatcaInvoice,onClose}){
   const qrData=zatcaInvoice?zatcaInvoice.qr_string:generatePhase1QR({sellerName:license.businessName,vatNumber:license.vatNumber,timestamp:new Date().toISOString(),total:order.total,vatAmount:order.vat});
   const printFrameRef=useRef();
-  function handleThermalPrint(){
-    let qrImgSrc="";
-    try{const tempDiv=document.createElement("div");tempDiv.style.cssText="position:absolute;left:-9999px;top:-9999px;width:120px;height:120px;";document.body.appendChild(tempDiv);new window.QRCode(tempDiv,{text:qrData,width:110,height:110,colorDark:"#000000",colorLight:"#ffffff",correctLevel:window.QRCode?.CorrectLevel?.M});const canvas=tempDiv.querySelector("canvas");if(canvas)qrImgSrc=canvas.toDataURL("image/png");document.body.removeChild(tempDiv);}catch(e){console.warn("QR gen error:",e);}
+  const qrReady=useQRScript();
+
+  function buildReceiptHTML(qrImgSrc){
     const zatcaMeta=zatcaInvoice?`<div class="row"><span>ZATCA Invoice</span><span>${zatcaInvoice.invoice_number}</span></div><div class="row"><span>ICV</span><span>${zatcaInvoice.icv}</span></div><div style="font-size:8px;text-align:center;color:#666;word-break:break-all;margin-top:2px">Hash: ${zatcaInvoice.invoice_hash?.slice(0,24)}...</div>`:"";
-    const html=`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Receipt ${order.id}</title><style>@page{size:80mm auto;margin:0}*{box-sizing:border-box;margin:0;padding:0}body{font-family:'Courier New',monospace;font-size:12px;color:#000;background:#fff;width:80mm;padding:4mm}.center{text-align:center}.bold{font-weight:bold}.big{font-size:16px;font-weight:bold}.hr{border:none;border-top:1px dashed #000;margin:6px 0}.row{display:flex;justify-content:space-between;margin:2px 0}.row-total{display:flex;justify-content:space-between;margin:4px 0;font-size:15px;font-weight:900;border-top:2px solid #000;padding-top:4px}.item-name{flex:1}.item-amt{white-space:nowrap;margin-left:4px}.qr-wrap{text-align:center;margin:8px 0}.qr-wrap img{width:110px;height:110px;display:block;margin:0 auto}.zatca-label{font-size:9px;font-weight:bold;letter-spacing:0.1em}.footer{font-size:11px;text-align:center;margin-top:8px;font-weight:bold}@media print{body{width:80mm}}</style></head><body>
+    // Group items by category
+    const cats=[...new Set(order.items.map(i=>i.category||"Items"))];
+    const itemsHTML=cats.map(cat=>{
+      const catItems=order.items.filter(i=>(i.category||"Items")===cat);
+      return `<div style="font-size:9px;font-weight:bold;letter-spacing:0.08em;color:#555;margin-top:6px;margin-bottom:2px;text-transform:uppercase;">${cat}</div>`+
+        catItems.map(it=>`<div class="row"><span class="item-name">${it.name}${it.nameAr?`<br/><span style="font-family:'Noto Naskh Arabic','Arial',sans-serif;direction:rtl;display:block;text-align:right;font-size:11px;color:#333;">${it.nameAr}</span>`:""}<br/><small style="color:#666;">${it.qty} × SAR ${it.price.toFixed(2)}</small></span><span class="item-amt">SAR ${(it.qty*it.price).toFixed(2)}</span></div>`).join("");
+    }).join("");
+    return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Receipt ${order.id}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Naskh+Arabic:wght@400;700&display=swap" rel="stylesheet">
+<style>@page{size:80mm auto;margin:0}*{box-sizing:border-box;margin:0;padding:0}body{font-family:'Courier New',monospace;font-size:12px;color:#000;background:#fff;width:80mm;padding:4mm}.center{text-align:center}.bold{font-weight:bold}.big{font-size:16px;font-weight:bold}.hr{border:none;border-top:1px dashed #000;margin:6px 0}.row{display:flex;justify-content:space-between;margin:2px 0;align-items:flex-start}.row-total{display:flex;justify-content:space-between;margin:4px 0;font-size:15px;font-weight:900;border-top:2px solid #000;padding-top:4px}.item-name{flex:1;padding-right:4px}.item-amt{white-space:nowrap;padding-top:1px}.qr-img{width:110px;height:110px;display:block;margin:0 auto}.zatca-label{font-size:9px;font-weight:bold;letter-spacing:0.1em}@media print{body{width:80mm}}</style>
+</head><body>
 <div class="center"><div class="big">${license.businessName}</div><div>${license.address||""}</div><div>TRN: ${license.vatNumber}</div><div>${order.id} | ${order.date} ${order.time}</div>${order.customer?`<div>Customer: ${order.customer}</div>`:""}<div>${order.type}${order.table?` · Table ${order.table}`:""}</div></div>
 <hr class="hr"/>
-${order.items.map(it=>`<div class="row"><span class="item-name">${it.name}${it.nameAr?`<br/><span style="direction:rtl;display:block;text-align:right;font-family:Arial,sans-serif;font-size:10px;">${it.nameAr}</span>`:""}<br/><small>${it.qty} x ${it.price.toFixed(2)}</small></span><span class="item-amt">${(it.qty*it.price).toFixed(2)}</span></div>`).join("")}
+${itemsHTML}
 <hr class="hr"/>
 <div class="row"><span>Subtotal</span><span>SAR ${order.subtotal.toFixed(2)}</span></div>${order.discount>0?`<div class="row"><span>Discount</span><span>-SAR ${order.discount.toFixed(2)}</span></div>`:""}
 <div class="row"><span>VAT 15%</span><span>SAR ${order.vat.toFixed(2)}</span></div>
 <div class="row-total"><span>TOTAL</span><span>SAR ${order.total.toFixed(2)}</span></div>
 ${order.payMethod==="Cash"?`<div class="row"><span>Cash Given</span><span>SAR ${Number(order.given).toFixed(2)}</span></div><div class="row bold"><span>Change</span><span>SAR ${Number(order.change).toFixed(2)}</span></div>`:`<div class="row bold"><span>Payment</span><span>${order.payMethod}</span></div>`}
 <hr class="hr"/>${zatcaMeta}
-<div class="qr-wrap">${qrImgSrc?`<img src="${qrImgSrc}" alt="ZATCA QR"/>`:`<div style="width:110px;height:110px;border:1px solid #ccc;margin:0 auto;display:flex;align-items:center;justify-content:center;font-size:9px;">QR unavailable</div>`}<div class="zatca-label" style="margin-top:4px;">ZATCA PHASE 2 · QR CODE</div><div style="font-size:8px;">TLV Base64 · Scan to verify</div></div>
-<div class="footer">Thank you for your visit!</div><div style="font-family:Arial,sans-serif;font-size:13px;font-weight:bold;text-align:center;direction:rtl;margin-top:4px;">شكراً لزيارتكم</div><br/><br/></body></html>`;
-    const iframe=printFrameRef.current;const docW=iframe.contentDocument||iframe.contentWindow.document;docW.open();docW.write(html);docW.close();
-    setTimeout(()=>{iframe.contentWindow.focus();iframe.contentWindow.print();},400);
+<div style="text-align:center;margin:8px 0;">
+${qrImgSrc?`<img class="qr-img" src="${qrImgSrc}" alt="ZATCA QR"/>`:`<div style="width:110px;height:110px;border:1px solid #ccc;margin:0 auto;display:flex;align-items:center;justify-content:center;font-size:9px;color:#999;">QR unavailable</div>`}
+<div class="zatca-label" style="margin-top:4px;">ZATCA PHASE 2 · QR CODE</div>
+<div style="font-size:8px;color:#666;">TLV Base64 · Scan to verify</div>
+</div>
+<div class="bold center" style="margin-top:6px;font-size:13px;">Thank you for your visit!</div>
+<div style="font-family:'Noto Naskh Arabic','Arial',sans-serif;font-size:14px;font-weight:bold;text-align:center;direction:rtl;margin-top:3px;">شكراً لزيارتكم</div>
+<br/><br/>
+</body></html>`;
+  }
+
+  function handleThermalPrint(){
+    function doGenQR(){
+      let qrImgSrc="";
+      try{
+        const tempDiv=document.createElement("div");
+        tempDiv.style.cssText="position:absolute;left:-9999px;top:-9999px;width:120px;height:120px;";
+        document.body.appendChild(tempDiv);
+        new window.QRCode(tempDiv,{text:qrData,width:110,height:110,colorDark:"#000000",colorLight:"#ffffff",correctLevel:window.QRCode?.CorrectLevel?.M});
+        // QRCode renders async into an img tag (not canvas) in some builds — grab whichever exists
+        const canvas=tempDiv.querySelector("canvas");
+        const img=tempDiv.querySelector("img");
+        if(canvas)qrImgSrc=canvas.toDataURL("image/png");
+        else if(img&&img.src)qrImgSrc=img.src;
+        document.body.removeChild(tempDiv);
+      }catch(e){console.warn("QR gen error:",e);}
+      const html=buildReceiptHTML(qrImgSrc);
+      const iframe=printFrameRef.current;
+      const docW=iframe.contentDocument||iframe.contentWindow.document;
+      docW.open();docW.write(html);docW.close();
+      setTimeout(()=>{iframe.contentWindow.focus();iframe.contentWindow.print();},600);
+    }
+    if(window.QRCode){doGenQR();}
+    else{
+      const s=document.createElement("script");
+      s.src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js";
+      s.onload=()=>setTimeout(doGenQR,200);
+      document.head.appendChild(s);
+    }
   }
   return(
     <Modal title="🧾 Receipt" onClose={onClose} width={400}>
@@ -529,7 +575,21 @@ ${order.payMethod==="Cash"?`<div class="row"><span>Cash Given</span><span>SAR ${
           <div>{order.type}{order.table?` · Table ${order.table}`:""}</div>
         </div>
         <hr style={{border:"none",borderTop:"1px dashed #ccc",margin:"8px 0"}}/>
-        {order.items.map(it=><div key={it.id} style={{display:"flex",justifyContent:"space-between",margin:"4px 0"}}><span style={{flex:1}}>{it.name}</span><span style={{whiteSpace:"nowrap"}}>{it.qty} × {it.price.toFixed(2)} = {(it.qty*it.price).toFixed(2)}</span></div>)}
+        {[...new Set(order.items.map(i=>i.category||"Items"))].map(cat=>(
+          <div key={cat}>
+            <div style={{fontSize:9,fontWeight:700,color:C.textLight,textTransform:"uppercase",letterSpacing:"0.08em",margin:"6px 0 2px"}}>{cat}</div>
+            {order.items.filter(i=>(i.category||"Items")===cat).map((it,idx)=>(
+              <div key={idx} style={{display:"flex",justifyContent:"space-between",margin:"3px 0",alignItems:"flex-start"}}>
+                <span style={{flex:1,paddingRight:8}}>
+                  <span style={{fontWeight:600}}>{it.name}</span>
+                  {it.nameAr&&<span style={{display:"block",direction:"rtl",fontFamily:"'Tajawal',sans-serif",fontSize:11,color:C.textMid}}>{it.nameAr}</span>}
+                  <span style={{display:"block",fontSize:10,color:C.textLight}}>{it.qty} × SAR {it.price.toFixed(2)}</span>
+                </span>
+                <span style={{whiteSpace:"nowrap",fontWeight:700}}>SAR {(it.qty*it.price).toFixed(2)}</span>
+              </div>
+            ))}
+          </div>
+        ))}
         <hr style={{border:"none",borderTop:"1px dashed #ccc",margin:"8px 0"}}/>
         <div style={{display:"flex",justifyContent:"space-between"}}><span>Subtotal</span><span>{fmtSAR(order.subtotal)}</span></div>
         {order.discount>0&&<div style={{display:"flex",justifyContent:"space-between",color:"#D94040"}}><span>Discount</span><span>-{fmtSAR(order.discount)}</span></div>}
@@ -663,31 +723,21 @@ function POS({items,sales,setSales,tables,setTables,promos,license}){
 function LiveClock(){
   const [now,setNow]=useState(new Date());
   useEffect(()=>{const t=setInterval(()=>setNow(new Date()),1000);return()=>clearInterval(t);},[]);
-  const hh=String(now.getHours()).padStart(2,"0");
-  const mm=String(now.getMinutes()).padStart(2,"0");
-  const ss=String(now.getSeconds()).padStart(2,"0");
-  const dateStr=now.toLocaleDateString("en-SA",{weekday:"long",year:"numeric",month:"long",day:"numeric"});
-  const hijri=now.toLocaleDateString("ar-SA-u-ca-islamic",{year:"numeric",month:"long",day:"numeric"});
+  const timeStr=now.toLocaleTimeString("en-SA",{hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:true});
+  const dateEn=now.toLocaleDateString("en-SA",{weekday:"long",year:"numeric",month:"long",day:"numeric"});
+  const dateHijri=now.toLocaleDateString("ar-SA-u-ca-islamic",{year:"numeric",month:"long",day:"numeric"});
   return(
-    <Card style={{marginBottom:24,background:"linear-gradient(135deg,#0F2340 0%,#1A3A5C 50%,#0a2818 100%)",border:"none",padding:"20px 28px"}}>
-      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:12}}>
-        <div>
-          <div style={{display:"flex",alignItems:"baseline",gap:4}}>
-            <span style={{fontSize:52,fontWeight:900,color:"#fff",fontFamily:"'Courier New',monospace",letterSpacing:"0.05em",lineHeight:1}}>{hh}:{mm}</span>
-            <span style={{fontSize:28,fontWeight:700,color:"rgba(255,255,255,0.5)",fontFamily:"'Courier New',monospace",lineHeight:1,marginBottom:2}}>:{ss}</span>
-          </div>
-          <div style={{fontSize:13,color:"rgba(255,255,255,0.6)",marginTop:4,fontWeight:500}}>{dateStr}</div>
-        </div>
-        <div style={{textAlign:"right"}}>
-          <div style={{fontSize:13,color:"rgba(240,165,0,0.9)",fontWeight:700,fontFamily:"'Tajawal',sans-serif",direction:"rtl"}}>{hijri}</div>
-          <div style={{fontSize:11,color:"rgba(255,255,255,0.35)",marginTop:4}}>Kingdom of Saudi Arabia · AST (UTC+3)</div>
-          <div style={{marginTop:8,display:"flex",gap:6,justifyContent:"flex-end"}}>
-            <span style={{padding:"3px 10px",borderRadius:20,background:"rgba(26,138,74,0.25)",border:"1px solid rgba(26,138,74,0.4)",fontSize:10,fontWeight:700,color:"#4ade80"}}>● LIVE</span>
-            <span style={{padding:"3px 10px",borderRadius:20,background:"rgba(99,102,241,0.2)",border:"1px solid rgba(99,102,241,0.4)",fontSize:10,fontWeight:700,color:"#818cf8"}}>ZATCA PHASE 2</span>
-          </div>
-        </div>
+    <div style={{background:"linear-gradient(135deg,#0F2340 0%,#1A3A5C 60%,#0a2818 100%)",borderRadius:12,padding:"12px 20px",marginBottom:20,display:"flex",alignItems:"center",justifyContent:"space-between",gap:16,flexWrap:"wrap",border:"1px solid rgba(255,255,255,0.08)"}}>
+      <div style={{display:"flex",alignItems:"center",gap:14}}>
+        <div style={{fontSize:26,fontWeight:900,color:"#fff",fontFamily:"'Courier New',monospace",letterSpacing:"0.04em",lineHeight:1}}>{timeStr}</div>
+        <div style={{width:1,height:30,background:"rgba(255,255,255,0.15)"}}/>
+        <div><div style={{fontSize:12,color:"rgba(255,255,255,0.75)",fontWeight:600}}>{dateEn}</div><div style={{fontSize:11,color:"rgba(240,165,0,0.9)",fontFamily:"'Tajawal',sans-serif",marginTop:2,direction:"rtl"}}>{dateHijri}</div></div>
       </div>
-    </Card>
+      <div style={{display:"flex",gap:6}}>
+        <span style={{padding:"3px 10px",borderRadius:20,background:"rgba(26,138,74,0.2)",border:"1px solid rgba(26,138,74,0.35)",fontSize:10,fontWeight:700,color:"#4ade80"}}>● LIVE</span>
+        <span style={{padding:"3px 10px",borderRadius:20,background:"rgba(99,102,241,0.2)",border:"1px solid rgba(99,102,241,0.35)",fontSize:10,fontWeight:700,color:"#a5b4fc"}}>ZATCA P2</span>
+      </div>
+    </div>
   );
 }
 
@@ -1039,16 +1089,35 @@ function Create({items,setItems,promos,setPromos}){
 function reprintReceipt(sale,license){
   const qrData=generatePhase1QR({sellerName:license.businessName,vatNumber:license.vatNumber,timestamp:new Date().toISOString(),total:sale.total,vatAmount:sale.vat});
   const win=window.open("","_blank","width=340,height=700,scrollbars=yes");if(!win){alert("Pop-up blocked. Please allow pop-ups.");return;}
-  const html=`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Receipt ${sale.id}</title><style>@page{size:80mm auto;margin:0}*{box-sizing:border-box;margin:0;padding:0}body{font-family:'Courier New',monospace;font-size:12px;color:#000;background:#fff;width:80mm;padding:4mm}.center{text-align:center}.bold{font-weight:bold}.big{font-size:16px;font-weight:bold}.hr{border:none;border-top:1px dashed #000;margin:6px 0}.row{display:flex;justify-content:space-between;margin:2px 0}.row-total{display:flex;justify-content:space-between;margin:4px 0;font-size:15px;font-weight:900;border-top:2px solid #000;padding-top:4px}.item-name{flex:1}.item-amt{white-space:nowrap;margin-left:4px}.qr-wrap{text-align:center;margin:8px 0}.zatca-label{font-size:9px;font-weight:bold;letter-spacing:0.1em}@media print{body{width:80mm}}</style></head><body>
+  const cats=[...new Set((sale.items||[]).map(i=>i.category||"Items"))];
+  const itemsHTML=cats.map(cat=>{
+    const catItems=(sale.items||[]).filter(i=>(i.category||"Items")===cat);
+    return `<div style="font-size:9px;font-weight:bold;letter-spacing:0.08em;color:#555;margin-top:6px;margin-bottom:2px;text-transform:uppercase;">${cat}</div>`+
+      catItems.map(it=>`<div class="row"><span class="item-name">${it.name}${it.nameAr?`<br/><span style="font-family:'Noto Naskh Arabic','Arial',sans-serif;direction:rtl;display:block;text-align:right;font-size:11px;">${it.nameAr}</span>`:""}<br/><small>${it.qty} x SAR ${it.price.toFixed(2)}</small></span><span class="item-amt">SAR ${(it.qty*it.price).toFixed(2)}</span></div>`).join("");
+  }).join("");
+  const html=`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Receipt ${sale.id}</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Naskh+Arabic:wght@400;700&display=swap" rel="stylesheet">
+<style>@page{size:80mm auto;margin:0}*{box-sizing:border-box;margin:0;padding:0}body{font-family:'Courier New',monospace;font-size:12px;color:#000;background:#fff;width:80mm;padding:4mm}.center{text-align:center}.bold{font-weight:bold}.big{font-size:16px;font-weight:bold}.hr{border:none;border-top:1px dashed #000;margin:6px 0}.row{display:flex;justify-content:space-between;margin:2px 0;align-items:flex-start}.row-total{display:flex;justify-content:space-between;margin:4px 0;font-size:15px;font-weight:900;border-top:2px solid #000;padding-top:4px}.item-name{flex:1;padding-right:4px}.item-amt{white-space:nowrap}.zatca-label{font-size:9px;font-weight:bold;letter-spacing:0.1em}@media print{body{width:80mm}}</style>
+</head><body>
 <div class="center"><div class="big">${sale.businessName||license.businessName}</div><div>${license.address||""}</div><div>TRN: ${license.vatNumber}</div><div>${sale.id} | ${sale.date} ${sale.time}</div>${sale.customer?`<div>Customer: ${sale.customer}</div>`:""}<div>${sale.type}${sale.table?` · Table ${sale.table}`:""}</div></div>
-<hr class="hr"/>${(sale.items||[]).map(it=>`<div class="row"><span class="item-name">${it.name}<br/><small>${it.qty} x ${it.price.toFixed(2)}</small></span><span class="item-amt">${(it.qty*it.price).toFixed(2)}</span></div>`).join("")}
+<hr class="hr"/>${itemsHTML}
 <hr class="hr"/><div class="row"><span>Subtotal</span><span>SAR ${(sale.subtotal||0).toFixed(2)}</span></div>${(sale.discount||0)>0?`<div class="row"><span>Discount</span><span>-SAR ${sale.discount.toFixed(2)}</span></div>`:""}
 <div class="row"><span>VAT 15%</span><span>SAR ${(sale.vat||0).toFixed(2)}</span></div><div class="row-total"><span>TOTAL</span><span>SAR ${(sale.total||0).toFixed(2)}</span></div>
 ${sale.payMethod==="Cash"?`<div class="row"><span>Cash Given</span><span>SAR ${Number(sale.given||0).toFixed(2)}</span></div><div class="row bold"><span>Change</span><span>SAR ${Number(sale.change||0).toFixed(2)}</span></div>`:`<div class="row bold"><span>Payment</span><span>${sale.payMethod}</span></div>`}
-<hr class="hr"/><div id="qr-placeholder" style="text-align:center;margin:8px 0"><canvas id="qr-canvas"></canvas><div class="zatca-label">ZATCA PHASE 2 · QR CODE</div><div style="font-size:8px">TLV Base64 · Scan to verify</div></div>
-<div class="bold center" style="margin-top:6px">Thank you for your visit!</div><div style="font-family:Arial,sans-serif;font-size:13px;font-weight:bold;text-align:center;direction:rtl;margin-top:3px">شكراً لزيارتكم</div><br/><br/>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-<script>var qrData=${JSON.stringify(qrData)};function doQR(){if(window.QRCode){try{new QRCode(document.getElementById("qr-canvas"),{text:qrData,width:100,height:100,colorDark:"#000000",colorLight:"#ffffff",correctLevel:QRCode.CorrectLevel.M});}catch(e){}setTimeout(function(){window.print();window.close();},800);}else{setTimeout(doQR,200);}}window.onload=doQR;<\/script></body></html>`;
+<hr class="hr"/><div style="text-align:center;margin:8px 0;"><canvas id="qr-canvas"></canvas><div class="zatca-label" style="margin-top:4px;">ZATCA PHASE 2 · QR CODE</div><div style="font-size:8px;">TLV Base64 · Scan to verify</div></div>
+<div class="bold center" style="margin-top:6px;">Thank you for your visit!</div>
+<div style="font-family:'Noto Naskh Arabic','Arial',sans-serif;font-size:14px;font-weight:bold;text-align:center;direction:rtl;margin-top:3px;">شكراً لزيارتكم</div><br/><br/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"><\/script>
+<script>
+var qrData=${JSON.stringify(qrData)};
+function doQR(){
+  if(window.QRCode){
+    try{new QRCode(document.getElementById("qr-canvas"),{text:qrData,width:110,height:110,colorDark:"#000000",colorLight:"#ffffff",correctLevel:QRCode.CorrectLevel.M});}catch(e){console.warn(e);}
+    setTimeout(function(){window.print();window.close();},900);
+  }else{setTimeout(doQR,200);}
+}
+window.onload=function(){setTimeout(doQR,300);};
+<\/script></body></html>`;
   win.document.write(html);win.document.close();
 }
 
@@ -1222,21 +1291,37 @@ function UserAdmin({users,setUsers}){
 // OWNER DASHBOARD INLINE (for modal inside UserAdmin)
 // ═══════════════════════════════════════════════════════════════════
 function OwnerDashboardInline(){
-  const [tab,setTab]=useState("activations");const [activations,setActivations]=useState([]);const [licenses,setLicenses]=useState([]);const [loading,setLoading]=useState(true);
-  useEffect(()=>{async function load(){try{const aSnap=await getDocs(collection(db,"pending_activations"));setActivations(aSnap.docs.map(d=>({id:d.id,...d.data()})));const lSnap=await getDocs(collection(db,"licenses"));setLicenses(lSnap.docs.map(d=>({id:d.id,...d.data()})));}catch(e){console.error(e);}setLoading(false);}load();},[]);
+  const [tab,setTab]=useState("activations");const [activations,setActivations]=useState([]);const [licenses,setLicenses]=useState([]);const [loading,setLoading]=useState(true);const [clientIP,setClientIP]=useState("Fetching...");
+  useEffect(()=>{
+    async function load(){
+      try{const aSnap=await getDocs(collection(db,"pending_activations"));setActivations(aSnap.docs.map(d=>({id:d.id,...d.data()})));const lSnap=await getDocs(collection(db,"licenses"));setLicenses(lSnap.docs.map(d=>({id:d.id,...d.data()})));}catch(e){console.error(e);}
+      setLoading(false);
+    }
+    load();
+    // Fetch current device IP
+    fetch("https://api.ipify.org?format=json").then(r=>r.json()).then(d=>setClientIP(d.ip)).catch(()=>setClientIP("Unavailable"));
+  },[]);
   async function toggleLicense(id,active){try{await updateDoc(doc(db,"licenses",id),{active:!active});setLicenses(prev=>prev.map(l=>l.id===id?{...l,active:!active}:l));}catch(e){alert("Error: "+e.message);}}
+  // Count unique device IDs across activations
+  const uniqueDevices=[...new Set(activations.filter(a=>a.deviceId).map(a=>a.deviceId))].length;
   const statusColor={approved:C.success,pending:C.warning,suspended:C.danger};const statusBg={approved:C.successLight,pending:C.warningLight,suspended:C.dangerLight};
   if(loading)return<div style={{textAlign:"center",padding:40,color:C.textMid}}>Loading client data…</div>;
   return(
     <div>
-      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginBottom:20}}>
-        {[[activations.length,"Total Clients","🏢",C.primary,C.primaryLight],[activations.filter(a=>a.status==="approved").length,"Active","✅",C.success,C.successLight],[licenses.filter(l=>!l.active).length,"Suspended","🚫",C.danger,C.dangerLight]].map(([v,l,ic,col,bg])=>(
-          <div key={l} style={{background:bg,border:`1px solid ${col}30`,borderRadius:10,padding:"14px 16px",display:"flex",alignItems:"center",gap:10}}><span style={{fontSize:22}}>{ic}</span><div><div style={{fontSize:20,fontWeight:900,color:col}}>{v}</div><div style={{fontSize:11,color:col,fontWeight:600}}>{l}</div></div></div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:20}}>
+        {[[activations.length,"Total Clients","🏢",C.primary,C.primaryLight],[activations.filter(a=>a.status==="approved").length,"Active","✅",C.success,C.successLight],[licenses.filter(l=>!l.active).length,"Suspended","🚫",C.danger,C.dangerLight],[uniqueDevices,"Devices","📱",C.info,C.infoLight]].map(([v,l,ic,col,bg])=>(
+          <div key={l} style={{background:bg,border:`1px solid ${col}30`,borderRadius:10,padding:"12px 14px",display:"flex",alignItems:"center",gap:10}}><span style={{fontSize:20}}>{ic}</span><div><div style={{fontSize:18,fontWeight:900,color:col}}>{v}</div><div style={{fontSize:11,color:col,fontWeight:600}}>{l}</div></div></div>
         ))}
       </div>
-      <div style={{display:"flex",gap:8,marginBottom:16}}>{[["activations","🏢 Clients"],["licenses","🔑 Licenses"]].map(([id,label])=><button key={id} onClick={()=>setTab(id)} style={{padding:"7px 14px",borderRadius:8,border:`1.5px solid ${tab===id?C.primary:C.border}`,background:tab===id?C.primaryLight:"#fff",color:tab===id?C.primary:C.textMid,fontFamily:"inherit",fontSize:12,fontWeight:600,cursor:"pointer"}}>{label}</button>)}</div>
+      <div style={{marginBottom:16,padding:"10px 14px",background:C.infoLight,border:`1px solid ${C.info}30`,borderRadius:10,display:"flex",alignItems:"center",gap:10}}>
+        <span style={{fontSize:18}}>🌐</span>
+        <div><div style={{fontSize:11,fontWeight:700,color:C.textMid}}>YOUR CURRENT DEVICE IP</div><div style={{fontSize:14,fontWeight:800,fontFamily:"monospace",color:C.info}}>{clientIP}</div></div>
+        <div style={{marginLeft:"auto",fontSize:11,color:C.textMid}}>Device: {navigator.userAgent.slice(0,40)}...</div>
+      </div>
+      <div style={{display:"flex",gap:8,marginBottom:16}}>{[["activations","🏢 Clients"],["licenses","🔑 Licenses"],["devices","📱 Devices & IPs"]].map(([id,label])=><button key={id} onClick={()=>setTab(id)} style={{padding:"7px 14px",borderRadius:8,border:`1.5px solid ${tab===id?C.primary:C.border}`,background:tab===id?C.primaryLight:"#fff",color:tab===id?C.primary:C.textMid,fontFamily:"inherit",fontSize:12,fontWeight:600,cursor:"pointer"}}>{label}</button>)}</div>
       {tab==="activations"&&<div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}><thead><tr style={{background:C.bg}}>{["Business","CR","VAT","License Key","City","Submitted","Status"].map(h=><th key={h} style={{padding:"8px 12px",textAlign:"left",color:C.textMid,fontWeight:700,fontSize:10,textTransform:"uppercase",borderBottom:`1px solid ${C.border}`,whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead><tbody>{activations.map((a,i)=><tr key={a.id} style={{borderBottom:`1px solid ${C.border}`,background:i%2===0?"#fff":"#FAFBFC"}}><td style={{padding:"8px 12px",fontWeight:600}}>{a.businessName}</td><td style={{padding:"8px 12px",fontFamily:"monospace",fontSize:11,color:C.textMid}}>{a.crNumber}</td><td style={{padding:"8px 12px",fontFamily:"monospace",fontSize:11,color:C.textMid}}>{a.vatNumber}</td><td style={{padding:"8px 12px",color:C.accent,fontFamily:"monospace",fontSize:11,fontWeight:700}}>{a.licenseKey}</td><td style={{padding:"8px 12px",color:C.textMid}}>{a.city||"—"}</td><td style={{padding:"8px 12px",color:C.textLight,fontSize:11}}>{a.submittedAt?fmtDate(a.submittedAt):"—"}</td><td style={{padding:"8px 12px"}}><span style={{padding:"3px 10px",borderRadius:20,fontSize:10,fontWeight:700,color:statusColor[a.status]||C.textMid,background:statusBg[a.status]||C.bg}}>{a.status}</span></td></tr>)}</tbody></table></div>}
       {tab==="licenses"&&<div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}><thead><tr style={{background:C.bg}}>{["Key","Status","Activated By","Activated At","Toggle"].map(h=><th key={h} style={{padding:"8px 12px",textAlign:"left",color:C.textMid,fontWeight:700,fontSize:10,textTransform:"uppercase",borderBottom:`1px solid ${C.border}`,whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead><tbody>{licenses.map((l,i)=><tr key={l.id} style={{borderBottom:`1px solid ${C.border}`,background:i%2===0?"#fff":"#FAFBFC"}}><td style={{padding:"8px 12px",fontFamily:"monospace",color:C.accent,fontWeight:700}}>{l.key}</td><td style={{padding:"8px 12px"}}><span style={{padding:"3px 10px",borderRadius:20,fontSize:10,fontWeight:700,color:l.active?C.success:C.danger,background:l.active?C.successLight:C.dangerLight}}>{l.active?"Active":"Inactive"}</span></td><td style={{padding:"8px 12px",color:C.textMid}}>{l.activatedBy||"—"}</td><td style={{padding:"8px 12px",color:C.textLight,fontSize:11}}>{l.activatedAt?fmtDateTime(l.activatedAt):"—"}</td><td style={{padding:"8px 12px"}}><button onClick={()=>toggleLicense(l.id,l.active)} style={{padding:"5px 12px",background:l.active?C.dangerLight:C.successLight,border:`1px solid ${l.active?C.danger:C.success}`,borderRadius:6,color:l.active?C.danger:C.success,fontSize:11,cursor:"pointer",fontFamily:"inherit",fontWeight:700}}>{l.active?"Deactivate":"Activate"}</button></td></tr>)}</tbody></table></div>}
+      {tab==="devices"&&<div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}><thead><tr style={{background:C.bg}}>{["Business","License Key","Device ID (User Agent)","Activated At"].map(h=><th key={h} style={{padding:"8px 12px",textAlign:"left",color:C.textMid,fontWeight:700,fontSize:10,textTransform:"uppercase",borderBottom:`1px solid ${C.border}`,whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead><tbody>{activations.filter(a=>a.deviceId).map((a,i)=><tr key={a.id} style={{borderBottom:`1px solid ${C.border}`,background:i%2===0?"#fff":"#FAFBFC"}}><td style={{padding:"8px 12px",fontWeight:600}}>{a.businessName}</td><td style={{padding:"8px 12px",color:C.accent,fontFamily:"monospace",fontSize:11,fontWeight:700}}>{a.licenseKey}</td><td style={{padding:"8px 12px",color:C.textMid,fontSize:11,maxWidth:260,wordBreak:"break-all"}}>{a.deviceId}</td><td style={{padding:"8px 12px",color:C.textLight,fontSize:11}}>{a.activatedAt?fmtDateTime(a.activatedAt):"—"}</td></tr>)}</tbody></table></div>}
     </div>
   );
 }
@@ -1385,15 +1470,14 @@ export default function App(){
   if(step==="license")return<LicenseVerification businessData={businessData||{businessName:"",crNumber:"",vatNumber:"",address:"",city:"",phone:""}} onSuccess={(lic)=>{setLicense(lic);setStep("login");}} onBack={()=>setStep("register")}/>;
   if(step==="login"||!currentUser)return<RoleLogin license={license} onLogin={(user)=>{setCurrentUser(user);setStep("app");if(user.role==="Cashier")setScreen("pos");}}/>;
   return(
-    <div style={{fontFamily:"'Plus Jakarta Sans','Tajawal',sans-serif",background:C.bg,minHeight:"100vh",display:"flex",flexDirection:"column"}}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Tajawal:wght@400;500;700&display=swap');*{box-sizing:border-box;margin:0;padding:0}::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-track{background:${C.bg}}::-webkit-scrollbar-thumb{background:${C.border};border-radius:3px}input,select{outline:none}input:focus,select:focus{border-color:${C.primary}!important}@media print{header,nav{display:none!important}}`}</style>
-      <div style={{background:"#fff",borderBottom:`1px solid ${C.border}`,height:52,display:"flex",alignItems:"center",padding:"0 16px",justifyContent:"space-between",position:"sticky",top:0,zIndex:100,boxShadow:"0 1px 8px rgba(0,0,0,0.06)"}}>
-        <div style={{display:"flex",alignItems:"center",gap:8}}><div style={{width:30,height:30,background:"linear-gradient(135deg,#1A6B4A,#F0A500)",borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontSize:15,fontWeight:900}}>R</div><div><div style={{fontSize:14,fontWeight:800,color:C.text,lineHeight:1}}>RestoPOS</div><div style={{fontSize:9,color:C.textLight,letterSpacing:"0.08em"}}>ZATCA PHASE 2 · v9.0</div></div></div>
-        <div style={{display:"flex",gap:1,overflowX:"auto"}}>{NAV.map(([id,icon,label])=><button key={id} onClick={()=>setScreen(id)} style={{padding:"5px 9px",borderRadius:8,border:"none",background:screen===id?C.primaryLight:"transparent",color:screen===id?C.primary:C.textMid,fontFamily:"inherit",fontSize:11,fontWeight:screen===id?700:500,cursor:"pointer",display:"flex",alignItems:"center",gap:4,whiteSpace:"nowrap"}}><span>{icon}</span><span>{label}</span></button>)}</div>
-
-        <div style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontSize:11,background:C.zatcaLight,color:C.zatca,padding:"3px 8px",borderRadius:6,fontWeight:700}}>⬛ ZATCA</span><div style={{fontSize:11,color:C.textMid,fontWeight:700}}>{currentUser?.role}</div><button onClick={()=>setCurrentUser(null)} style={{fontSize:11,background:C.dangerLight,color:C.danger,border:"none",padding:"4px 8px",borderRadius:6,cursor:"pointer",fontFamily:"inherit",fontWeight:700}}>Logout</button></div>
+    <div style={{fontFamily:"'Plus Jakarta Sans','Tajawal',sans-serif",background:C.bg,height:"100vh",display:"flex",flexDirection:"column",overflow:"hidden"}}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Tajawal:wght@400;500;700&display=swap');html,body,#root{height:100%;margin:0;padding:0}*{box-sizing:border-box;margin:0;padding:0}::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-track{background:${C.bg}}::-webkit-scrollbar-thumb{background:${C.border};border-radius:3px}input,select{outline:none}input:focus,select:focus{border-color:${C.primary}!important}@media print{header,nav{display:none!important}}`}</style>
+      <div style={{background:"linear-gradient(90deg,#0F2340 0%,#1A3A5C 40%,#0a2818 100%)",height:52,display:"flex",alignItems:"center",padding:"0 16px",justifyContent:"space-between",flexShrink:0,zIndex:100,boxShadow:"0 2px 16px rgba(0,0,0,0.25)"}}>
+        <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}><div style={{width:30,height:30,background:"linear-gradient(135deg,#1A6B4A,#F0A500)",borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontSize:15,fontWeight:900}}>R</div><div><div style={{fontSize:14,fontWeight:800,color:"#fff",lineHeight:1}}>RestoPOS</div><div style={{fontSize:9,color:"rgba(255,255,255,0.45)",letterSpacing:"0.08em"}}>ZATCA PHASE 2 · v10.0</div></div></div>
+        <div style={{display:"flex",gap:1,overflowX:"auto",flex:1,justifyContent:"center",padding:"0 8px"}}>{NAV.map(([id,icon,label])=><button key={id} onClick={()=>setScreen(id)} style={{padding:"5px 10px",borderRadius:7,border:"none",background:screen===id?"rgba(255,255,255,0.15)":"transparent",color:screen===id?"#fff":"rgba(255,255,255,0.55)",fontFamily:"inherit",fontSize:11,fontWeight:screen===id?700:500,cursor:"pointer",display:"flex",alignItems:"center",gap:4,whiteSpace:"nowrap",transition:"all 0.15s"}}><span>{icon}</span><span>{label}</span></button>)}</div>
+        <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}><span style={{fontSize:11,background:"rgba(99,102,241,0.25)",color:"#a5b4fc",padding:"3px 8px",borderRadius:6,fontWeight:700,border:"1px solid rgba(99,102,241,0.3)"}}>⬛ ZATCA</span><div style={{fontSize:11,color:"rgba(255,255,255,0.6)",fontWeight:700}}>{currentUser?.role}</div><button onClick={()=>setCurrentUser(null)} style={{fontSize:11,background:"rgba(217,64,64,0.2)",color:"#ff8080",border:"1px solid rgba(217,64,64,0.3)",padding:"4px 10px",borderRadius:6,cursor:"pointer",fontFamily:"inherit",fontWeight:700}}>Logout</button></div>
       </div>
-      <div style={{flex:1,padding:screen==="pos"?0:20,overflowY:screen==="pos"?"hidden":"auto",width:"100%",minHeight:0,boxSizing:"border-box"}}>
+      <div style={{flex:1,padding:screen==="pos"?0:20,overflowY:screen==="pos"?"hidden":"auto",width:"100%",minHeight:0,height:"calc(100vh - 52px)"}}>
         {screen==="dashboard"&&<Dashboard sales={sales} items={items} license={license}/>}
         {screen==="pos"&&<POS items={items} sales={sales} setSales={setSales} tables={tables} setTables={setTables} promos={promos} license={license}/>}
         {screen==="settings"&&<Settings company={company} setCompany={setCompany} tables={tables} setTables={setTables} license={license} onClearLicense={handleClearLicense} pins={pins} setPins={setPins} invoiceFormat={invoiceFormat} setInvoiceFormat={setInvoiceFormat}/>}
