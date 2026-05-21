@@ -834,7 +834,7 @@ const RECEIPT_FONTS=[
 function InvoiceFormatTab({license,company,invoiceFormat,setInvoiceFormat}){
   const [saved,setSaved]=useState(false);
   const fmt=invoiceFormat||{font:"courier",fontSize:12,shopNameOverride:"",footer:"Thank you for your visit!",footerAr:"شكراً لزيارتكم",website:"",social:"",tagline:""};
-  function update(k,v){setInvoiceFormat(f=>({...(f||fmt),[k]:v}));setSaved(false);}
+  function update(k,v){const updated={...(invoiceFormat||fmt),[k]:v};setInvoiceFormat(updated);LS.set("restopos_invoice_format",updated);setSaved(false);}
   function save(){LS.set("restopos_invoice_format",invoiceFormat);setSaved(true);setTimeout(()=>setSaved(false),3000);}
   const selectedFont=RECEIPT_FONTS.find(f=>f.id===fmt.font)||RECEIPT_FONTS[0];
   return(
@@ -1915,6 +1915,597 @@ function Help(){
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// EXPENSE TRACKING MODULE
+// ═══════════════════════════════════════════════════════════════════
+const EXPENSE_CATEGORIES=["Rent","Utilities","Salaries","Food Supplies","Kitchen Supplies","Packaging","Marketing","Maintenance","Transport","Other"];
+function Expenses(){
+  const [expenses,setExpenses]=useState(()=>LS.get("restopos_expenses")||[]);
+  const [showModal,setShowModal]=useState(false);
+  const [period,setPeriod]=useState("month");
+  const [form,setForm]=useState({description:"",amount:"",category:"Food Supplies",date:TODAY,notes:""});
+  const now=new Date();
+  function saveExpenses(newList){setExpenses(newList);LS.set("restopos_expenses",newList);}
+  function addExpense(){
+    if(!form.description||!form.amount)return alert("Description and amount required");
+    const exp={...form,id:Date.now(),amount:parseFloat(form.amount)};
+    const updated=[exp,...expenses];saveExpenses(updated);setShowModal(false);
+    setForm({description:"",amount:"",category:"Food Supplies",date:TODAY,notes:""});
+    logActivity("EXPENSE_ADDED",{after:{description:form.description,amount:form.amount}},"Admin");
+  }
+  function deleteExpense(id){if(confirm("Delete expense?"))saveExpenses(expenses.filter(e=>e.id!==id));}
+  const filtered=expenses.filter(e=>{
+    const d=new Date(e.date);
+    if(period==="today")return e.date===TODAY;
+    if(period==="week"){const w=new Date();w.setDate(w.getDate()-7);return d>=w;}
+    if(period==="month")return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear();
+    return true;
+  });
+  const total=filtered.reduce((s,e)=>s+e.amount,0);
+  const byCat=EXPENSE_CATEGORIES.map(cat=>({cat,total:filtered.filter(e=>e.category===cat).reduce((s,e)=>s+e.amount,0)})).filter(c=>c.total>0);
+  function exportExpenses(){
+    if(!expenses.length)return alert("No expenses to export");
+    const headers=["Date","Description","Category","Amount","Notes"];
+    const rows=filtered.map(e=>[e.date,e.description,e.category,e.amount.toFixed(2),e.notes||""]);
+    const csv=[headers,...rows].map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(",")).join("\n");
+    const blob=new Blob([csv],{type:"text/csv"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`expenses-${TODAY}.csv`;a.click();
+  }
+  return(
+    <div>
+      {showModal&&<Modal title="➕ Add Expense" onClose={()=>setShowModal(false)} width={460}>
+        <div style={{display:"flex",flexDirection:"column",gap:12}}>
+          <Inp label="Description" value={form.description} onChange={v=>setForm(f=>({...f,description:v}))} placeholder="e.g. Chicken supplier invoice"/>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+            <Inp label="Amount (SAR)" value={form.amount} onChange={v=>setForm(f=>({...f,amount:v}))} type="number" placeholder="0.00"/>
+            <Inp label="Date" value={form.date} onChange={v=>setForm(f=>({...f,date:v}))} type="date"/>
+          </div>
+          <Sel label="Category" value={form.category} onChange={v=>setForm(f=>({...f,category:v}))} options={EXPENSE_CATEGORIES}/>
+          <div style={{display:"flex",flexDirection:"column",gap:4}}>
+            <label style={{fontSize:12,fontWeight:600,color:C.textMid}}>Notes (optional)</label>
+            <textarea value={form.notes} onChange={e=>setForm(f=>({...f,notes:e.target.value}))} rows={2} placeholder="Extra details..." style={{padding:"9px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontSize:13,fontFamily:"inherit",resize:"none"}}/>
+          </div>
+        </div>
+        <div style={{display:"flex",gap:10,marginTop:16}}>
+          <Btn variant="ghost" onClick={()=>setShowModal(false)} style={{flex:1}}>Cancel</Btn>
+          <Btn onClick={addExpense} style={{flex:1}}>💾 Save Expense</Btn>
+        </div>
+      </Modal>}
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20,flexWrap:"wrap",gap:10}}>
+        <div><div style={{fontSize:20,fontWeight:800}}>💸 Expense Tracking</div><div style={{fontSize:13,color:C.textMid,marginTop:2}}>{filtered.length} entries · Total: <strong style={{color:C.danger}}>{fmtSAR(total)}</strong></div></div>
+        <div style={{display:"flex",gap:8}}>
+          <Btn variant="outline" size="sm" onClick={exportExpenses}>📤 Export CSV</Btn>
+          <Btn onClick={()=>setShowModal(true)}>+ Add Expense</Btn>
+        </div>
+      </div>
+      <div style={{display:"flex",gap:6,marginBottom:16,flexWrap:"wrap"}}>
+        {[["today","Today"],["week","This Week"],["month","This Month"],["all","All Time"]].map(([id,lbl])=>(
+          <button key={id} onClick={()=>setPeriod(id)} style={{padding:"7px 16px",borderRadius:8,border:`1.5px solid ${period===id?C.danger:C.border}`,background:period===id?"#FDE8E8":"#fff",color:period===id?C.danger:C.textMid,fontFamily:"inherit",fontSize:13,fontWeight:600,cursor:"pointer"}}>{lbl}</button>
+        ))}
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:20,marginBottom:20}}>
+        <Card>
+          <div style={{fontSize:13,fontWeight:700,color:C.textMid,marginBottom:12}}>BY CATEGORY</div>
+          {byCat.length===0?<div style={{color:C.textLight,fontSize:13}}>No expenses</div>:byCat.map(c=>(
+            <div key={c.cat} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:`1px solid ${C.border}`}}>
+              <span style={{fontSize:13,color:C.text}}>{c.cat}</span>
+              <span style={{fontSize:13,fontWeight:700,color:C.danger}}>{fmtSAR(c.total)}</span>
+            </div>
+          ))}
+        </Card>
+        <Card>
+          <div style={{fontSize:13,fontWeight:700,color:C.textMid,marginBottom:12}}>SUMMARY</div>
+          <div style={{fontSize:32,fontWeight:900,color:C.danger,marginBottom:8}}>{fmtSAR(total)}</div>
+          <div style={{fontSize:12,color:C.textLight}}>Total expenses · {filtered.length} entries</div>
+          <div style={{marginTop:16,fontSize:13,color:C.textMid}}>Period: {{"today":"Today","week":"Last 7 Days","month":"This Month","all":"All Time"}[period]}</div>
+        </Card>
+      </div>
+      {filtered.length===0?<Card><div style={{textAlign:"center",padding:"40px 0",color:C.textMid}}><div style={{fontSize:40,marginBottom:12}}>💸</div><div>No expenses in this period</div></div></Card>
+      :<Card><DataTable headers={["Date","Description","Category","Amount","Notes","Action"]} rows={filtered.map(e=>[
+        <span style={{fontFamily:"monospace",fontSize:12}}>{e.date}</span>,
+        <span style={{fontWeight:600}}>{e.description}</span>,
+        <Badge color={C.info} bg={C.infoLight}>{e.category}</Badge>,
+        <strong style={{color:C.danger}}>{fmtSAR(e.amount)}</strong>,
+        <span style={{fontSize:12,color:C.textLight}}>{e.notes||"—"}</span>,
+        <Btn size="sm" variant="danger" onClick={()=>deleteExpense(e.id)}>Del</Btn>
+      ])}/></Card>}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// CUSTOMER DATABASE MODULE
+// ═══════════════════════════════════════════════════════════════════
+function Customers({sales}){
+  const [customers,setCustomers]=useState(()=>LS.get("restopos_customers")||[]);
+  const [showModal,setShowModal]=useState(false);
+  const [editCust,setEditCust]=useState(null);
+  const [search,setSearch]=useState("");
+  const [tab,setTab]=useState("list");
+  const blank={name:"",phone:"",email:"",notes:"",loyaltyPoints:0};
+  const [form,setForm]=useState(blank);
+  function saveCustomers(list){setCustomers(list);LS.set("restopos_customers",list);}
+  function openModal(c=null){setEditCust(c);setForm(c?{...c}:{...blank});setShowModal(true);}
+  function save(){
+    if(!form.name||!form.phone)return alert("Name and phone required");
+    const now=new Date().toISOString();
+    const cust={...form,id:editCust?editCust.id:Date.now(),createdAt:editCust?.createdAt||now,updatedAt:now,loyaltyPoints:parseInt(form.loyaltyPoints)||0};
+    saveCustomers(editCust?customers.map(c=>c.id===editCust.id?cust:c):[cust,...customers]);
+    setShowModal(false);
+    logActivity(editCust?"CUSTOMER_UPDATED":"CUSTOMER_ADDED",{after:{name:form.name,phone:form.phone}},"Admin");
+  }
+  function deleteCust(id){if(confirm("Delete customer?"))saveCustomers(customers.filter(c=>c.id!==id));}
+  const custWithHistory=customers.map(c=>{
+    const orders=sales.filter(s=>s.customerPhone===c.phone);
+    const totalSpent=orders.reduce((s,o)=>s+o.total,0);
+    return{...c,orderCount:orders.length,totalSpent,lastOrder:orders[orders.length-1]?.date||null};
+  });
+  const filtered=custWithHistory.filter(c=>!search||c.name.toLowerCase().includes(search.toLowerCase())||c.phone.includes(search));
+  function exportCustomers(){
+    const csv=["Name,Phone,Email,Orders,Total Spent,Loyalty Points",...filtered.map(c=>`"${c.name}","${c.phone}","${c.email||""}",${c.orderCount},${c.totalSpent.toFixed(2)},${c.loyaltyPoints}`)].join("\n");
+    const blob=new Blob([csv],{type:"text/csv"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`customers-${TODAY}.csv`;a.click();
+  }
+  const topSpenders=[...custWithHistory].sort((a,b)=>b.totalSpent-a.totalSpent).slice(0,5);
+  return(
+    <div>
+      {showModal&&<Modal title={editCust?"Edit Customer":"New Customer"} onClose={()=>setShowModal(false)} width={460}>
+        <div style={{display:"flex",flexDirection:"column",gap:12}}>
+          <Inp label="Full Name" value={form.name} onChange={v=>setForm(f=>({...f,name:v}))}/>
+          <Inp label="Phone" value={form.phone} onChange={v=>setForm(f=>({...f,phone:v}))} placeholder="+966 50 000 0000"/>
+          <Inp label="Email (optional)" value={form.email||""} onChange={v=>setForm(f=>({...f,email:v}))}/>
+          <Inp label="Loyalty Points" value={form.loyaltyPoints} onChange={v=>setForm(f=>({...f,loyaltyPoints:v}))} type="number"/>
+          <div style={{display:"flex",flexDirection:"column",gap:4}}>
+            <label style={{fontSize:12,fontWeight:600,color:C.textMid}}>Notes</label>
+            <textarea value={form.notes||""} onChange={e=>setForm(f=>({...f,notes:e.target.value}))} rows={2} style={{padding:"9px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontSize:13,fontFamily:"inherit",resize:"none"}}/>
+          </div>
+        </div>
+        <div style={{display:"flex",gap:10,marginTop:16}}>
+          <Btn variant="ghost" onClick={()=>setShowModal(false)} style={{flex:1}}>Cancel</Btn>
+          <Btn onClick={save} style={{flex:1}}>💾 Save</Btn>
+        </div>
+      </Modal>}
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20,flexWrap:"wrap",gap:10}}>
+        <div><div style={{fontSize:20,fontWeight:800}}>👥 Customer Database</div><div style={{fontSize:13,color:C.textMid,marginTop:2}}>{customers.length} customers registered</div></div>
+        <div style={{display:"flex",gap:8}}>
+          <Btn variant="outline" size="sm" onClick={exportCustomers}>📤 Export</Btn>
+          <Btn onClick={()=>openModal()}>+ New Customer</Btn>
+        </div>
+      </div>
+      <div style={{display:"flex",gap:6,marginBottom:16,flexWrap:"wrap"}}>
+        {[["list","👥 All Customers"],["top","⭐ Top Spenders"],["loyalty","🎁 Loyalty"]].map(([id,lbl])=>(
+          <button key={id} onClick={()=>setTab(id)} style={{padding:"7px 16px",borderRadius:8,border:`1.5px solid ${tab===id?C.primary:C.border}`,background:tab===id?C.primaryLight:"#fff",color:tab===id?C.primary:C.textMid,fontFamily:"inherit",fontSize:13,fontWeight:600,cursor:"pointer"}}>{lbl}</button>
+        ))}
+      </div>
+      {tab==="list"&&<>
+        <Card style={{marginBottom:16}}>
+          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="🔍 Search by name or phone..." style={{width:"100%",padding:"9px 14px",border:`1px solid ${C.border}`,borderRadius:8,fontSize:13,fontFamily:"inherit"}}/>
+        </Card>
+        {filtered.length===0?<Card><div style={{textAlign:"center",padding:"40px 0",color:C.textMid}}><div style={{fontSize:40,marginBottom:12}}>👥</div><div>No customers yet. Add your first customer.</div></div></Card>
+        :<Card><DataTable headers={["Name","Phone","Email","Orders","Total Spent","Points","Actions"]} rows={filtered.map(c=>[
+          <strong>{c.name}</strong>,
+          <span style={{fontFamily:"monospace"}}>{c.phone}</span>,
+          <span style={{fontSize:12,color:C.textLight}}>{c.email||"—"}</span>,
+          <Badge color={C.info} bg={C.infoLight}>{c.orderCount}</Badge>,
+          <strong style={{color:C.primary}}>{fmtSAR(c.totalSpent)}</strong>,
+          <Badge color={C.accent} bg={C.accentLight}>{c.loyaltyPoints}pts</Badge>,
+          <div style={{display:"flex",gap:4}}>
+            <Btn size="sm" variant="ghost" onClick={()=>openModal(c)}>Edit</Btn>
+            <Btn size="sm" variant="danger" onClick={()=>deleteCust(c.id)}>Del</Btn>
+          </div>
+        ])}/></Card>}
+      </>}
+      {tab==="top"&&<Card>
+        <div style={{fontSize:14,fontWeight:700,marginBottom:16}}>⭐ Top 5 Spenders</div>
+        {topSpenders.length===0?<div style={{color:C.textLight,textAlign:"center",padding:32}}>No customer spend data yet</div>
+        :<div style={{display:"flex",flexDirection:"column",gap:8}}>{topSpenders.map((c,i)=>(
+          <div key={c.id} style={{display:"flex",alignItems:"center",gap:14,padding:"12px 16px",background:i===0?C.primaryLight:C.bg,borderRadius:10,border:`1px solid ${i===0?C.primary:C.border}`}}>
+            <div style={{width:32,height:32,borderRadius:"50%",background:i===0?"linear-gradient(135deg,#F0A500,#e09000)":C.primary,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:800}}>{i+1}</div>
+            <div style={{flex:1}}><div style={{fontWeight:700}}>{c.name}</div><div style={{fontSize:12,color:C.textLight}}>{c.phone} · {c.orderCount} orders</div></div>
+            <div style={{textAlign:"right"}}><div style={{fontSize:16,fontWeight:800,color:C.primary}}>{fmtSAR(c.totalSpent)}</div><div style={{fontSize:11,color:C.textLight}}>{c.loyaltyPoints} pts</div></div>
+          </div>
+        ))}</div>}
+      </Card>}
+      {tab==="loyalty"&&<Card>
+        <div style={{fontSize:14,fontWeight:700,marginBottom:16}}>🎁 Loyalty Program</div>
+        <div style={{background:C.infoLight,border:`1px solid ${C.info}`,borderRadius:10,padding:"12px 16px",marginBottom:16,fontSize:13,color:C.info}}>
+          ℹ️ Earn 1 point per SAR spent. 100 points = SAR 10 discount. Points are manually awarded here.
+        </div>
+        {customers.length===0?<div style={{color:C.textLight,textAlign:"center",padding:32}}>No customers registered</div>
+        :<DataTable headers={["Customer","Phone","Points","Actions"]} rows={customers.map(c=>[
+          <strong>{c.name}</strong>,
+          <span style={{fontFamily:"monospace",fontSize:12}}>{c.phone}</span>,
+          <span style={{fontSize:16,fontWeight:800,color:C.accent}}>{c.loyaltyPoints}pts</span>,
+          <div style={{display:"flex",gap:6}}>
+            <Btn size="sm" variant="outline" onClick={()=>{const pts=parseInt(prompt(`Add points for ${c.name}:`)||"0");if(pts>0){saveCustomers(customers.map(x=>x.id===c.id?{...x,loyaltyPoints:(x.loyaltyPoints||0)+pts}:x));}}}>+Points</Btn>
+            <Btn size="sm" variant="ghost" onClick={()=>{if(c.loyaltyPoints>=100&&confirm("Redeem 100 points for SAR 10 discount?"))saveCustomers(customers.map(x=>x.id===c.id?{...x,loyaltyPoints:x.loyaltyPoints-100}:x));}}>Redeem</Btn>
+          </div>
+        ])}/>}
+      </Card>}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ENHANCED BACKUP & RESTORE MODULE
+// ═══════════════════════════════════════════════════════════════════
+function BackupManager({sales,items}){
+  const [lastBackup,setLastBackup]=useState(()=>LS.get("restopos_last_backup")||null);
+  function downloadFullBackup(){
+    const backup={
+      version:"v13",timestamp:new Date().toISOString(),
+      sales,items,
+      settings:{company:LS.get("restopos_company"),invoiceFormat:LS.get("restopos_invoice_format"),tables:LS.get("restopos_tables"),promos:LS.get("restopos_promos")},
+      customers:LS.get("restopos_customers")||[],
+      expenses:LS.get("restopos_expenses")||[],
+      zatcaInvoices:invoiceStorage.getAll(),
+      activityLog:(LS.get("restopos_activity_log")||[]).slice(0,100),
+    };
+    const json=JSON.stringify(backup,null,2);
+    const blob=new Blob([json],{type:"application/json"});
+    const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;
+    a.download=`restopos-full-backup-${TODAY}.json`;a.click();
+    LS.set("restopos_last_backup",new Date().toISOString());
+    setLastBackup(new Date().toISOString());
+  }
+  function downloadSalesCSV(){
+    const headers=["Invoice","Date","Time","Type","Table","Payment","Subtotal","VAT","Total","Items","Status"];
+    const rows=sales.map(s=>[s.id,s.date,s.time,s.type,s.table||"",s.payMethod,(s.subtotal||0).toFixed(2),(s.vat||0).toFixed(2),s.total.toFixed(2),(s.items||[]).map(i=>`${i.qty}x${i.name}`).join("; "),s.status||"completed"]);
+    const csv=[headers,...rows].map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(",")).join("\n");
+    const blob=new Blob([csv],{type:"text/csv"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`sales-all-${TODAY}.csv`;a.click();
+  }
+  function downloadMenuCSV(){
+    const headers=["Name","Arabic Name","Category","Price","Cost","Stock","Active","Barcode"];
+    const rows=items.map(i=>[i.name,i.nameAr||"",i.category,i.price,i.cost||0,i.stock||0,i.active?"Yes":"No",i.barcode||""]);
+    const csv=[headers,...rows].map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(",")).join("\n");
+    const blob=new Blob([csv],{type:"text/csv"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`menu-${TODAY}.csv`;a.click();
+  }
+  function downloadVATReport(){
+    const months={};
+    sales.forEach(s=>{const ym=s.date?.slice(0,7)||"Unknown";if(!months[ym])months[ym]={month:ym,orders:0,subtotal:0,vat:0,total:0};months[ym].orders++;months[ym].subtotal+=s.subtotal||0;months[ym].vat+=s.vat||0;months[ym].total+=s.total||0;});
+    const rows=Object.values(months).sort((a,b)=>a.month.localeCompare(b.month));
+    const csv=["Month,Orders,Subtotal (SAR),VAT 15% (SAR),Total (SAR)",...rows.map(r=>`${r.month},${r.orders},${r.subtotal.toFixed(2)},${r.vat.toFixed(2)},${r.total.toFixed(2)}`)].join("\n");
+    const blob=new Blob([csv],{type:"text/csv"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`vat-report-${TODAY}.csv`;a.click();
+  }
+  function downloadZATCAXMLBundle(){
+    const invoices=invoiceStorage.getAll();
+    if(!invoices.length)return alert("No ZATCA invoices to export");
+    const xmlDocs=invoices.map(inv=>`<!-- ${inv.invoice_number} -->\n${generateUBLXML(inv)}`).join("\n\n");
+    const blob=new Blob([xmlDocs],{type:"application/xml"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`zatca-all-invoices-${TODAY}.xml`;a.click();
+  }
+  function restoreBackup(file){
+    const reader=new FileReader();
+    reader.onload=e=>{
+      try{
+        const data=JSON.parse(e.target.result);
+        if(!data.version)return alert("Invalid backup file");
+        if(!confirm(`Restore backup from ${data.timestamp?.slice(0,10)}?\nThis will overwrite current data.`))return;
+        if(data.sales)LS.set("restopos_sales",data.sales);
+        if(data.items)LS.set("restopos_items",data.items);
+        if(data.customers)LS.set("restopos_customers",data.customers);
+        if(data.expenses)LS.set("restopos_expenses",data.expenses);
+        if(data.settings?.company)LS.set("restopos_company",data.settings.company);
+        if(data.settings?.invoiceFormat)LS.set("restopos_invoice_format",data.settings.invoiceFormat);
+        if(data.settings?.tables)LS.set("restopos_tables",data.settings.tables);
+        if(data.settings?.promos)LS.set("restopos_promos",data.settings.promos);
+        if(data.zatcaInvoices)localStorage.setItem("zatca_invoices_v2",JSON.stringify(data.zatcaInvoices));
+        alert("✅ Backup restored successfully! Reloading app...");
+        setTimeout(()=>window.location.reload(),1000);
+      }catch(err){alert("Failed to restore: "+err.message);}
+    };
+    reader.readAsText(file);
+  }
+  const exports=[
+    {icon:"💾",title:"Full Backup (JSON)",desc:"All data: sales, menu, customers, expenses, settings, ZATCA invoices",action:downloadFullBackup,color:C.primary},
+    {icon:"📊",title:"All Sales (CSV)",desc:"Complete sales history with items, payment methods, VAT",action:downloadSalesCSV,color:C.info},
+    {icon:"🍔",title:"Menu & Stock (CSV)",desc:"Full menu with pricing, cost, and stock levels",action:downloadMenuCSV,color:C.success},
+    {icon:"🧾",title:"VAT Report (CSV)",desc:"Monthly VAT summary — subtotal, tax, total per month",action:downloadVATReport,color:C.zatca},
+    {icon:"📄",title:"ZATCA XML Bundle",desc:"All ZATCA UBL 2.1 invoices in one XML export file",action:downloadZATCAXMLBundle,color:C.accent},
+  ];
+  return(
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
+        <div><div style={{fontSize:20,fontWeight:800}}>💾 Data Backup & Export</div><div style={{fontSize:13,color:C.textMid,marginTop:2}}>Download your data anytime · Full restore supported</div></div>
+        {lastBackup&&<div style={{fontSize:12,color:C.success,fontWeight:600}}>✓ Last backup: {fmtDateTime(lastBackup)}</div>}
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))",gap:14,marginBottom:24}}>
+        {exports.map(({icon,title,desc,action,color})=>(
+          <Card key={title} style={{cursor:"pointer",transition:"border-color 0.2s"}} onClick={action}>
+            <div style={{display:"flex",gap:14,alignItems:"flex-start"}}>
+              <div style={{width:44,height:44,borderRadius:12,background:color+"22",display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,flexShrink:0}}>{icon}</div>
+              <div style={{flex:1}}>
+                <div style={{fontSize:14,fontWeight:700,color,marginBottom:4}}>{title}</div>
+                <div style={{fontSize:12,color:C.textLight,lineHeight:1.4}}>{desc}</div>
+              </div>
+            </div>
+          </Card>
+        ))}
+      </div>
+      <Card>
+        <div style={{fontSize:14,fontWeight:700,marginBottom:16}}>🔄 Restore from Backup</div>
+        <div style={{background:C.warningLight,border:`1px solid ${C.warning}`,borderRadius:10,padding:"12px 16px",marginBottom:14,fontSize:13,color:C.warning,fontWeight:600}}>⚠️ Restoring will overwrite current data. Always download a fresh backup before restoring.</div>
+        <div style={{display:"flex",gap:12,alignItems:"center"}}>
+          <label style={{padding:"10px 20px",background:C.primary,color:"#fff",borderRadius:8,fontSize:13,fontWeight:700,cursor:"pointer"}}>
+            📂 Choose Backup File
+            <input type="file" accept=".json" onChange={e=>e.target.files[0]&&restoreBackup(e.target.files[0])} style={{display:"none"}}/>
+          </label>
+          <span style={{fontSize:12,color:C.textLight}}>Only RestoPOS v13 .json backup files</span>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PROFIT & LOSS MODULE
+// ═══════════════════════════════════════════════════════════════════
+function ProfitLoss({sales,items}){
+  const [period,setPeriod]=useState("month");
+  const now=new Date();
+  const expenses=LS.get("restopos_expenses")||[];
+  const filteredSales=sales.filter(s=>{
+    const d=new Date(s.date);
+    if(period==="today")return s.date===TODAY;
+    if(period==="week"){const w=new Date();w.setDate(w.getDate()-7);return d>=w;}
+    if(period==="month")return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear();
+    return true;
+  });
+  const filteredExp=expenses.filter(e=>{
+    const d=new Date(e.date);
+    if(period==="today")return e.date===TODAY;
+    if(period==="week"){const w=new Date();w.setDate(w.getDate()-7);return d>=w;}
+    if(period==="month")return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear();
+    return true;
+  });
+  const revenue=filteredSales.reduce((s,o)=>s+(o.subtotal||0),0);
+  const vatCollected=filteredSales.reduce((s,o)=>s+o.vat,0);
+  const cogs=filteredSales.reduce((s,o)=>s+(o.items||[]).reduce((ss,it)=>{const item=items.find(i=>i.id===it.id);return ss+(item?.cost||0)*it.qty;},0),0);
+  const opExpenses=filteredExp.reduce((s,e)=>s+e.amount,0);
+  const grossProfit=revenue-cogs;
+  const netProfit=grossProfit-opExpenses;
+  const grossMargin=revenue>0?((grossProfit/revenue)*100).toFixed(1):0;
+  const netMargin=revenue>0?((netProfit/revenue)*100).toFixed(1):0;
+  const payBreakdown=["Cash","Mada","Apple Pay","STC Pay"].map(m=>({method:m,total:filteredSales.filter(s=>s.payMethod===m).reduce((s,o)=>s+o.total,0),count:filteredSales.filter(s=>s.payMethod===m).length}));
+  return(
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:24,flexWrap:"wrap",gap:10}}>
+        <div><div style={{fontSize:20,fontWeight:800}}>📈 Profit & Loss</div><div style={{fontSize:13,color:C.textMid,marginTop:2}}>{{"today":"Today","week":"Last 7 Days","month":"This Month","all":"All Time"}[period]}</div></div>
+        <div style={{display:"flex",gap:6}}>{[["today","Today"],["week","Week"],["month","Month"],["all","All"]].map(([id,lbl])=>(
+          <button key={id} onClick={()=>setPeriod(id)} style={{padding:"7px 14px",borderRadius:8,border:`1.5px solid ${period===id?C.primary:C.border}`,background:period===id?C.primary:"#fff",color:period===id?"#fff":C.textMid,fontFamily:"inherit",fontSize:13,fontWeight:600,cursor:"pointer"}}>{lbl}</button>
+        ))}</div>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))",gap:16,marginBottom:24}}>
+        <StatCard icon="💰" label="Revenue (excl. VAT)" value={fmtSAR(revenue)} color={C.primary} bg={C.primaryLight}/>
+        <StatCard icon="🧾" label="VAT Collected" value={fmtSAR(vatCollected)} color={C.zatca} bg={C.zatcaLight}/>
+        <StatCard icon="📦" label="Cost of Goods" value={fmtSAR(cogs)} color={C.warning} bg={C.warningLight}/>
+        <StatCard icon="💸" label="Operating Expenses" value={fmtSAR(opExpenses)} color={C.danger} bg={C.dangerLight}/>
+        <StatCard icon="📊" label="Gross Profit" value={fmtSAR(grossProfit)} sub={`${grossMargin}% margin`} color={grossProfit>=0?C.success:C.danger} bg={grossProfit>=0?C.successLight:C.dangerLight}/>
+        <StatCard icon="🏆" label="Net Profit" value={fmtSAR(netProfit)} sub={`${netMargin}% margin`} color={netProfit>=0?C.success:C.danger} bg={netProfit>=0?C.successLight:C.dangerLight}/>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:20}}>
+        <Card>
+          <div style={{fontSize:14,fontWeight:700,marginBottom:16}}>💳 Payment Breakdown</div>
+          {payBreakdown.map(p=>(
+            <div key={p.method} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:`1px solid ${C.border}`}}>
+              <div><div style={{fontSize:13,fontWeight:600}}>{p.method}</div><div style={{fontSize:11,color:C.textLight}}>{p.count} transactions</div></div>
+              <strong style={{color:C.primary}}>{fmtSAR(p.total)}</strong>
+            </div>
+          ))}
+        </Card>
+        <Card>
+          <div style={{fontSize:14,fontWeight:700,marginBottom:16}}>📊 P&L Summary</div>
+          {[["Revenue (excl. VAT)",revenue,C.primary,false],["Cost of Goods Sold",-cogs,C.warning,false],["Gross Profit",grossProfit,grossProfit>=0?C.success:C.danger,false],["Operating Expenses",-opExpenses,C.danger,false],["Net Profit / (Loss)",netProfit,netProfit>=0?C.success:C.danger,true]].map(([label,val,color,isFinal])=>(
+            <div key={label} style={{display:"flex",justifyContent:"space-between",padding:"10px 0",borderBottom:!isFinal?`1px solid ${C.border}`:"none",borderTop:isFinal?`2px solid ${C.border}`:"none",fontWeight:isFinal?800:400}}>
+              <span style={{fontSize:13,color:isFinal?C.text:C.textMid}}>{label}</span>
+              <span style={{fontWeight:700,color}}>{val<0?"(":""}{fmtSAR(Math.abs(val))}{val<0?")":""}</span>
+            </div>
+          ))}
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ADVANCED ANALYTICS (Hourly, VAT Reports, Staff Performance)
+// ═══════════════════════════════════════════════════════════════════
+function AdvancedReports({sales,items}){
+  const [tab,setTab]=useState("hourly");
+  const todaySales=sales.filter(s=>s.date===TODAY);
+  const hourly=Array.from({length:24},(_,h)=>{const hrs=todaySales.filter(s=>parseInt(s.time?.slice(0,2)||"0")===h);return{hour:h,count:hrs.length,revenue:hrs.reduce((s,o)=>s+o.total,0)};});
+  const peakHour=hourly.reduce((max,h)=>h.revenue>max.revenue?h:max,hourly[0]);
+  const vatByMonth={};
+  sales.forEach(s=>{const ym=s.date?.slice(0,7)||"Unknown";if(!vatByMonth[ym])vatByMonth[ym]={month:ym,orders:0,revenue:0,vat:0};vatByMonth[ym].orders++;vatByMonth[ym].revenue+=s.subtotal||0;vatByMonth[ym].vat+=s.vat||0;});
+  const vatRows=Object.values(vatByMonth).sort((a,b)=>b.month.localeCompare(a.month));
+  const byUser={};
+  sales.forEach(s=>{const u=s.cashier||s.user||"Unknown";if(!byUser[u])byUser[u]={user:u,count:0,revenue:0};byUser[u].count++;byUser[u].revenue+=s.total||0;});
+  const userRows=Object.values(byUser).sort((a,b)=>b.revenue-a.revenue);
+  const maxRevenue=Math.max(...hourly.map(h=>h.revenue),1);
+  return(
+    <div>
+      <div style={{fontSize:20,fontWeight:800,marginBottom:20}}>📋 Advanced Analytics</div>
+      <div style={{display:"flex",gap:6,marginBottom:20,flexWrap:"wrap"}}>
+        {[["hourly","⏰ Hourly"],["vat","🧾 VAT Reports"],["staff","👤 Staff"],["items","🏆 Top Items"]].map(([id,lbl])=>(
+          <button key={id} onClick={()=>setTab(id)} style={{padding:"7px 16px",borderRadius:8,border:`1.5px solid ${tab===id?C.primary:C.border}`,background:tab===id?C.primaryLight:"#fff",color:tab===id?C.primary:C.textMid,fontFamily:"inherit",fontSize:13,fontWeight:600,cursor:"pointer"}}>{lbl}</button>
+        ))}
+      </div>
+      {tab==="hourly"&&<Card>
+        <div style={{fontSize:14,fontWeight:700,marginBottom:4}}>⏰ Hour-by-Hour Sales — Today</div>
+        <div style={{fontSize:12,color:C.textMid,marginBottom:16}}>Peak hour: {peakHour.hour}:00 — {fmtSAR(peakHour.revenue)}</div>
+        <div style={{display:"flex",gap:3,alignItems:"flex-end",height:160,overflowX:"auto",paddingBottom:8}}>
+          {hourly.map(h=>(
+            <div key={h.hour} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4,minWidth:28}}>
+              <div style={{fontSize:9,color:C.textLight,fontWeight:600}}>{h.revenue>0?h.revenue.toFixed(0):"—"}</div>
+              <div style={{width:22,background:h.hour===peakHour.hour&&h.revenue>0?C.accent:h.revenue>0?C.primary:C.border,borderRadius:"4px 4px 0 0",transition:"height 0.3s",height:`${Math.max(4,(h.revenue/maxRevenue)*120)}px`}}/>
+              <div style={{fontSize:9,color:C.textLight}}>{h.hour}h</div>
+            </div>
+          ))}
+        </div>
+        <div style={{marginTop:16,display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10}}>
+          {[["Peak Hour",`${peakHour.hour}:00`,C.accent],["Today Orders",todaySales.length,C.primary],["Today Revenue",fmtSAR(todaySales.reduce((s,o)=>s+o.total,0)),C.success]].map(([l,v,col])=>(
+            <div key={l} style={{background:C.bg,borderRadius:8,padding:"10px 12px"}}><div style={{fontSize:11,color:C.textMid}}>{l}</div><div style={{fontSize:14,fontWeight:800,color:col}}>{v}</div></div>
+          ))}
+        </div>
+      </Card>}
+      {tab==="vat"&&<Card>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+          <div style={{fontSize:14,fontWeight:700}}>🧾 Monthly VAT Summary (ZATCA)</div>
+          <Btn size="sm" variant="outline" onClick={()=>{
+            const csv=["Month,Orders,Revenue (excl VAT),VAT 15%,Total",...vatRows.map(r=>`${r.month},${r.orders},${r.revenue.toFixed(2)},${r.vat.toFixed(2)},${(r.revenue+r.vat).toFixed(2)}`)].join("\n");
+            const blob=new Blob([csv],{type:"text/csv"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`vat-summary-${TODAY}.csv`;a.click();
+          }}>📤 Export</Btn>
+        </div>
+        {vatRows.length===0?<div style={{textAlign:"center",padding:"32px 0",color:C.textLight}}>No sales data yet</div>
+        :<DataTable headers={["Month","Orders","Revenue (excl VAT)","VAT 15%","Total"]} rows={vatRows.map(r=>[
+          <strong style={{fontFamily:"monospace"}}>{r.month}</strong>,r.orders,fmtSAR(r.revenue),
+          <span style={{color:C.zatca,fontWeight:700}}>{fmtSAR(r.vat)}</span>,
+          <strong style={{color:C.primary}}>{fmtSAR(r.revenue+r.vat)}</strong>
+        ])}/>}
+        <div style={{marginTop:16,padding:"12px 16px",background:C.zatcaLight,borderRadius:10,fontSize:13}}>
+          <strong style={{color:C.zatca}}>Total VAT Collected (all time): {fmtSAR(sales.reduce((s,o)=>s+o.vat,0))}</strong>
+        </div>
+      </Card>}
+      {tab==="staff"&&<Card>
+        <div style={{fontSize:14,fontWeight:700,marginBottom:16}}>👤 Staff Performance</div>
+        {userRows.length===0?<div style={{textAlign:"center",padding:"32px 0",color:C.textLight}}>No data yet</div>
+        :<DataTable headers={["Cashier / User","Orders","Total Revenue","Avg Order"]} rows={userRows.map(u=>[
+          <strong>{u.user}</strong>,
+          <Badge color={C.info} bg={C.infoLight}>{u.count}</Badge>,
+          <strong style={{color:C.primary}}>{fmtSAR(u.revenue)}</strong>,
+          fmtSAR(u.count>0?u.revenue/u.count:0)
+        ])}/>}
+      </Card>}
+      {tab==="items"&&<Card>
+        <div style={{fontSize:14,fontWeight:700,marginBottom:16}}>🏆 Top Items (All Time)</div>
+        {(()=>{
+          const itemMap={};
+          sales.forEach(s=>(s.items||[]).forEach(it=>{if(!itemMap[it.id])itemMap[it.id]={name:it.name,qty:0,revenue:0};itemMap[it.id].qty+=it.qty;itemMap[it.id].revenue+=it.qty*it.price;}));
+          const ranked=Object.values(itemMap).sort((a,b)=>b.revenue-a.revenue).slice(0,15);
+          return ranked.length===0?<div style={{textAlign:"center",padding:"32px 0",color:C.textLight}}>No items sold yet</div>
+          :<DataTable headers={["#","Item","Units Sold","Revenue"]} rows={ranked.map((it,i)=>[
+            <span style={{fontWeight:800,color:i<3?C.accent:C.textMid}}>{i+1}</span>,
+            <strong>{it.name}</strong>,
+            <Badge color={C.info} bg={C.infoLight}>{it.qty}</Badge>,
+            <strong style={{color:C.primary}}>{fmtSAR(it.revenue)}</strong>
+          ])}/>;
+        })()}
+      </Card>}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// SHIFT MANAGEMENT & CASH DRAWER RECONCILIATION
+// ═══════════════════════════════════════════════════════════════════
+function ShiftManager({sales,currentUser}){
+  const [shifts,setShifts]=useState(()=>LS.get("restopos_shifts")||[]);
+  const [activeShift,setActiveShift]=useState(()=>LS.get("restopos_active_shift")||null);
+  const [cashDrawer,setCashDrawer]=useState("");
+  const [note,setNote]=useState("");
+  function startShift(){
+    const shift={id:Date.now(),startTime:new Date().toISOString(),user:currentUser?.role||"Unknown",openingCash:parseFloat(cashDrawer)||0,note,endTime:null,closingCash:null,shiftRevenue:0,shiftOrders:0};
+    const updated=[shift,...shifts.slice(0,49)];setShifts(updated);LS.set("restopos_shifts",updated);
+    LS.set("restopos_active_shift",shift);setActiveShift(shift);setCashDrawer("");setNote("");
+    logActivity("SHIFT_STARTED",{after:{user:shift.user,openingCash:shift.openingCash}},currentUser?.role||"System");
+  }
+  function endShift(){
+    if(!activeShift)return;
+    const shiftSales=sales.filter(s=>new Date(s.date+"T"+(s.time||"00:00")).getTime()>=new Date(activeShift.startTime).getTime());
+    const revenue=shiftSales.reduce((s,o)=>s+o.total,0);
+    const closed={...activeShift,endTime:new Date().toISOString(),closingCash:parseFloat(cashDrawer)||0,shiftRevenue:revenue,shiftOrders:shiftSales.length};
+    const updated=shifts.map(s=>s.id===activeShift.id?closed:s);setShifts(updated);LS.set("restopos_shifts",updated);
+    LS.set("restopos_active_shift",null);setActiveShift(null);setCashDrawer("");
+    logActivity("SHIFT_ENDED",{after:{user:closed.user,revenue,orders:shiftSales.length}},currentUser?.role||"System");
+  }
+  const shiftDuration=activeShift?Math.floor((Date.now()-new Date(activeShift.startTime).getTime())/60000):0;
+  const shiftSales=activeShift?sales.filter(s=>new Date(s.date+"T"+(s.time||"00:00")).getTime()>=new Date(activeShift.startTime).getTime()):[];
+  return(
+    <div>
+      <div style={{fontSize:20,fontWeight:800,marginBottom:20}}>🔄 Shift Management</div>
+      {activeShift?(
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:20,marginBottom:24}}>
+          <Card style={{borderLeft:`5px solid ${C.success}`}}>
+            <div style={{display:"flex",gap:10,alignItems:"center",marginBottom:14}}>
+              <span style={{fontSize:24}}>🟢</span>
+              <div><div style={{fontSize:15,fontWeight:800,color:C.success}}>Shift Active</div><div style={{fontSize:12,color:C.textLight}}>Started {fmtDateTime(activeShift.startTime)}</div></div>
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:16}}>
+              {[["Cashier",activeShift.user],["Duration",shiftDuration+"m"],["Opening Cash",fmtSAR(activeShift.openingCash)]].map(([l,v])=>(
+                <div key={l} style={{display:"flex",justifyContent:"space-between",fontSize:13}}><span style={{color:C.textMid}}>{l}</span><strong>{v}</strong></div>
+              ))}
+              {activeShift.note&&<div style={{fontSize:12,color:C.textLight,fontStyle:"italic"}}>"{activeShift.note}"</div>}
+            </div>
+            <Inp label="Closing Cash Drawer (SAR)" value={cashDrawer} onChange={setCashDrawer} type="number" placeholder="Count your cash..."/>
+            <Btn variant="danger" onClick={endShift} style={{marginTop:12,width:"100%"}}>🔴 End Shift</Btn>
+          </Card>
+          <Card>
+            <div style={{fontSize:14,fontWeight:700,marginBottom:16}}>This Shift</div>
+            <div style={{display:"flex",flexDirection:"column",gap:12}}>
+              <StatCard icon="🧾" label="Orders" value={shiftSales.length} color={C.primary} bg={C.primaryLight}/>
+              <StatCard icon="💰" label="Revenue" value={fmtSAR(shiftSales.reduce((s,o)=>s+o.total,0))} color={C.success} bg={C.successLight}/>
+            </div>
+          </Card>
+        </div>
+      ):(
+        <Card style={{maxWidth:480,marginBottom:24}}>
+          <div style={{fontSize:14,fontWeight:700,marginBottom:16}}>🟡 Start New Shift</div>
+          <div style={{display:"flex",flexDirection:"column",gap:12}}>
+            <Inp label="Opening Cash Drawer (SAR)" value={cashDrawer} onChange={setCashDrawer} type="number" placeholder="Count opening cash..."/>
+            <div style={{display:"flex",flexDirection:"column",gap:4}}>
+              <label style={{fontSize:12,fontWeight:600,color:C.textMid}}>Handover Notes (optional)</label>
+              <textarea value={note} onChange={e=>setNote(e.target.value)} rows={2} placeholder="Special instructions, issues to note..." style={{padding:"9px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontSize:13,fontFamily:"inherit",resize:"none"}}/>
+            </div>
+            <Btn onClick={startShift} style={{width:"100%"}}>🟢 Start Shift</Btn>
+          </div>
+        </Card>
+      )}
+      <Card>
+        <div style={{fontSize:14,fontWeight:700,marginBottom:16}}>📋 Shift History</div>
+        {shifts.filter(s=>s.endTime).length===0?<div style={{color:C.textLight,textAlign:"center",padding:24}}>No completed shifts yet</div>
+        :<DataTable headers={["Start","End","User","Orders","Revenue","Opening","Closing"]} rows={shifts.filter(s=>s.endTime).slice(0,20).map(s=>[
+          <span style={{fontFamily:"monospace",fontSize:11}}>{s.startTime.slice(0,16).replace("T"," ")}</span>,
+          <span style={{fontFamily:"monospace",fontSize:11}}>{s.endTime.slice(0,16).replace("T"," ")}</span>,
+          s.user,s.shiftOrders||0,
+          <strong style={{color:C.primary}}>{fmtSAR(s.shiftRevenue||0)}</strong>,
+          fmtSAR(s.openingCash||0),
+          <span style={{color:s.closingCash>0?C.success:C.textLight}}>{fmtSAR(s.closingCash||0)}</span>
+        ])}/>}
+      </Card>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// AUDIT TRAIL VIEWER
+// ═══════════════════════════════════════════════════════════════════
+function AuditTrail(){
+  const [logs,setLogs]=useState(()=>LS.get("restopos_activity_log")||[]);
+  const [filter,setFilter]=useState("");
+  const filtered=logs.filter(l=>!filter||l.action?.toLowerCase().includes(filter.toLowerCase())||l.user?.toLowerCase().includes(filter.toLowerCase()));
+  const ACTION_COLORS={SALE_COMPLETED:C.success,ITEM_ADDED:C.info,ITEM_DELETED:C.danger,USER_ADDED:C.info,USER_DELETED:C.danger,SETTINGS_CHANGED:C.warning,PINS_CHANGED:C.warning,LICENSE_TOGGLE:C.accent,PLAN_CHANGE:C.zatca,CLIENT_SUSPENDED:C.danger,SHIFT_STARTED:C.success,SHIFT_ENDED:C.primary,EXPENSE_ADDED:C.danger,CUSTOMER_ADDED:C.info};
+  return(
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
+        <div><div style={{fontSize:20,fontWeight:800}}>🔍 Audit Trail</div><div style={{fontSize:13,color:C.textMid,marginTop:2}}>{logs.length} logged events · Last 500 retained</div></div>
+        <Btn variant="danger" size="sm" onClick={()=>{if(confirm("Clear all audit logs?")){{LS.set("restopos_activity_log",[]);setLogs([])}}}}>🗑 Clear Logs</Btn>
+      </div>
+      <Card style={{marginBottom:16}}>
+        <input value={filter} onChange={e=>setFilter(e.target.value)} placeholder="🔍 Filter by action or user..." style={{width:"100%",padding:"9px 14px",border:`1px solid ${C.border}`,borderRadius:8,fontSize:13,fontFamily:"inherit"}}/>
+      </Card>
+      {filtered.length===0?<Card><div style={{textAlign:"center",padding:"40px 0",color:C.textMid}}><div style={{fontSize:32,marginBottom:12}}>🔍</div>No audit logs{filter?" matching filter":""}</div></Card>
+      :<Card><div style={{display:"flex",flexDirection:"column",gap:0}}>
+        {filtered.slice(0,200).map((log,i)=>(
+          <div key={log.id||i} style={{display:"flex",gap:14,padding:"10px 0",borderBottom:`1px solid ${C.border}`,alignItems:"flex-start"}}>
+            <span style={{fontSize:10,padding:"3px 8px",borderRadius:20,fontWeight:700,background:((ACTION_COLORS[log.action]||C.info)+"22"),color:ACTION_COLORS[log.action]||C.info,whiteSpace:"nowrap",flexShrink:0,marginTop:1}}>{log.action}</span>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:12,color:C.text,fontWeight:500,overflow:"hidden",textOverflow:"ellipsis"}}>{JSON.stringify(log.after||log.details||{})}</div>
+              <div style={{fontSize:11,color:C.textLight,marginTop:2}}>by <strong>{log.user}</strong> · {log.timestamp?.slice(0,19).replace("T"," ")}</div>
+            </div>
+          </div>
+        ))}
+      </div></Card>}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // OWNER DASHBOARD
 // ═══════════════════════════════════════════════════════════════════
 const OWNER_PASSWORD="RestoOwner2026";
@@ -1983,7 +2574,7 @@ export default function App(){
   function handleScaleChange(v){const s=Math.max(70,Math.min(130,parseInt(v)||100));setUiScale(s);LS.set("restopos_ui_scale",String(s));}
   useEffect(()=>{const saved=LS.get("restopos_license_v2");const pendingId=localStorage.getItem("restopos_pending_id");if(saved){setLicense(saved);setStep("login");}else if(pendingId){setStep("license");}else setStep("register");},[]);
   function handleClearLicense(){LS.del("restopos_license_v2");LS.del("restopos_pins");setLicense(null);setCurrentUser(null);setStep("register");}
-  const ALL_NAV=[["dashboard","📊","Dashboard",["Admin","Manager"]],["pos","🖥️","POS",["Admin","Manager","Cashier"]],["settings","⚙️","Settings",["Admin"]],["create","➕","Create",["Admin","Manager"]],["transactions","💳","Transactions",["Admin","Manager"]],["accounts","📈","Accounts",["Admin","Manager"]],["reports","📋","Reports",["Admin","Manager"]],["tools","🔧","Tools",["Admin"]],["useradmin","👤","Users",["Admin"]],["help","❓","Help",["Admin","Manager","Cashier"]]];
+  const ALL_NAV=[["dashboard","📊","Dashboard",["Admin","Manager"]],["pos","🖥️","POS",["Admin","Manager","Cashier"]],["settings","⚙️","Settings",["Admin"]],["create","➕","Create",["Admin","Manager"]],["transactions","💳","Transactions",["Admin","Manager"]],["accounts","📈","P&L",["Admin","Manager"]],["expenses","💸","Expenses",["Admin","Manager"]],["customers","👥","Customers",["Admin","Manager"]],["reports","📋","Reports",["Admin","Manager"]],["analytics","📉","Analytics",["Admin","Manager"]],["backup","💾","Backup",["Admin"]],["shifts","🔄","Shifts",["Admin","Manager"]],["audit","🔍","Audit",["Admin"]],["tools","🔧","Tools",["Admin"]],["useradmin","👤","Users",["Admin"]],["help","❓","Help",["Admin","Manager","Cashier"]]];
   const NAV=ALL_NAV.filter(([,,,roles])=>currentUser&&roles.includes(currentUser.role));
   if(ownerMode&&!ownerAuthed)return<OwnerLogin onLogin={()=>setOwnerAuthed(true)}/>;
   if(ownerMode&&ownerAuthed)return<OwnerDashboard onLogout={()=>{setOwnerMode(false);setOwnerAuthed(false);}}/>;
@@ -1997,7 +2588,7 @@ export default function App(){
       <div style={{display:"flex",alignItems:"stretch",flexShrink:0,zIndex:100,boxShadow:"0 2px 12px rgba(0,0,0,0.18)",height:50,width:"100%"}}>
         <div style={{background:"linear-gradient(135deg,#1A3D2B 0%,#1F4D36 100%)",display:"flex",alignItems:"center",gap:8,padding:"0 14px",flexShrink:0,borderRight:"1px solid rgba(255,255,255,0.1)"}}>
           <div style={{width:28,height:28,background:"linear-gradient(135deg,#2ECC71,#F0A500)",borderRadius:7,display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontSize:14,fontWeight:900,flexShrink:0}}>R</div>
-          <div><div style={{fontSize:13,fontWeight:800,color:"#fff",lineHeight:1,whiteSpace:"nowrap"}}>RestoPOS</div><div style={{fontSize:8,color:"rgba(255,255,255,0.5)",letterSpacing:"0.1em",whiteSpace:"nowrap"}}>ZATCA PHASE 2 · v12.0</div></div>
+          <div><div style={{fontSize:13,fontWeight:800,color:"#fff",lineHeight:1,whiteSpace:"nowrap"}}>RestoPOS</div><div style={{fontSize:8,color:"rgba(255,255,255,0.5)",letterSpacing:"0.1em",whiteSpace:"nowrap"}}>ZATCA PHASE 2 · v13.0</div></div>
         </div>
         <div style={{background:"linear-gradient(90deg,#E8F4EE 0%,#F0F9F4 100%)",flex:1,display:"flex",alignItems:"center",padding:"0 6px",overflowX:"auto",borderRight:"1px solid #C8E6D4",minWidth:0}}>
           {NAV.map(([id,icon,label])=>(
@@ -2024,8 +2615,14 @@ export default function App(){
         {screen==="settings"&&<Settings company={company} setCompany={setCompany} tables={tables} setTables={setTables} license={license} onClearLicense={handleClearLicense} pins={pins} setPins={setPins} invoiceFormat={invoiceFormat} setInvoiceFormat={setInvoiceFormat}/>}
         {screen==="create"&&<Create items={items} setItems={setItems} promos={promos} setPromos={setPromos}/>}
         {screen==="transactions"&&<Transactions sales={sales} setSales={setSales} license={license}/>}
-        {screen==="accounts"&&<Accounts sales={sales} items={items}/>}
+        {screen==="accounts"&&<ProfitLoss sales={sales} items={items}/>}
+        {screen==="expenses"&&<Expenses/>}
+        {screen==="customers"&&<Customers sales={sales}/>}
         {screen==="reports"&&<Reports sales={sales} items={items} setSales={setSales}/>}
+        {screen==="analytics"&&<AdvancedReports sales={sales} items={items}/>}
+        {screen==="backup"&&<BackupManager sales={sales} items={items}/>}
+        {screen==="shifts"&&<ShiftManager sales={sales} currentUser={currentUser}/>}
+        {screen==="audit"&&<AuditTrail/>}
         {screen==="tools"&&<Tools sales={sales} items={items} setItems={setItems}/>}
         {screen==="useradmin"&&<UserAdmin users={users} setUsers={setUsers}/>}
         {screen==="help"&&<Help/>}
