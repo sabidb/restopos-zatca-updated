@@ -49,7 +49,7 @@ function generateZATCABase64(opts) { return generatePhase1QR(opts); }
 async function sha256(text) {
   const data = new TextEncoder().encode(text);
   const hashBuffer = await crypto.subtle.digest("SHA-256", data);
-  return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, "0")).join("");
+  return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, "0")}).join("");
 }
 async function sha256Base64(text) {
   const hex = await sha256(text);
@@ -67,7 +67,7 @@ function escapeXML(str) { if (!str) return ""; return String(str).replace(/&/g,"
 function generateUBLXML(invoice) {
   const { invoice_number, uuid, timestamp, seller_name, seller_vat, seller_address, items, subtotal, vat_amount, total, prev_invoice_hash, icv, qr_string } = invoice;
   const dateStr = timestamp.slice(0, 10); const timeStr = timestamp.slice(11, 19);
-  const lineItems = (items || []).map((item, idx) => `<cac:InvoiceLine><cbc:ID>${idx+1}</cbc:ID><cbc:InvoicedQuantity unitCode="PCE">${item.qty}</cbc:InvoicedQuantity><cbc:LineExtensionAmount currencyID="SAR">${(item.price*item.qty).toFixed(2)}</cbc:LineExtensionAmount><cac:TaxTotal><cbc:TaxAmount currencyID="SAR">${(item.price*item.qty*0.15).toFixed(2)}</cbc:TaxAmount></cac:TaxTotal><cac:Item><cbc:Name>${escapeXML(item.name)}</cbc:Name><cac:ClassifiedTaxCategory><cbc:ID>S</cbc:ID><cbc:Percent>15</cbc:Percent><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:ClassifiedTaxCategory></cac:Item><cac:Price><cbc:PriceAmount currencyID="SAR">${item.price.toFixed(2)}</cbc:PriceAmount></cac:Price></cac:InvoiceLine>`).join("");
+  const lineItems = (items || []).map((item, idx) => {const lineTotal=(item.price*item.qty);const lineVAT=parseFloat((lineTotal*(15/115)).toFixed(2));const lineExclVAT=parseFloat((lineTotal-lineVAT).toFixed(2));return `<cac:InvoiceLine><cbc:ID>${idx+1}</cbc:ID><cbc:InvoicedQuantity unitCode="PCE">${item.qty}</cbc:InvoicedQuantity><cbc:LineExtensionAmount currencyID="SAR">${lineExclVAT.toFixed(2)}</cbc:LineExtensionAmount><cac:TaxTotal><cbc:TaxAmount currencyID="SAR">${lineVAT.toFixed(2)}</cbc:TaxAmount></cac:TaxTotal><cac:Item><cbc:Name>${escapeXML(item.name)}</cbc:Name><cac:ClassifiedTaxCategory><cbc:ID>S</cbc:ID><cbc:Percent>15</cbc:Percent><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:ClassifiedTaxCategory></cac:Item><cac:Price><cbc:PriceAmount currencyID="SAR">${item.price.toFixed(2)}</cbc:PriceAmount></cac:Price></cac:InvoiceLine>`).join("");
   return `<?xml version="1.0" encoding="UTF-8"?><Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2" xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2" xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2" xmlns:ext="urn:oasis:names:specification:ubl:schema:xsd:CommonExtensionComponents-2"><ext:UBLExtensions><ext:UBLExtension><ext:ExtensionURI>urn:oasis:names:specification:ubl:dsig:ext:ZATCA</ext:ExtensionURI><ext:ExtensionContent><!-- ECDSA placeholder Phase 2 --></ext:ExtensionContent></ext:UBLExtension></ext:UBLExtensions><cbc:UBLVersionID>2.1</cbc:UBLVersionID><cbc:CustomizationID>urn:zatca.gov.sa:trUBL:Invoice:2.0</cbc:CustomizationID><cbc:ProfileID>reporting:1.0</cbc:ProfileID><cbc:ID>${escapeXML(invoice_number)}</cbc:ID><cbc:UUID>${uuid}</cbc:UUID><cbc:IssueDate>${dateStr}</cbc:IssueDate><cbc:IssueTime>${timeStr}</cbc:IssueTime><cbc:InvoiceTypeCode name="0200000">${invoice.is_credit_note?"381":"388"}</cbc:InvoiceTypeCode><cbc:DocumentCurrencyCode>SAR</cbc:DocumentCurrencyCode><cbc:TaxCurrencyCode>SAR</cbc:TaxCurrencyCode><cbc:AdditionalDocumentReference><cbc:ID>ICV</cbc:ID><cbc:UUID>${icv}</cbc:UUID></cbc:AdditionalDocumentReference><cbc:AdditionalDocumentReference><cbc:ID>PIH</cbc:ID><cac:Attachment><cbc:EmbeddedDocumentBinaryObject mimeCode="text/plain">${prev_invoice_hash||"NWZlY2ViNjZmZmM4NmYzOGQ5NTI3ODZjNmQ2OTZjNzljMmRiYzIzOWRkNGU5MWI0NjcyOWQ3M2EyN2ZhNTdlOQ=="}</cbc:EmbeddedDocumentBinaryObject></cac:Attachment></cbc:AdditionalDocumentReference><cbc:AdditionalDocumentReference><cbc:ID>QR</cbc:ID><cac:Attachment><cbc:EmbeddedDocumentBinaryObject mimeCode="text/plain">${qr_string}</cbc:EmbeddedDocumentBinaryObject></cac:Attachment></cbc:AdditionalDocumentReference><cac:AccountingSupplierParty><cac:Party><cac:PartyIdentification><cbc:ID schemeID="CRN">${escapeXML(invoice.seller_cr||"")}</cbc:ID></cac:PartyIdentification><cac:PostalAddress><cbc:StreetName>${escapeXML(seller_address)}</cbc:StreetName><cbc:CityName>Riyadh</cbc:CityName><cbc:CountrySubentity>SA</cbc:CountrySubentity><cac:Country><cbc:IdentificationCode>SA</cbc:IdentificationCode></cac:Country></cac:PostalAddress><cac:PartyTaxScheme><cbc:CompanyID>${escapeXML(seller_vat)}</cbc:CompanyID><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:PartyTaxScheme><cac:PartyLegalEntity><cbc:RegistrationName>${escapeXML(seller_name)}</cbc:RegistrationName></cac:PartyLegalEntity></cac:Party></cac:AccountingSupplierParty><cac:AccountingCustomerParty><cac:Party><cac:PostalAddress><cbc:CountrySubentity>SA</cbc:CountrySubentity><cac:Country><cbc:IdentificationCode>SA</cbc:IdentificationCode></cac:Country></cac:PostalAddress><cac:PartyTaxScheme><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:PartyTaxScheme></cac:Party></cac:AccountingCustomerParty><cac:TaxTotal><cbc:TaxAmount currencyID="SAR">${vat_amount.toFixed(2)}</cbc:TaxAmount><cac:TaxSubtotal><cbc:TaxableAmount currencyID="SAR">${subtotal.toFixed(2)}</cbc:TaxableAmount><cbc:TaxAmount currencyID="SAR">${vat_amount.toFixed(2)}</cbc:TaxAmount><cac:TaxCategory><cbc:ID>S</cbc:ID><cbc:Percent>15</cbc:Percent><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal></cac:TaxTotal><cac:LegalMonetaryTotal><cbc:LineExtensionAmount currencyID="SAR">${subtotal.toFixed(2)}</cbc:LineExtensionAmount><cbc:TaxExclusiveAmount currencyID="SAR">${subtotal.toFixed(2)}</cbc:TaxExclusiveAmount><cbc:TaxInclusiveAmount currencyID="SAR">${total.toFixed(2)}</cbc:TaxInclusiveAmount><cbc:PayableAmount currencyID="SAR">${total.toFixed(2)}</cbc:PayableAmount></cac:LegalMonetaryTotal>${lineItems}</Invoice>`;
 }
 
@@ -106,9 +106,9 @@ async function generateZATCAInvoice({seller_name,seller_vat,seller_address,selle
   const invoice_number = `INV-${String(icv).padStart(6,"0")}`;
   const timestamp = new Date().toISOString();
   const uuid = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const subtotal = items.reduce((s,i)=>s+i.price*i.qty,0);
-  const vat_amount = parseFloat((subtotal*0.15).toFixed(2));
-  const total = parseFloat((subtotal+vat_amount).toFixed(2));
+  const total = parseFloat(items.reduce((s,i)=>s+i.price*i.qty,0).toFixed(2));
+  const vat_amount = parseFloat((total*(15/115)).toFixed(2));
+  const subtotal = parseFloat((total-vat_amount).toFixed(2));
   const prev_invoice_hash = invoiceStorage.getLastHash();
   const partial = {invoice_number,uuid,timestamp,icv,seller_name,seller_vat,seller_address,seller_cr,items,subtotal,vat_amount,total,prev_invoice_hash,is_credit_note};
   const invoice_hash = await sha256(buildHashInput(partial));
@@ -479,7 +479,7 @@ function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose}){
         <div style={{padding:24}}>
           <div style={{background:"#F0F7FF",border:"1.5px solid #C5DCF5",borderRadius:14,padding:"16px 20px",marginBottom:20,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
             <div><div style={{fontSize:12,color:"#5A7A9A",fontWeight:600}}>AMOUNT DUE</div><div style={{fontSize:32,fontWeight:900,color:"#1A3A5C"}}>SAR {finalTotal.toFixed(2)}</div></div>
-            <div style={{textAlign:"right",fontSize:12,color:"#5A7A9A"}}><div>Subtotal: SAR {subtotal.toFixed(2)}</div>{promoDiscount>0&&<div style={{color:"#D94040"}}>Promo: -SAR {promoDiscount.toFixed(2)}</div>}<div>VAT 15%: SAR {vat.toFixed(2)}</div></div>
+            <div style={{textAlign:"right",fontSize:12,color:"#5A7A9A"}}><div style={{fontSize:10,color:"#8A9AB0"}}>VAT 15% incl.: SAR {vat.toFixed(2)}</div>{promoDiscount>0&&<div style={{color:"#D94040"}}>Promo: -SAR {promoDiscount.toFixed(2)}</div>}</div>
           </div>
           <div style={{marginBottom:16}}>
             <div style={{fontSize:12,fontWeight:700,color:"#5A7A9A",marginBottom:8}}>PROMO CODE</div>
@@ -545,8 +545,8 @@ function ReceiptModal({order,license,zatcaInvoice,onClose}){
 <hr class="hr"/>
 ${itemsHTML}
 <hr class="hr"/>
-<div class="row"><span>Subtotal</span><span>SAR ${order.subtotal.toFixed(2)}</span></div>${order.discount>0?`<div class="row"><span>Discount</span><span>-SAR ${order.discount.toFixed(2)}</span></div>`:""}
-<div class="row"><span>VAT 15%</span><span>SAR ${order.vat.toFixed(2)}</span></div>
+${order.discount>0?`<div class="row"><span>Discount</span><span>-SAR ${order.discount.toFixed(2)}</span></div>`:""}
+<div class="row" style="font-size:10px;color:#888;"><span>VAT 15% (incl.)</span><span>SAR ${order.vat.toFixed(2)}</span></div>
 <div class="row-total"><span>TOTAL</span><span>SAR ${order.total.toFixed(2)}</span></div>
 ${order.payMethod==="Cash"?`<div class="row"><span>Cash Given</span><span>SAR ${Number(order.given).toFixed(2)}</span></div><div class="row bold"><span>Change</span><span>SAR ${Number(order.change).toFixed(2)}</span></div>`:`<div class="row bold"><span>Payment</span><span>${order.payMethod}</span></div>`}
 <hr class="hr"/>${zatcaMeta}
@@ -618,9 +618,8 @@ ${qrImgSrc?`<img class="qr-img" src="${qrImgSrc}" alt="ZATCA QR"/>`:`<div style=
           </div>
         ))}
         <hr style={{border:"none",borderTop:"1px dashed #ccc",margin:"8px 0"}}/>
-        <div style={{display:"flex",justifyContent:"space-between"}}><span>Subtotal</span><span>{fmtSAR(order.subtotal)}</span></div>
-        {order.discount>0&&<div style={{display:"flex",justifyContent:"space-between",color:"#D94040"}}><span>Discount</span><span>-{fmtSAR(order.discount)}</span></div>}
-        <div style={{display:"flex",justifyContent:"space-between"}}><span>VAT 15%</span><span>{fmtSAR(order.vat)}</span></div>
+                {order.discount>0&&<div style={{display:"flex",justifyContent:"space-between",color:"#D94040"}}><span>Discount</span><span>-{fmtSAR(order.discount)}</span></div>}
+        <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:C.textLight}}><span>VAT 15% (incl.)</span><span>{fmtSAR(order.vat)}</span></div>
         <div style={{display:"flex",justifyContent:"space-between",fontWeight:900,fontSize:15,marginTop:6,borderTop:"2px solid #333",paddingTop:6}}><span>TOTAL</span><span>{fmtSAR(order.total)}</span></div>
         {order.payMethod==="Cash"&&<><div style={{display:"flex",justifyContent:"space-between",marginTop:4}}><span>Cash Given</span><span>{fmtSAR(order.given)}</span></div><div style={{display:"flex",justifyContent:"space-between",color:"#1A6B4A",fontWeight:700}}><span>Change</span><span>{fmtSAR(order.change)}</span></div></>}
         <hr style={{border:"none",borderTop:"1px dashed #ccc",margin:"8px 0"}}/>
@@ -652,7 +651,7 @@ function POS({items,sales,setSales,tables,setTables,promos,license}){
   const [notif,setNotif]=useState(null);const [vno,setVno]=useState(()=>LS.get("restopos_vno")||1);const [kotNo,setKotNo]=useState(()=>LS.get("restopos_kot")||1);
   const [selectedRow,setSelectedRow]=useState(null);const [customerName,setCustomerName]=useState("");const [customerPhone,setCustomerPhone]=useState("");const [customerAddress,setCustomerAddress]=useState("");
   const barcodeRef=useRef();const [barcodeInput,setBarcodeInput]=useState("");
-  const subtotal=cart.reduce((s,i)=>s+i.price*i.qty,0);const vat=subtotal*0.15;const total=subtotal+vat;
+  const total=cart.reduce((s,i)=>s+i.price*i.qty,0);const vat=parseFloat((total*(15/115)).toFixed(2));const subtotal=parseFloat((total-vat).toFixed(2));
   function addToCart(item){setCart(prev=>{const ex=prev.find(c=>c.id===item.id);if(ex)return prev.map(c=>c.id===item.id?{...c,qty:c.qty+1}:c);return[...prev,{...item,qty:1}];});showN("+ "+item.name);}
   function updateQty(delta){if(selectedRow===null)return;setCart(prev=>prev.map((c,i)=>i===selectedRow?{...c,qty:Math.max(0,c.qty+delta)}:c).filter(c=>c.qty>0));}
   function showN(msg){setNotif(msg);setTimeout(()=>setNotif(null),1500);}
@@ -730,9 +729,9 @@ function POS({items,sales,setSales,tables,setTables,promos,license}){
           <button onClick={()=>{setCart(prev=>prev.filter((_,i)=>i!==selectedRow));setSelectedRow(null);}} style={{padding:"4px 10px",borderRadius:8,border:`1px solid ${C.danger}`,background:C.dangerLight,color:C.danger,fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>Del</button>
         </div>}
         <div style={{padding:"12px 14px",borderTop:`2px solid ${C.border}`}}>
-          <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}><span style={{fontSize:13,color:C.textMid}}>Subtotal</span><span style={{fontSize:13,fontWeight:600}}>{fmtSAR(subtotal)}</span></div>
-          <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}><span style={{fontSize:13,color:C.textMid}}>VAT 15%</span><span style={{fontSize:13,fontWeight:600,color:C.zatca}}>{fmtSAR(vat)}</span></div>
-          <div style={{display:"flex",justifyContent:"space-between",marginBottom:14,paddingTop:8,borderTop:`1px solid ${C.border}`}}><span style={{fontSize:16,fontWeight:800}}>Total</span><span style={{fontSize:18,fontWeight:900,color:C.primary}}>{fmtSAR(total)}</span></div>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}><span style={{fontSize:13,color:C.textMid}}>Total (VAT incl.)</span><span style={{fontSize:13,fontWeight:600}}>{fmtSAR(total)}</span></div>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}><span style={{fontSize:11,color:C.textLight}}>VAT 15% (incl.)</span><span style={{fontSize:11,fontWeight:600,color:C.zatca}}>{fmtSAR(vat)}</span></div>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:14,paddingTop:8,borderTop:`1px solid ${C.border}`}}><span style={{fontSize:16,fontWeight:800}}>Amount Due</span><span style={{fontSize:18,fontWeight:900,color:C.primary}}>{fmtSAR(total)}</span></div>
           <div style={{display:"flex",gap:8}}>
             <button onClick={printKOT} disabled={cart.length===0} style={{flex:1,padding:"12px 0",background:cart.length===0?"#e0e0e0":C.accentLight,color:cart.length===0?"#aaa":C.accent,border:`1.5px solid ${cart.length===0?"#e0e0e0":C.accent}`,borderRadius:10,fontFamily:"inherit",fontSize:13,fontWeight:700,cursor:cart.length===0?"not-allowed":"pointer"}}>🍽 KOT</button>
             <button onClick={()=>setShowPayment(true)} disabled={cart.length===0} style={{flex:2,padding:"12px 0",background:cart.length===0?"#e0e0e0":"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:10,fontFamily:"inherit",fontSize:14,fontWeight:800,cursor:cart.length===0?"not-allowed":"pointer"}}>💳 Pay {cart.length>0?fmtSAR(total):""}</button>
@@ -1059,7 +1058,10 @@ function Settings({company,setCompany,tables,setTables,license,onClearLicense,pi
 // CREATE — Menu Management
 // ═══════════════════════════════════════════════════════════════════
 function Create({items,setItems,promos,setPromos}){
-  const [tab,setTab]=useState("items");const [showItemModal,setShowItemModal]=useState(false);const [editItem,setEditItem]=useState(null);const [showBarcodeModal,setShowBarcodeModal]=useState(false);const [barcodeItem,setBarcodeItem]=useState(null);const [barcodeInput,setBarcodeInput]=useState("");const [showPromoModal,setShowPromoModal]=useState(false);const [editPromo,setEditPromo]=useState(null);const [categories,setCategories]=useState(SEED_CATEGORIES);const [newCat,setNewCat]=useState("");
+  const [tab,setTab]=useState("items");const [showItemModal,setShowItemModal]=useState(false);const [editItem,setEditItem]=useState(null);const [showBarcodeModal,setShowBarcodeModal]=useState(false);const [barcodeItem,setBarcodeItem]=useState(null);const [barcodeInput,setBarcodeInput]=useState("");const [showPromoModal,setShowPromoModal]=useState(false);const [editPromo,setEditPromo]=useState(null);
+  const [categories,setCategories]=useState(()=>LS.get("restopos_categories")||SEED_CATEGORIES);const [newCat,setNewCat]=useState("");
+  function saveCategories(newList){setCategories(newList);LS.set("restopos_categories",newList);}
+  function addCategory(){const trimmed=newCat.trim();if(!trimmed)return alert("Category name cannot be empty");if(categories.includes(trimmed))return alert("Category already exists");saveCategories([...categories,trimmed]);setNewCat("");}
   const [showImport,setShowImport]=useState(false);const [importRows,setImportRows]=useState([]);const [importError,setImportError]=useState("");const [importDone,setImportDone]=useState(false);
   const blankItem={name:"",nameAr:"",category:categories[0],price:"",cost:"",stock:"",active:true,barcode:""};const [itemForm,setItemForm]=useState(blankItem);
   const blankPromo={code:"",type:"%",value:"",minOrder:0,active:true};const [promoForm,setPromoForm]=useState(blankPromo);const barcodeRef=useRef();
@@ -1162,7 +1164,7 @@ function Create({items,setItems,promos,setPromos}){
     </Modal>}
     <div style={{display:"flex",gap:8,marginBottom:20}}>{[["items","🍔 Items"],["categories","📂 Categories"],["promos","🏷️ Promos"]].map(([id,label])=><button key={id} onClick={()=>setTab(id)} style={{padding:"8px 16px",borderRadius:8,border:`1.5px solid ${tab===id?C.primary:C.border}`,background:tab===id?C.primaryLight:"#fff",color:tab===id?C.primary:C.textMid,fontFamily:"inherit",fontSize:13,fontWeight:600,cursor:"pointer"}}>{label}</button>)}</div>
     {tab==="items"&&<Card><div style={{display:"flex",justifyContent:"space-between",marginBottom:16,gap:8,flexWrap:"wrap"}}><div style={{fontSize:15,fontWeight:700}}>Menu Items ({items.length})</div><div style={{display:"flex",gap:8}}><Btn size="sm" variant="outline" onClick={()=>setShowImport(true)}>📥 Import Menu</Btn><Btn size="sm" onClick={()=>openItemModal()}>+ New Item</Btn></div></div><DataTable headers={["Name","Category","Price","Stock","Barcode","Status","Actions"]} rows={items.map(it=>[it.name,<Badge color={C.info} bg={C.infoLight}>{it.category}</Badge>,<strong style={{color:C.primary}}>{fmtSAR(it.price)}</strong>,it.stock,<div style={{display:"flex",alignItems:"center",gap:6}}>{it.barcode?<span style={{fontFamily:"monospace",fontSize:11,color:C.zatca}}>{it.barcode}</span>:<span style={{color:C.textLight,fontSize:11}}>None</span>}<button onClick={()=>openBarcodeModal(it)} style={{background:C.zatcaLight,border:`1px solid ${C.zatca}30`,color:C.zatca,padding:"2px 7px",borderRadius:5,fontSize:10,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>🔲 {it.barcode?"Edit":"Add"}</button></div>,<Badge color={it.active?C.success:C.danger} bg={it.active?C.successLight:C.dangerLight}>{it.active?"Active":"Off"}</Badge>,<div style={{display:"flex",gap:5}}><Btn size="sm" variant="ghost" onClick={()=>openItemModal(it)}>Edit</Btn><Btn size="sm" variant="danger" onClick={()=>{if(confirm("Delete?"))setItems(prev=>prev.filter(i=>i.id!==it.id));}}>Del</Btn></div>])}/></Card>}
-    {tab==="categories"&&<Card><div style={{fontSize:15,fontWeight:700,marginBottom:16}}>Categories</div><div style={{display:"flex",gap:10,marginBottom:20}}><input value={newCat} onChange={e=>setNewCat(e.target.value)} placeholder="New category" style={{flex:1,padding:"9px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontSize:13,fontFamily:"inherit"}}/><Btn onClick={()=>{if(newCat.trim()){setCategories(prev=>[...prev,newCat.trim()]);setNewCat("");}}}>Add</Btn></div><div style={{display:"flex",flexWrap:"wrap",gap:10}}>{categories.map(cat=><div key={cat} style={{padding:"8px 16px",background:C.primaryLight,borderRadius:8,fontSize:13,fontWeight:600,color:C.primary,display:"flex",alignItems:"center",gap:8}}>{cat}<button onClick={()=>setCategories(prev=>prev.filter(c=>c!==cat))} style={{background:"none",border:"none",color:C.danger,cursor:"pointer",fontSize:14}}>×</button></div>)}</div></Card>}
+    {tab==="categories"&&<Card><div style={{fontSize:15,fontWeight:700,marginBottom:4}}>Categories</div><div style={{fontSize:12,color:C.textMid,marginBottom:16}}>Categories are saved automatically. Items assigned to a deleted category will still show that label on existing records.</div><div style={{display:"flex",gap:10,marginBottom:20}}><input value={newCat} onChange={e=>setNewCat(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")addCategory();}} placeholder="New category name…" style={{flex:1,padding:"9px 12px",border:`1.5px solid ${C.border}`,borderRadius:8,fontSize:13,fontFamily:"inherit"}}/><Btn onClick={addCategory}>💾 Add &amp; Save</Btn></div><div style={{display:"flex",flexWrap:"wrap",gap:10}}>{categories.map(cat=><div key={cat} style={{padding:"8px 16px",background:C.primaryLight,borderRadius:8,fontSize:13,fontWeight:600,color:C.primary,display:"flex",alignItems:"center",gap:8,border:`1px solid ${C.primary}30`}}>{cat}<button onClick={()=>{if(items.some(i=>i.category===cat)){if(!confirm(`Some items use "${cat}". Delete category anyway?`))return;}saveCategories(categories.filter(c=>c!==cat));}} style={{background:"none",border:"none",color:C.danger,cursor:"pointer",fontSize:16,lineHeight:1}}>×</button></div>)}</div><div style={{marginTop:14,fontSize:12,color:C.success,fontWeight:600}}>✓ {categories.length} categories saved · Changes persist across sessions</div></Card>}
     {tab==="promos"&&<Card><div style={{display:"flex",justifyContent:"space-between",marginBottom:16}}><div style={{fontSize:15,fontWeight:700}}>Promo Codes</div><Btn size="sm" onClick={()=>openPromoModal()}>+ New</Btn></div><DataTable headers={["Code","Type","Value","Min Order","Status","Actions"]} rows={promos.map(p=>[<strong style={{fontFamily:"monospace",color:C.primary}}>{p.code}</strong>,p.type==="%"?"%":"Flat",p.type==="%"?p.value+"%":fmtSAR(p.value),p.minOrder>0?fmtSAR(p.minOrder):"None",<Badge color={p.active?C.success:C.danger} bg={p.active?C.successLight:C.dangerLight}>{p.active?"Active":"Off"}</Badge>,<div style={{display:"flex",gap:5}}><Btn size="sm" variant="ghost" onClick={()=>openPromoModal(p)}>Edit</Btn><Btn size="sm" variant="danger" onClick={()=>setPromos(prev=>prev.filter(x=>x.id!==p.id))}>Del</Btn></div>])} emptyMsg="No promos yet"/></Card>}
   </div>);
 }
@@ -1185,8 +1187,8 @@ function reprintReceipt(sale,license){
 </head><body>
 <div class="center"><div class="big">${sale.businessName||license.businessName}</div><div>${license.address||""}</div><div>TRN: ${license.vatNumber}</div><div>${sale.id} | ${sale.date} ${sale.time}</div>${sale.customer?`<div>Customer: ${sale.customer}</div>`:""}<div>${sale.type}${sale.table?` · Table ${sale.table}`:""}</div></div>
 <hr class="hr"/>${itemsHTML}
-<hr class="hr"/><div class="row"><span>Subtotal</span><span>SAR ${(sale.subtotal||0).toFixed(2)}</span></div>${(sale.discount||0)>0?`<div class="row"><span>Discount</span><span>-SAR ${sale.discount.toFixed(2)}</span></div>`:""}
-<div class="row"><span>VAT 15%</span><span>SAR ${(sale.vat||0).toFixed(2)}</span></div><div class="row-total"><span>TOTAL</span><span>SAR ${(sale.total||0).toFixed(2)}</span></div>
+<hr class="hr"/>${(sale.discount||0)>0?`<div class="row"><span>Discount</span><span>-SAR ${sale.discount.toFixed(2)}</span></div>`:""}
+<div class="row" style="font-size:10px;color:#888;"><span>VAT 15% (incl.)</span><span>SAR ${(sale.vat||0).toFixed(2)}</span></div><div class="row-total"><span>TOTAL</span><span>SAR ${(sale.total||0).toFixed(2)}</span></div>
 ${sale.payMethod==="Cash"?`<div class="row"><span>Cash Given</span><span>SAR ${Number(sale.given||0).toFixed(2)}</span></div><div class="row bold"><span>Change</span><span>SAR ${Number(sale.change||0).toFixed(2)}</span></div>`:`<div class="row bold"><span>Payment</span><span>${sale.payMethod}</span></div>`}
 <hr class="hr"/><div style="text-align:center;margin:8px 0;"><canvas id="qr-canvas"></canvas><div class="zatca-label" style="margin-top:4px;">ZATCA PHASE 2 · QR CODE</div><div style="font-size:8px;">TLV Base64 · Scan to verify</div></div>
 <div class="bold center" style="margin-top:6px;">Thank you for your visit!</div>
@@ -1341,10 +1343,9 @@ function Tools({sales,items,setItems}){
             <div key={k} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:`1px solid ${C.border}`,fontSize:13}}><span style={{color:C.textMid}}>{k}</span><strong>{v}</strong></div>
           ))}
         </div>
-        <div style={{padding:"14px 16px",background:C.dangerLight,borderRadius:10,border:`1px solid ${C.danger}`}}>
-          <div style={{fontSize:13,fontWeight:700,color:C.danger,marginBottom:6}}>⚠️ Reset All Local Data</div>
-          <div style={{fontSize:12,color:C.danger,marginBottom:10}}>Clears all sales, menu, and settings from this browser. License remains intact.</div>
-          <Btn variant="danger" size="sm" onClick={()=>{if(confirm("This will erase all local data (sales, menu, settings). Are you sure?")){["restopos_sales","restopos_items","restopos_tables","restopos_company","restopos_promos","zatca_invoices_v2","zatca_queue_v2"].forEach(k=>localStorage.removeItem(k));window.location.reload();}}}>🗑 Reset Local Data</Btn>
+        <div style={{padding:"14px 16px",background:C.infoLight,borderRadius:10,border:`1px solid ${C.info}`}}>
+          <div style={{fontSize:13,fontWeight:700,color:C.info,marginBottom:6}}>🔒 Data Reset Disabled</div>
+          <div style={{fontSize:12,color:C.info}}>Local data reset is disabled to protect sales records. Contact your system administrator or use the Backup tab to export your data.</div>
         </div>
       </div>
     </Card>}
@@ -1418,6 +1419,7 @@ function OwnerDashboardInline(){
   const [planFilter,setPlanFilter]=useState("all");
   const [showSendNotif,setShowSendNotif]=useState(false);
   const [notifClient,setNotifClient]=useState(null);
+  const [mapClient,setMapClient]=useState(null);
 
   useEffect(()=>{
     async function load(){
@@ -1468,15 +1470,42 @@ function OwnerDashboardInline(){
   const active=activations.filter(a=>a.status==="approved");
   const suspended=activations.filter(a=>a.status==="suspended");
 
-  // Revenue calc: sum up subscription plan prices
   const totalMRR=activations.filter(a=>a.status==="approved").reduce((s,a)=>{
     const plan=SUBSCRIPTION_PLANS[a.subscriptionPlan||"basic"];
     return s+(plan?.price||150);
   },0);
+  const totalARR=totalMRR*12;
+
+  // Growth: clients activated in last 30 days
+  const last30=new Date();last30.setDate(last30.getDate()-30);
+  const newClientsLast30=activations.filter(a=>a.activatedAt&&new Date(a.activatedAt)>=last30).length;
+
+  // Churn: suspended in last 30 days
+  const churnLast30=activations.filter(a=>a.status==="suspended"&&a.statusUpdatedAt&&new Date(a.statusUpdatedAt)>=last30).length;
+
+  // Cities breakdown
+  const cityMap={};
+  activations.filter(a=>a.city).forEach(a=>{cityMap[a.city]=(cityMap[a.city]||0)+1;});
+  const cityRows=Object.entries(cityMap).sort((a,b)=>b[1]-a[1]);
+
+  // Plan distribution
+  const planDist=Object.values(SUBSCRIPTION_PLANS).map(p=>{
+    const count=activations.filter(a=>a.status==="approved"&&(a.subscriptionPlan||"basic")===p.id).length;
+    return{...p,count,mrr:count*p.price};
+  });
+
+  // Monthly activations (last 6 months)
+  const monthlyActivations=[];
+  for(let m=5;m>=0;m--){
+    const d=new Date();d.setMonth(d.getMonth()-m);
+    const ym=d.toISOString().slice(0,7);
+    const count=activations.filter(a=>a.activatedAt&&a.activatedAt.startsWith(ym)).length;
+    monthlyActivations.push({month:d.toLocaleDateString("en-SA",{month:"short"}),count,ym});
+  }
 
   const filteredClients=activations.filter(a=>{
     const q=searchQ.toLowerCase();
-    const matchQ=!q||a.businessName?.toLowerCase().includes(q)||a.crNumber?.includes(q)||a.licenseKey?.includes(q);
+    const matchQ=!q||a.businessName?.toLowerCase().includes(q)||a.crNumber?.includes(q)||a.licenseKey?.includes(q)||a.city?.toLowerCase().includes(q);
     const matchPlan=planFilter==="all"||a.subscriptionPlan===planFilter;
     return matchQ&&matchPlan;
   });
@@ -1498,7 +1527,8 @@ function OwnerDashboardInline(){
     const p=SUBSCRIPTION_PLANS[plan||"basic"];
     return <span style={{padding:"2px 8px",borderRadius:20,fontSize:10,fontWeight:700,background:p.color+"22",color:p.color,border:`1px solid ${p.color}44`}}>{p.name}</span>;
   };
-  if(loading)return<div style={{textAlign:"center",padding:40,color:C.textMid}}>Loading client data from Firestore…</div>;
+
+  if(loading)return<div style={{textAlign:"center",padding:40,color:"rgba(255,255,255,0.5)"}}>Loading client data from Firestore…</div>;
 
   const DS={bg:"#060d1f",card:"rgba(255,255,255,0.04)",border:"rgba(255,255,255,0.08)",text:"#fff",sub:"rgba(255,255,255,0.5)",accent:"#F0A500"};
 
@@ -1521,21 +1551,25 @@ function OwnerDashboardInline(){
     </div>
   );
 
+  const maxBar=Math.max(...monthlyActivations.map(m=>m.count),1);
+
   return(
     <div style={{fontFamily:"'Plus Jakarta Sans',sans-serif",color:DS.text}}>
       {/* KPI Row */}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(150px,1fr))",gap:10,marginBottom:16}}>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))",gap:10,marginBottom:16}}>
         {[
           [activations.length,"Total Clients","🏢","#6366f1"],
           [active.length,"Active","✅","#1A8A4A"],
           [pending.length,"Pending Review","⏳","#F0A500"],
           [suspended.length,"Suspended","🚫","#D94040"],
-          [`SAR ${totalMRR.toLocaleString()}`,`MRR (Est.)`, "💰","#F0A500"],
-          [licenses.filter(l=>l.active&&!l.activatedBy).length,"Keys Available","🔑","#6366f1"]
+          [`SAR ${totalMRR.toLocaleString()}`,"MRR","💰","#F0A500"],
+          [`SAR ${totalARR.toLocaleString()}`,"ARR (Est.)","📈","#10b981"],
+          [newClientsLast30,"New (30d)","🆕","#6366f1"],
+          [licenses.filter(l=>l.active&&!l.activatedBy).length,"Keys Available","🔑","#a5b4fc"]
         ].map(([v,l,ic,col])=>(
           <div key={l} style={{background:col+"15",border:`1px solid ${col}30`,borderRadius:10,padding:"12px 14px"}}>
-            <div style={{fontSize:11,color:col,fontWeight:700,marginBottom:4}}>{ic} {l}</div>
-            <div style={{fontSize:18,fontWeight:900,color:col}}>{v}</div>
+            <div style={{fontSize:10,color:col,fontWeight:700,marginBottom:4}}>{ic} {l}</div>
+            <div style={{fontSize:16,fontWeight:900,color:col}}>{v}</div>
           </div>
         ))}
       </div>
@@ -1545,51 +1579,73 @@ function OwnerDashboardInline(){
         <OTab id="overview" label="📊 Overview" count={0}/>
         <OTab id="clients" label="👥 Clients" count={active.length}/>
         <OTab id="pending" label="⏳ Pending" count={pending.length}/>
+        <OTab id="map" label="🗺️ Map" count={0}/>
         <OTab id="licenses" label="🔑 Licenses" count={0}/>
         <OTab id="devices" label="📱 Devices" count={0}/>
-        <OTab id="activity" label="📋 Activity Log" count={0}/>
+        <OTab id="activity" label="📋 Activity" count={0}/>
         <OTab id="plans" label="💳 Plans" count={0}/>
-        <OTab id="admin" label="⚙️ Admin Tools" count={0}/>
+        <OTab id="admin" label="⚙️ Admin" count={0}/>
       </div>
 
       {/* OVERVIEW */}
       {tab==="overview"&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
         <DCard>
           <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>📊 Subscription Breakdown</div>
-          {Object.values(SUBSCRIPTION_PLANS).map(p=>{
-            const count=activations.filter(a=>a.status==="approved"&&(a.subscriptionPlan||"basic")===p.id).length;
-            return(
-              <div key={p.id} style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
-                <span style={{width:10,height:10,borderRadius:"50%",background:p.color,flexShrink:0,display:"inline-block"}}/>
-                <span style={{flex:1,fontSize:12,color:DS.sub}}>{p.name}</span>
-                <span style={{fontSize:12,fontWeight:700,color:p.color}}>{count} clients</span>
-                <span style={{fontSize:11,color:DS.sub}}>SAR {(count*p.price).toLocaleString()}/mo</span>
-              </div>
-            );
-          })}
+          {planDist.map(p=>(
+            <div key={p.id} style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+              <span style={{width:10,height:10,borderRadius:"50%",background:p.color,flexShrink:0,display:"inline-block"}}/>
+              <span style={{flex:1,fontSize:12,color:DS.sub}}>{p.name}</span>
+              <span style={{fontSize:12,fontWeight:700,color:p.color}}>{p.count} clients</span>
+              <span style={{fontSize:11,color:DS.sub}}>SAR {p.mrr.toLocaleString()}/mo</span>
+            </div>
+          ))}
           <div style={{marginTop:12,paddingTop:10,borderTop:`1px solid ${DS.border}`,display:"flex",justifyContent:"space-between",fontSize:13,fontWeight:800}}>
             <span style={{color:DS.sub}}>Total MRR</span>
             <span style={{color:"#F0A500"}}>SAR {totalMRR.toLocaleString()}</span>
           </div>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:11,marginTop:6}}>
+            <span style={{color:DS.sub}}>ARR Projection</span>
+            <span style={{color:"#10b981",fontWeight:700}}>SAR {totalARR.toLocaleString()}</span>
+          </div>
+        </DCard>
+        <DCard>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>📈 Client Growth (Last 6 Months)</div>
+          <div style={{display:"flex",gap:4,alignItems:"flex-end",height:80,marginBottom:8}}>
+            {monthlyActivations.map(m=>(
+              <div key={m.ym} style={{display:"flex",flexDirection:"column",alignItems:"center",flex:1,gap:3}}>
+                <div style={{fontSize:9,color:"rgba(255,255,255,0.4)",fontWeight:600}}>{m.count||""}</div>
+                <div style={{width:"100%",background:m.count>0?"#6366f1":"rgba(255,255,255,0.06)",borderRadius:"3px 3px 0 0",height:`${Math.max(4,(m.count/maxBar)*60)}px`,transition:"height 0.3s"}}/>
+                <div style={{fontSize:9,color:DS.sub}}>{m.month}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{fontSize:11,color:DS.sub,borderTop:`1px solid ${DS.border}`,paddingTop:8,marginTop:4}}>
+            New clients last 30 days: <strong style={{color:"#6366f1"}}>{newClientsLast30}</strong> · Churn: <strong style={{color:"#D94040"}}>{churnLast30}</strong>
+          </div>
+        </DCard>
+        <DCard>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>🌍 Clients by City</div>
+          {cityRows.length===0?<div style={{color:DS.sub,fontSize:12,textAlign:"center",padding:20}}>No city data yet</div>:cityRows.map(([city,count])=>(
+            <div key={city} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:`1px solid ${DS.border}`}}>
+              <span style={{fontSize:12,color:DS.sub}}>📍 {city}</span>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <div style={{width:60,height:4,background:"rgba(255,255,255,0.06)",borderRadius:2}}>
+                  <div style={{height:"100%",background:"#6366f1",borderRadius:2,width:`${(count/activations.length)*100}%`}}/>
+                </div>
+                <span style={{fontSize:12,fontWeight:700,color:"#a5b4fc",minWidth:14}}>{count}</span>
+              </div>
+            </div>
+          ))}
         </DCard>
         <DCard>
           <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>🕐 Recent Activity</div>
           {activityLog.slice(0,8).map((l,i)=>(
             <div key={i} style={{fontSize:11,padding:"6px 0",borderBottom:`1px solid ${DS.border}`,display:"flex",justifyContent:"space-between"}}>
               <span style={{color:DS.sub}}>{l.action.replace(/_/g," ")}</span>
-              <span style={{color:"rgba(255,255,255,0.35)",fontSize:10}}>{l.timestamp?.slice(0,16).replace("T"," ")}</span>
+              <span style={{color:"rgba(255,255,255,0.3)",fontSize:10}}>{l.timestamp?.slice(0,16).replace("T"," ")}</span>
             </div>
           ))}
           {activityLog.length===0&&<div style={{fontSize:12,color:DS.sub,textAlign:"center",padding:"20px 0"}}>No activity yet</div>}
-        </DCard>
-        <DCard>
-          <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>📅 Client Status</div>
-          {[["Approved",active.length,"#1A8A4A"],["Pending",pending.length,"#F0A500"],["Suspended",suspended.length,"#D94040"]].map(([l,v,c])=>(
-            <div key={l} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:`1px solid ${DS.border}`}}>
-              <span style={{fontSize:12,color:DS.sub}}>{l}</span>
-              <span style={{fontSize:14,fontWeight:800,color:c}}>{v}</span>
-            </div>
-          ))}
         </DCard>
         <DCard>
           <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>📢 System Announcement</div>
@@ -1598,12 +1654,29 @@ function OwnerDashboardInline(){
             style={{width:"100%",height:80,padding:"8px 12px",background:"rgba(255,255,255,0.06)",border:`1px solid ${DS.border}`,borderRadius:8,color:"#fff",fontSize:12,fontFamily:"inherit",resize:"none"}}/>
           <button onClick={saveAnnouncement} style={{marginTop:8,padding:"8px 16px",background:"rgba(240,165,0,0.2)",border:"1px solid rgba(240,165,0,0.4)",borderRadius:8,color:"#F0A500",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>💾 Save Announcement</button>
         </DCard>
+        <DCard>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>📊 System Stats</div>
+          {[
+            ["Total Licenses",licenses.length,"#6366f1"],
+            ["Active Clients",active.length,"#1A8A4A"],
+            ["Pending Reviews",pending.length,"#F0A500"],
+            ["Suspended",suspended.length,"#D94040"],
+            ["Available Keys",licenses.filter(l=>l.active&&!l.activatedBy).length,"#a5b4fc"],
+            ["Activation Rate",licenses.length>0?Math.round((activations.length/licenses.length)*100)+"%":"—","#10b981"],
+            ["Activity Logs",activityLog.length,"rgba(255,255,255,0.6)"],
+          ].map(([k,v,c])=>(
+            <div key={k} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:`1px solid ${DS.border}`}}>
+              <span style={{fontSize:12,color:DS.sub}}>{k}</span>
+              <strong style={{fontSize:12,color:c||DS.text}}>{v}</strong>
+            </div>
+          ))}
+        </DCard>
       </div>}
 
       {/* CLIENTS */}
       {tab==="clients"&&<div>
         <div style={{display:"flex",gap:8,marginBottom:12,flexWrap:"wrap"}}>
-          <input value={searchQ} onChange={e=>setSearchQ(e.target.value)} placeholder="🔍 Search by name, CR, license key…"
+          <input value={searchQ} onChange={e=>setSearchQ(e.target.value)} placeholder="🔍 Search by name, CR, license key, city…"
             style={{flex:1,padding:"8px 12px",background:"rgba(255,255,255,0.06)",border:`1px solid ${DS.border}`,borderRadius:8,color:"#fff",fontSize:12,fontFamily:"inherit",minWidth:200}}/>
           <select value={planFilter} onChange={e=>setPlanFilter(e.target.value)}
             style={{padding:"8px 12px",background:"rgba(255,255,255,0.06)",border:`1px solid ${DS.border}`,borderRadius:8,color:"#fff",fontSize:12,fontFamily:"inherit"}}>
@@ -1620,7 +1693,7 @@ function OwnerDashboardInline(){
                   <div style={{width:36,height:36,background:"rgba(99,102,241,0.2)",borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>🏢</div>
                   <div>
                     <div style={{fontSize:13,fontWeight:700}}>{a.businessName}</div>
-                    <div style={{fontSize:11,color:DS.sub}}>CR: {a.crNumber} · VAT: {a.vatNumber}</div>
+                    <div style={{fontSize:11,color:DS.sub}}>CR: {a.crNumber} · VAT: {a.vatNumber} · 📍{a.city||"—"}</div>
                   </div>
                 </div>
                 <div style={{display:"flex",gap:8,alignItems:"center"}}>
@@ -1632,13 +1705,48 @@ function OwnerDashboardInline(){
               {selectedClient?.id===a.id&&(
                 <div style={{marginTop:14,paddingTop:14,borderTop:`1px solid ${DS.border}`}}>
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:12}}>
-                    {[["City",a.city||"—"],["Phone",a.phone||"—"],["Activated",a.activatedAt?fmtDate(a.activatedAt):"—"],["Location",a.location?`📍 ${a.location.lat?.toFixed(3)}, ${a.location.lng?.toFixed(3)}`:"Not shared"],["Device",a.deviceId?.slice(0,40)||"—"],["Submitted",a.submittedAt?fmtDateTime(a.submittedAt):"—"]].map(([k,v])=>(
+                    {[
+                      ["City",a.city||"—"],
+                      ["Phone",a.phone||"—"],
+                      ["Activated",a.activatedAt?fmtDate(a.activatedAt):"—"],
+                      ["Device",a.deviceInfo?.browser||a.deviceInfo?.os||"—"],
+                      ["OS / Brand",a.deviceInfo?`${a.deviceInfo.os} · ${a.deviceInfo.brand}`:"—"],
+                      ["Submitted",a.submittedAt?fmtDateTime(a.submittedAt):"—"],
+                      ["Plan MRR",`SAR ${SUBSCRIPTION_PLANS[a.subscriptionPlan||"basic"]?.price||150}/mo`],
+                      ["Status Updated",a.statusUpdatedAt?fmtDate(a.statusUpdatedAt):"—"],
+                      ["License ID",a.licenseKey||"—"],
+                    ].map(([k,v])=>(
                       <div key={k} style={{background:"rgba(255,255,255,0.04)",borderRadius:8,padding:"8px 12px"}}>
                         <div style={{fontSize:10,color:DS.sub,fontWeight:700,marginBottom:2}}>{k}</div>
                         <div style={{fontSize:11,wordBreak:"break-all"}}>{v}</div>
                       </div>
                     ))}
                   </div>
+                  {/* Location info */}
+                  {a.location&&(
+                    <div style={{marginBottom:12,background:"rgba(99,102,241,0.08)",borderRadius:10,padding:"10px 14px",border:"1px solid rgba(99,102,241,0.2)"}}>
+                      <div style={{fontSize:11,fontWeight:700,color:"#a5b4fc",marginBottom:6}}>📍 Precise Location</div>
+                      <div style={{fontSize:12,color:DS.sub,marginBottom:8}}>
+                        Lat: <strong style={{color:"#fff"}}>{a.location.lat?.toFixed(6)}</strong> · Lng: <strong style={{color:"#fff"}}>{a.location.lng?.toFixed(6)}</strong>
+                        {a.city&&<span> · {a.city}</span>}
+                      </div>
+                      <div style={{display:"flex",gap:8}}>
+                        <a href={`https://maps.google.com/?q=${a.location.lat},${a.location.lng}`} target="_blank" rel="noreferrer"
+                          style={{padding:"6px 14px",background:"rgba(99,102,241,0.15)",border:"1px solid rgba(99,102,241,0.35)",borderRadius:6,color:"#a5b4fc",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit",textDecoration:"none"}} onClick={e=>e.stopPropagation()}>
+                          🌍 Open in Google Maps
+                        </a>
+                        <button onClick={e=>{e.stopPropagation();setMapClient(a);setTab("map");}}
+                          style={{padding:"6px 14px",background:"rgba(16,185,129,0.15)",border:"1px solid rgba(16,185,129,0.35)",borderRadius:6,color:"#10b981",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
+                          🗺️ View on Map Tab
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  {!a.location&&(
+                    <div style={{marginBottom:12,padding:"8px 12px",background:"rgba(255,255,255,0.03)",borderRadius:8,fontSize:11,color:DS.sub}}>
+                      📍 No GPS location shared by this client. Location is captured during activation when browser permission is granted.
+                    </div>
+                  )}
                   {/* Plan upgrade */}
                   <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:10}}>
                     <span style={{fontSize:11,color:DS.sub,alignSelf:"center"}}>Change Plan:</span>
@@ -1658,10 +1766,6 @@ function OwnerDashboardInline(){
                     {a.status==="suspended"&&(
                       <button onClick={e=>{e.stopPropagation();suspendClient(a.id,false);}}
                         style={{padding:"6px 14px",background:"rgba(26,138,74,0.15)",border:"1px solid rgba(26,138,74,0.35)",borderRadius:6,color:"#4ade80",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>✅ Reactivate</button>
-                    )}
-                    {a.location&&(
-                      <a href={`https://maps.google.com/?q=${a.location.lat},${a.location.lng}`} target="_blank" rel="noreferrer"
-                        style={{padding:"6px 14px",background:"rgba(99,102,241,0.15)",border:"1px solid rgba(99,102,241,0.35)",borderRadius:6,color:"#a5b4fc",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit",textDecoration:"none"}} onClick={e=>e.stopPropagation()}>📍 View Map</a>
                     )}
                     <button onClick={e=>{e.stopPropagation();setNotifClient(a);setShowSendNotif(true);}}
                       style={{padding:"6px 14px",background:"rgba(240,165,0,0.15)",border:"1px solid rgba(240,165,0,0.35)",borderRadius:6,color:"#F0A500",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>📢 Notify</button>
@@ -1689,7 +1793,8 @@ function OwnerDashboardInline(){
                   <div>
                     <div style={{fontSize:14,fontWeight:700}}>{a.businessName}</div>
                     <div style={{fontSize:11,color:DS.sub}}>CR: {a.crNumber} · VAT: {a.vatNumber} · 🔑 {a.licenseKey}</div>
-                    <div style={{fontSize:11,color:"rgba(255,255,255,0.35)",marginTop:3}}>Submitted: {a.submittedAt?fmtDateTime(a.submittedAt):"—"} · City: {a.city||"—"}</div>
+                    <div style={{fontSize:11,color:"rgba(255,255,255,0.35)",marginTop:3}}>Submitted: {a.submittedAt?fmtDateTime(a.submittedAt):"—"} · City: {a.city||"—"} · Phone: {a.phone||"—"}</div>
+                    {a.location&&<div style={{fontSize:10,color:"#a5b4fc",marginTop:2}}>📍 GPS: {a.location.lat?.toFixed(4)}, {a.location.lng?.toFixed(4)}</div>}
                   </div>
                   <div style={{display:"flex",gap:8}}>
                     <button onClick={async()=>{if(confirm("Approve this activation?"))await updateDoc(doc(db,"pending_activations",a.id),{status:"approved",reviewedAt:new Date().toISOString()}).then(()=>setActivations(prev=>prev.map(x=>x.id===a.id?{...x,status:"approved"}:x)));}}
@@ -1702,6 +1807,77 @@ function OwnerDashboardInline(){
             ))}
           </div>
         )}
+      </div>}
+
+      {/* MAP TAB */}
+      {tab==="map"&&<div>
+        <DCard style={{marginBottom:12}}>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:10}}>🗺️ Client Locations Map</div>
+          <div style={{fontSize:11,color:DS.sub,marginBottom:12}}>
+            {activations.filter(a=>a.location).length} of {activations.length} clients have shared their GPS location.
+          </div>
+          {mapClient&&(
+            <div style={{marginBottom:12,display:"flex",alignItems:"center",gap:10,padding:"8px 14px",background:"rgba(99,102,241,0.1)",borderRadius:8,border:"1px solid rgba(99,102,241,0.25)"}}>
+              <span style={{fontSize:12,color:"#a5b4fc",fontWeight:700}}>📍 Focused on: {mapClient.businessName}</span>
+              <button onClick={()=>setMapClient(null)} style={{marginLeft:"auto",padding:"3px 8px",background:"rgba(255,255,255,0.06)",border:`1px solid ${DS.border}`,borderRadius:5,color:DS.sub,fontSize:11,cursor:"pointer",fontFamily:"inherit"}}>Clear</button>
+            </div>
+          )}
+          {(()=>{
+            const clientsWithLocation=activations.filter(a=>a.location?.lat&&a.location?.lng);
+            if(clientsWithLocation.length===0){
+              return <div style={{padding:"40px 0",textAlign:"center",color:DS.sub}}>
+                <div style={{fontSize:48,marginBottom:12}}>📍</div>
+                <div style={{fontSize:13}}>No client location data yet.</div>
+                <div style={{fontSize:11,marginTop:6}}>GPS coordinates are captured when clients activate their license and allow browser location access.</div>
+              </div>;
+            }
+            const focusClient=mapClient||clientsWithLocation[0];
+            const lat=focusClient.location.lat;
+            const lng=focusClient.location.lng;
+            const zoom=mapClient?13:5;
+            const mapUrl=`https://www.google.com/maps/embed/v1/place?key=AIzaSyD-9tSrke72PouQMnMX-a7eZSW0jkFMBWY&q=${lat},${lng}&zoom=${zoom}`;
+            return(
+              <div>
+                <div style={{borderRadius:10,overflow:"hidden",height:340,marginBottom:10,border:`1px solid ${DS.border}`}}>
+                  <iframe
+                    width="100%" height="340"
+                    frameBorder="0" style={{border:0}}
+                    src={`https://maps.google.com/maps?q=${lat},${lng}&z=${zoom}&output=embed`}
+                    allowFullScreen
+                    title="Client Location Map"
+                  />
+                </div>
+                <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                  {clientsWithLocation.map(a=>(
+                    <button key={a.id} onClick={()=>setMapClient(a)}
+                      style={{padding:"5px 12px",background:mapClient?.id===a.id?"rgba(99,102,241,0.25)":"rgba(255,255,255,0.05)",border:`1px solid ${mapClient?.id===a.id?"rgba(99,102,241,0.5)":DS.border}`,borderRadius:6,color:mapClient?.id===a.id?"#a5b4fc":DS.sub,fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}>
+                      📍 {a.businessName} ({a.city||"—"})
+                    </button>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
+        </DCard>
+        <DCard>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:10}}>📋 All Client Locations</div>
+          <DTable
+            headers={["Business","City","GPS Coordinates","Map Link"]}
+            rows={activations.map(a=>[
+              <span style={{fontWeight:600}}>{a.businessName}</span>,
+              <span style={{fontSize:11,color:DS.sub}}>{a.city||"—"}</span>,
+              a.location?<span style={{fontFamily:"monospace",fontSize:10,color:"#a5b4fc"}}>{a.location.lat?.toFixed(5)}, {a.location.lng?.toFixed(5)}</span>:<span style={{color:"rgba(255,255,255,0.2)",fontSize:10}}>Not shared</span>,
+              a.location?(
+                <div style={{display:"flex",gap:6}}>
+                  <a href={`https://maps.google.com/?q=${a.location.lat},${a.location.lng}`} target="_blank" rel="noreferrer"
+                    style={{color:"#4ade80",fontSize:10,fontWeight:700,textDecoration:"none"}}>🌍 Google Maps</a>
+                  <button onClick={()=>{setMapClient(a);window.scrollTo({top:0,behavior:"smooth"});}}
+                    style={{color:"#a5b4fc",fontSize:10,fontWeight:700,background:"none",border:"none",cursor:"pointer",fontFamily:"inherit"}}>🗺️ Embed</button>
+                </div>
+              ):<span style={{color:"rgba(255,255,255,0.2)",fontSize:10}}>—</span>
+            ])}
+          />
+        </DCard>
       </div>}
 
       {/* LICENSES */}
@@ -1734,7 +1910,7 @@ function OwnerDashboardInline(){
       {tab==="devices"&&<DCard>
         <div style={{fontSize:13,fontWeight:700,marginBottom:14}}>📱 Device Registry</div>
         <DTable
-          headers={["Business","License","Browser","OS","Activated","Location"]}
+          headers={["Business","License","Browser","OS","Screen","Activated","Location"]}
           rows={activations.filter(a=>a.deviceId||a.deviceInfo).map(a=>{
             const di=a.deviceInfo||{};
             return[
@@ -1742,9 +1918,10 @@ function OwnerDashboardInline(){
               <span style={{fontFamily:"monospace",color:"#F0A500",fontSize:10}}>{a.licenseKey}</span>,
               <span style={{fontSize:11}}>{di.browser||"—"}</span>,
               <span style={{fontSize:11}}>{di.os||a.deviceId?.slice(0,30)||"—"}</span>,
+              <span style={{fontSize:10,color:DS.sub}}>{di.screenW&&di.screenH?`${di.screenW}×${di.screenH}`:"—"}</span>,
               <span style={{fontSize:10,color:DS.sub}}>{a.activatedAt?fmtDate(a.activatedAt):"—"}</span>,
               a.location?(
-                <a href={`https://maps.google.com/?q=${a.location.lat},${a.location.lng}`} target="_blank" rel="noreferrer" style={{color:"#4ade80",fontSize:10,fontWeight:700}}>📍 Map</a>
+                <a href={`https://maps.google.com/?q=${a.location.lat},${a.location.lng}`} target="_blank" rel="noreferrer" style={{color:"#4ade80",fontSize:10,fontWeight:700}}>📍 {a.location.lat?.toFixed(3)}, {a.location.lng?.toFixed(3)}</a>
               ):<span style={{color:"rgba(255,255,255,0.2)",fontSize:10}}>—</span>
             ];
           })}
@@ -1817,27 +1994,12 @@ function OwnerDashboardInline(){
           <textarea value={announcementText} onChange={e=>setAnnouncementText(e.target.value)}
             placeholder="Broadcast a message to all clients..."
             style={{width:"100%",height:100,padding:"10px 12px",background:"rgba(255,255,255,0.06)",border:`1px solid ${DS.border}`,borderRadius:8,color:"#fff",fontSize:12,fontFamily:"inherit",resize:"none"}}/>
-          <button onClick={saveAnnouncement} style={{marginTop:8,width:"100%",padding:"10px",background:"rgba(240,165,0,0.2)",border:"1px solid rgba(240,165,0,0.4)",borderRadius:8,color:"#F0A500",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>💾 Save & Broadcast</button>
-        </DCard>
-        <DCard>
-          <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>📊 System Stats</div>
-          {[
-            ["Total Licenses",licenses.length],
-            ["Active Clients",active.length],
-            ["Pending Reviews",pending.length],
-            ["Suspended",suspended.length],
-            ["Available Keys",licenses.filter(l=>l.active&&!l.activatedBy).length],
-            ["Activity Logs",activityLog.length],
-          ].map(([k,v])=>(
-            <div key={k} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:`1px solid ${DS.border}`,fontSize:12}}>
-              <span style={{color:DS.sub}}>{k}</span><strong>{v}</strong>
-            </div>
-          ))}
+          <button onClick={saveAnnouncement} style={{marginTop:8,width:"100%",padding:"10px",background:"rgba(240,165,0,0.2)",border:"1px solid rgba(240,165,0,0.4)",borderRadius:8,color:"#F0A500",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>💾 Save &amp; Broadcast</button>
         </DCard>
         <DCard>
           <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>📥 Bulk Export</div>
           <div style={{display:"flex",flexDirection:"column",gap:8}}>
-            {[["Export All Clients CSV",()=>{const rows=activations.map(a=>[a.businessName,a.crNumber,a.vatNumber,a.licenseKey,a.city,a.status,a.subscriptionPlan||"basic",a.submittedAt].join(","));const csv="Business,CR,VAT,License,City,Status,Plan,Date\n"+rows.join("\n");const blob=new Blob([csv],{type:"text/csv"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="restopos-clients.csv";a.click();},"📋"],
+            {[["Export All Clients CSV",()=>{const rows=activations.map(a=>[a.businessName,a.crNumber,a.vatNumber,a.licenseKey,a.city,a.phone||"",a.status,a.subscriptionPlan||"basic",a.submittedAt,a.activatedAt||"",a.location?`${a.location.lat},${a.location.lng}`:""].join(","));const csv="Business,CR,VAT,License,City,Phone,Status,Plan,Submitted,Activated,GPS\n"+rows.join("\n");const blob=new Blob([csv],{type:"text/csv"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="restopos-clients.csv";a.click();},"📋"],
               ["Export License Keys CSV",()=>{const rows=licenses.map(l=>[l.key,l.active?"Active":"Inactive",l.activatedBy||"",l.activatedAt||""].join(","));const csv="Key,Status,ActivatedBy,Date\n"+rows.join("\n");const blob=new Blob([csv],{type:"text/csv"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="restopos-licenses.csv";a.click();},"🔑"],
               ["Export Activity Log",()=>{const rows=activityLog.map(l=>[l.timestamp,l.action,l.user,JSON.stringify(l.details)].join(","));const csv="Timestamp,Action,User,Details\n"+rows.join("\n");const blob=new Blob([csv],{type:"text/csv"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="restopos-activity.csv";a.click();},"📊"]
             ].map(([label,fn,ic])=>(
@@ -1853,6 +2015,20 @@ function OwnerDashboardInline(){
             <button onClick={()=>{if(confirm("Clear local activity log?"))LS.del("restopos_activity_log");setActivityLog([]);}} style={{padding:"10px 14px",background:"rgba(217,64,64,0.1)",border:"1px solid rgba(217,64,64,0.3)",borderRadius:8,color:"#ff6b6b",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:"inherit",textAlign:"left"}}>🗑 Clear Activity Log</button>
             <button onClick={()=>{logActivity("MANUAL_TEST",{msg:"Owner triggered test log"},"Owner");setActivityLog(LS.get("restopos_activity_log")||[]);alert("Test log entry added!");}} style={{padding:"10px 14px",background:"rgba(99,102,241,0.1)",border:"1px solid rgba(99,102,241,0.3)",borderRadius:8,color:"#a5b4fc",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:"inherit",textAlign:"left"}}>🧪 Add Test Log Entry</button>
           </div>
+        </DCard>
+        <DCard>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>📊 Revenue Intelligence</div>
+          {[
+            ["MRR",`SAR ${totalMRR.toLocaleString()}`,"#F0A500"],
+            ["ARR Projection",`SAR ${totalARR.toLocaleString()}`,"#10b981"],
+            ["Avg Revenue/Client",active.length>0?`SAR ${Math.round(totalMRR/active.length)}`:"—","#6366f1"],
+            ["Revenue at Risk",`SAR ${suspended.reduce((s,a)=>{const p=SUBSCRIPTION_PLANS[a.subscriptionPlan||"basic"];return s+(p?.price||150);},0).toLocaleString()}`,"#D94040"],
+          ].map(([k,v,c])=>(
+            <div key={k} style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:`1px solid ${DS.border}`}}>
+              <span style={{fontSize:12,color:DS.sub}}>{k}</span>
+              <strong style={{fontSize:12,color:c}}>{v}</strong>
+            </div>
+          ))}
         </DCard>
       </div>}
 
@@ -2254,14 +2430,15 @@ function ProfitLoss({sales,items}){
     if(period==="month")return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear();
     return true;
   });
-  const revenue=filteredSales.reduce((s,o)=>s+(o.subtotal||0),0);
-  const vatCollected=filteredSales.reduce((s,o)=>s+o.vat,0);
+  const revenue=filteredSales.reduce((s,o)=>s+(o.total||0),0);
+  const vatCollected=filteredSales.reduce((s,o)=>s+(o.vat||0),0);
+  const revenueExclVat=revenue-vatCollected;
   const cogs=filteredSales.reduce((s,o)=>s+(o.items||[]).reduce((ss,it)=>{const item=items.find(i=>i.id===it.id);return ss+(item?.cost||0)*it.qty;},0),0);
   const opExpenses=filteredExp.reduce((s,e)=>s+e.amount,0);
-  const grossProfit=revenue-cogs;
+  const grossProfit=revenueExclVat-cogs;
   const netProfit=grossProfit-opExpenses;
-  const grossMargin=revenue>0?((grossProfit/revenue)*100).toFixed(1):0;
-  const netMargin=revenue>0?((netProfit/revenue)*100).toFixed(1):0;
+  const grossMargin=revenueExclVat>0?((grossProfit/revenueExclVat)*100).toFixed(1):0;
+  const netMargin=revenueExclVat>0?((netProfit/revenueExclVat)*100).toFixed(1):0;
   const payBreakdown=["Cash","Mada","Apple Pay","STC Pay"].map(m=>({method:m,total:filteredSales.filter(s=>s.payMethod===m).reduce((s,o)=>s+o.total,0),count:filteredSales.filter(s=>s.payMethod===m).length}));
   return(
     <div>
@@ -2272,9 +2449,9 @@ function ProfitLoss({sales,items}){
         ))}</div>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))",gap:16,marginBottom:24}}>
-        <StatCard icon="💰" label="Revenue (excl. VAT)" value={fmtSAR(revenue)} color={C.primary} bg={C.primaryLight}/>
-        <StatCard icon="🧾" label="VAT Collected" value={fmtSAR(vatCollected)} color={C.zatca} bg={C.zatcaLight}/>
-        <StatCard icon="📦" label="Cost of Goods" value={fmtSAR(cogs)} color={C.warning} bg={C.warningLight}/>
+        <StatCard icon="💰" label="Total Revenue (incl. VAT)" value={fmtSAR(revenue)} color={C.primary} bg={C.primaryLight}/>
+        <StatCard icon="🧾" label="VAT Collected (15%)" value={fmtSAR(vatCollected)} sub="Extracted from revenue" color={C.zatca} bg={C.zatcaLight}/>
+        <StatCard icon="📦" label="Cost of Goods (COGS)" value={fmtSAR(cogs)} sub="Excl. VAT" color={C.warning} bg={C.warningLight}/>
         <StatCard icon="💸" label="Operating Expenses" value={fmtSAR(opExpenses)} color={C.danger} bg={C.dangerLight}/>
         <StatCard icon="📊" label="Gross Profit" value={fmtSAR(grossProfit)} sub={`${grossMargin}% margin`} color={grossProfit>=0?C.success:C.danger} bg={grossProfit>=0?C.successLight:C.dangerLight}/>
         <StatCard icon="🏆" label="Net Profit" value={fmtSAR(netProfit)} sub={`${netMargin}% margin`} color={netProfit>=0?C.success:C.danger} bg={netProfit>=0?C.successLight:C.dangerLight}/>
@@ -2291,7 +2468,7 @@ function ProfitLoss({sales,items}){
         </Card>
         <Card>
           <div style={{fontSize:14,fontWeight:700,marginBottom:16}}>📊 P&L Summary</div>
-          {[["Revenue (excl. VAT)",revenue,C.primary,false],["Cost of Goods Sold",-cogs,C.warning,false],["Gross Profit",grossProfit,grossProfit>=0?C.success:C.danger,false],["Operating Expenses",-opExpenses,C.danger,false],["Net Profit / (Loss)",netProfit,netProfit>=0?C.success:C.danger,true]].map(([label,val,color,isFinal])=>(
+          {[["Revenue (excl. VAT)",revenueExclVat,C.primary,false],["Cost of Goods Sold",-cogs,C.warning,false],["Gross Profit",grossProfit,grossProfit>=0?C.success:C.danger,false],["Operating Expenses",-opExpenses,C.danger,false],["Net Profit / (Loss)",netProfit,netProfit>=0?C.success:C.danger,true]].map(([label,val,color,isFinal])=>(
             <div key={label} style={{display:"flex",justifyContent:"space-between",padding:"10px 0",borderBottom:!isFinal?`1px solid ${C.border}`:"none",borderTop:isFinal?`2px solid ${C.border}`:"none",fontWeight:isFinal?800:400}}>
               <span style={{fontSize:13,color:isFinal?C.text:C.textMid}}>{label}</span>
               <span style={{fontWeight:700,color}}>{val<0?"(":""}{fmtSAR(Math.abs(val))}{val<0?")":""}</span>
@@ -2534,7 +2711,7 @@ function OwnerDashboard({onLogout}){
         <div style={{display:"flex",alignItems:"center",gap:10}}>
           <div style={{width:32,height:32,background:"linear-gradient(135deg,#F0A500,#e09000)",borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16}}>👑</div>
           <div style={{fontSize:15,fontWeight:800}}>Owner Dashboard</div>
-          <span style={{fontSize:10,background:"rgba(240,165,0,0.15)",color:"#F0A500",padding:"2px 8px",borderRadius:20,fontWeight:700,border:"1px solid rgba(240,165,0,0.3)"}}>RestoPOS v12</span>
+          <span style={{fontSize:10,background:"rgba(240,165,0,0.15)",color:"#F0A500",padding:"2px 8px",borderRadius:20,fontWeight:700,border:"1px solid rgba(240,165,0,0.3)"}}>RestoPOS v14</span>
         </div>
         <div style={{display:"flex",gap:8}}>
           <button onClick={()=>setRefreshKey(k=>k+1)} style={{padding:"6px 14px",background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:8,color:"rgba(255,255,255,0.7)",fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>🔄 Refresh</button>
@@ -2555,8 +2732,8 @@ export default function App(){
   const [step,setStep]=useState("checking");const [businessData,setBusinessData]=useState(null);const [license,setLicense]=useState(null);const [currentUser,setCurrentUser]=useState(null);const [screen,setScreen]=useState("pos");const [ownerMode,setOwnerMode]=useState(false);const [ownerAuthed,setOwnerAuthed]=useState(false);
   useEffect(()=>{const onOwner=()=>setOwnerMode(true);const onOwnerOut=()=>{setOwnerMode(false);setOwnerAuthed(false);};window.addEventListener("ownerLogin",onOwner);window.addEventListener("ownerLogout",onOwnerOut);return()=>{window.removeEventListener("ownerLogin",onOwner);window.removeEventListener("ownerLogout",onOwnerOut);};},[]);
   const [sales,_setSales]=useState(()=>LS.get("restopos_sales")||[]);
-  const [items,_setItems]=useState(()=>LS.get("restopos_items")||SEED_ITEMS);
-  const [tables,_setTables]=useState(()=>LS.get("restopos_tables")||TABLES_INIT);
+  const [items,_setItems]=useState(()=>LS.get("restopos_items")||[]);
+  const [tables,_setTables]=useState(()=>LS.get("restopos_tables")||Array.from({length:12},(_,i)=>({id:i+1,status:"free",capacity:4})));
   const [users,_setUsers]=useState(()=>LS.get("restopos_users")||[{id:1,name:"Admin User",username:"admin",role:"Admin",active:true,lastLogin:"Today"},{id:2,name:"Manager",username:"manager",role:"Manager",active:true,lastLogin:"Today"},{id:3,name:"Cashier",username:"cashier",role:"Cashier",active:true,lastLogin:"Today"}]);
   const [promos,_setPromos]=useState(()=>LS.get("restopos_promos")||[{id:1,code:"SAVE10",type:"%",value:10,active:true,minOrder:30},{id:2,code:"FLAT20",type:"flat",value:20,active:true,minOrder:100}]);
   const [company,_setCompany]=useState(()=>LS.get("restopos_company")||{phone:"",email:"",address:"",city:"Riyadh"});
@@ -2588,7 +2765,7 @@ export default function App(){
       <div style={{display:"flex",alignItems:"stretch",flexShrink:0,zIndex:100,boxShadow:"0 2px 12px rgba(0,0,0,0.18)",height:50,width:"100%"}}>
         <div style={{background:"linear-gradient(135deg,#1A3D2B 0%,#1F4D36 100%)",display:"flex",alignItems:"center",gap:8,padding:"0 14px",flexShrink:0,borderRight:"1px solid rgba(255,255,255,0.1)"}}>
           <div style={{width:28,height:28,background:"linear-gradient(135deg,#2ECC71,#F0A500)",borderRadius:7,display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontSize:14,fontWeight:900,flexShrink:0}}>R</div>
-          <div><div style={{fontSize:13,fontWeight:800,color:"#fff",lineHeight:1,whiteSpace:"nowrap"}}>RestoPOS</div><div style={{fontSize:8,color:"rgba(255,255,255,0.5)",letterSpacing:"0.1em",whiteSpace:"nowrap"}}>ZATCA PHASE 2 · v13.0</div></div>
+          <div><div style={{fontSize:13,fontWeight:800,color:"#fff",lineHeight:1,whiteSpace:"nowrap"}}>RestoPOS</div><div style={{fontSize:8,color:"rgba(255,255,255,0.5)",letterSpacing:"0.1em",whiteSpace:"nowrap"}}>ZATCA PHASE 2 · v14.0</div></div>
         </div>
         <div style={{background:"linear-gradient(90deg,#E8F4EE 0%,#F0F9F4 100%)",flex:1,display:"flex",alignItems:"center",padding:"0 6px",overflowX:"auto",borderRight:"1px solid #C8E6D4",minWidth:0}}>
           {NAV.map(([id,icon,label])=>(
