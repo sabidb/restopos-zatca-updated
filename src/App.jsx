@@ -3,13 +3,13 @@ import { initializeApp } from "firebase/app";
 import { getFirestore, collection, query, where, getDocs, updateDoc, doc, addDoc, getDoc } from "firebase/firestore";
 
 const firebaseConfig = {
-  apiKey: "AIzaSyDcVRHCOafLYt-0rCTfafaC6MFpyQVfG9o",
-  authDomain: "restopos-db.firebaseapp.com",
-  projectId: "restopos-db",
-  storageBucket: "restopos-db.firebasestorage.app",
-  messagingSenderId: "82816670819",
-  appId: "1:82816670819:web:1a589e6a6b0b12edb4ec56"
-};
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID,
+}
 const firebaseApp = initializeApp(firebaseConfig);
 const db = getFirestore(firebaseApp);
 
