@@ -783,62 +783,76 @@ function LiveClock(){
 // DASHBOARD
 // ═══════════════════════════════════════════════════════════════════
 function Dashboard({sales,items,license}){
-  const todaySales=sales.filter(s=>s.date===TODAY);const todayRevenue=todaySales.reduce((s,o)=>s+o.total,0);const todayVat=todaySales.reduce((s,o)=>s+o.vat,0);
+  const todaySales=sales.filter(s=>s.date===TODAY);
+  const todayRevenue=todaySales.reduce((s,o)=>s+o.total,0);
+  const todayVat=todaySales.reduce((s,o)=>s+o.vat,0);
   const qStatus=zatcaUtils.getQueueStatus();
-  // Calculate service validity based on plan
   const plan=LS.get("restopos_license_v2")?.subscriptionPlan||"basic";
   const planDefs={basic:{name:"Basic",months:1},professional:{name:"Professional",months:12},premium:{name:"Premium",months:12}};
   const activatedAt=license?.activatedAt?new Date(license.activatedAt):new Date();
   const expiryDate=new Date(activatedAt);expiryDate.setMonth(expiryDate.getMonth()+(planDefs[plan]?.months||1));
-  const [clock,setClock]=useState(new Date());
-  useEffect(()=>{const t=setInterval(()=>setClock(new Date()),1000);return()=>clearInterval(t);},[]);
-  const timeStr=clock.toLocaleTimeString("en-SA",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
-  const dateStr=clock.toLocaleDateString("en-SA",{weekday:"long",year:"numeric",month:"long",day:"numeric"});
+  const [licExpanded,setLicExpanded]=useState(false);
+  const collapseTimer=useRef(null);
+  function handleExpand(){
+    setLicExpanded(true);
+    clearTimeout(collapseTimer.current);
+    collapseTimer.current=setTimeout(()=>setLicExpanded(false),10000);
+  }
+  useEffect(()=>()=>clearTimeout(collapseTimer.current),[]);
+  const licRows=[
+    ["🏢 Registered Name",license?.businessName||"—"],
+    ["📍 Address",license?.address||"—"],
+    ["🧾 VAT Number",license?.vatNumber||"—"],
+    ["🔑 License Key",license?.licenseKey||"—"],
+    ["📋 Registration No.","—"],
+    ["📅 Service Validity",expiryDate.toLocaleDateString("en-SA",{day:"2-digit",month:"short",year:"numeric"})+" ("+planDefs[plan]?.name+")"],
+    ["📞 Phone",license?.phone||"—"],
+  ];
   return(
     <div>
-      {/* TOP ROW: Clock + License Info Panel */}
-      <div style={{display:"grid",gridTemplateColumns:"1fr auto",gap:16,marginBottom:20,alignItems:"start",flexWrap:"wrap"}}>
-        <div>
-          <LiveClock/>
-        </div>
-        {/* LICENSE INFO WIDGET */}
-        <div style={{background:"linear-gradient(135deg,#E8F5EE 0%,#F0FBF5 100%)",border:"2px solid #B8E0CA",borderRadius:16,padding:"18px 22px",minWidth:280,maxWidth:360,boxShadow:"0 4px 16px rgba(26,107,74,0.08)"}}>
-          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14,borderBottom:"1px solid #C8E6D4",paddingBottom:10}}>
-            <div style={{width:36,height:36,background:"linear-gradient(135deg,#1A6B4A,#F0A500)",borderRadius:10,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,fontWeight:900,color:"#fff",flexShrink:0}}>R</div>
-            <div><div style={{fontSize:14,fontWeight:800,color:"#1A3D2B"}}>License Info</div><div style={{fontSize:10,color:"#5A8A6A",fontWeight:600}}>RESTOPOS · ZATCA PHASE 2</div></div>
-          </div>
-          {[
-            ["🏢 Registered Name",license?.businessName||"—"],
-            ["📍 Address",license?.address||"—"],
-            ["🧾 VAT Number",license?.vatNumber||"—"],
-            ["🔑 License Key",license?.licenseKey||"—"],
-            ["📋 Registration No.","—"],
-            ["📅 Service Validity",expiryDate.toLocaleDateString("en-SA",{day:"2-digit",month:"short",year:"numeric"})+" ("+planDefs[plan]?.name+" Plan)"],
-            ["📞 Registered Number",license?.phone||"—"],
-          ].map(([label,value])=>(
-            <div key={label} style={{display:"flex",flexDirection:"column",marginBottom:8,paddingBottom:8,borderBottom:"1px solid rgba(26,107,74,0.08)"}}>
-              <span style={{fontSize:10,fontWeight:700,color:"#5A8A6A",textTransform:"uppercase",letterSpacing:"0.04em"}}>{label}</span>
-              <span style={{fontSize:12,fontWeight:600,color:"#1A3D2B",marginTop:2,wordBreak:"break-all"}}>{value}</span>
+      {/* TOP ROW: Clock + compact license widget */}
+      <div style={{display:"flex",gap:14,marginBottom:20,alignItems:"flex-start",flexWrap:"wrap"}}>
+        <div style={{flex:1,minWidth:220}}><LiveClock/></div>
+        {/* LICENSE INFO WIDGET — compact by default, expands on click */}
+        <div style={{background:"linear-gradient(135deg,#E8F5EE 0%,#F0FBF5 100%)",border:"2px solid #B8E0CA",borderRadius:14,boxShadow:"0 4px 16px rgba(26,107,74,0.08)",transition:"all 0.3s",width:licExpanded?340:220,overflow:"hidden"}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,padding:"10px 14px",cursor:"pointer",userSelect:"none"}} onClick={handleExpand}>
+            <div style={{width:28,height:28,background:"linear-gradient(135deg,#1A6B4A,#F0A500)",borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:900,color:"#fff",flexShrink:0}}>R</div>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:11,fontWeight:800,color:"#1A3D2B",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{license?.businessName||"License Info"}</div>
+              <div style={{fontSize:9,color:"#5A8A6A",fontWeight:600}}>{license?.licenseKey||"—"} · {planDefs[plan]?.name} Plan</div>
             </div>
-          ))}
+            <span style={{fontSize:10,color:"#5A8A6A",flexShrink:0}}>{licExpanded?"▲ collapse":"▼ expand"}</span>
+          </div>
+          {licExpanded&&(
+            <div style={{padding:"0 14px 12px",borderTop:"1px solid #C8E6D4"}}>
+              {licRows.map(([label,value])=>(
+                <div key={label} style={{display:"flex",flexDirection:"column",marginTop:8}}>
+                  <span style={{fontSize:9,fontWeight:700,color:"#5A8A6A",textTransform:"uppercase",letterSpacing:"0.04em"}}>{label}</span>
+                  <span style={{fontSize:11,fontWeight:600,color:"#1A3D2B",marginTop:1,wordBreak:"break-all"}}>{value}</span>
+                </div>
+              ))}
+              <div style={{marginTop:10,fontSize:9,color:"#5A8A6A",textAlign:"center"}}>Auto-collapses in 10s</div>
+            </div>
+          )}
         </div>
       </div>
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill, minmax(200px, 1fr))",gap:16,marginBottom:24}}>
+
+      {/* KPI STATS */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(180px,1fr))",gap:14,marginBottom:20}}>
         <StatCard icon="💰" label="Today's Revenue" value={fmtSAR(todayRevenue)} color={C.primary} bg={C.primaryLight}/>
         <StatCard icon="🧾" label="Today's Orders" value={todaySales.length} color={C.info} bg={C.infoLight}/>
         <StatCard icon="⬛" label="VAT Collected" value={fmtSAR(todayVat)} color={C.zatca} bg={C.zatcaLight}/>
         <StatCard icon="📦" label="Menu Items" value={items.filter(i=>i.active).length+" active"} color={C.success} bg={C.successLight}/>
+        {/* ZATCA boxes inline with stats */}
+        <StatCard icon="📋" label="Total ZATCA Invoices" value={qStatus.total} color={C.zatca} bg={C.zatcaLight}/>
+        <StatCard icon="✅" label="Reported to ZATCA" value={qStatus.reported} color={C.success} bg={C.successLight}/>
+        <StatCard icon="⏳" label="ZATCA Pending" value={qStatus.pending} color={C.warning} bg={C.warningLight}/>
+        <StatCard icon="🚨" label="ZATCA Urgent" value={qStatus.urgent} color={C.danger} bg={C.dangerLight}/>
       </div>
-      <Card style={{marginBottom:20,borderLeft:`4px solid ${C.zatca}`}}>
-        <div style={{fontSize:14,fontWeight:700,color:C.zatca,marginBottom:12}}>⬛ ZATCA Invoice Engine Status</div>
-        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:10}}>
-          {[["Total Invoices",qStatus.total,C.zatca],["Reported ✓",qStatus.reported,C.success],["Pending ⏳",qStatus.pending,C.warning],["Urgent 🚨",qStatus.urgent,C.danger]].map(([l,v,col])=>(
-            <div key={l} style={{background:C.bg,borderRadius:8,padding:"10px 14px"}}><div style={{fontSize:10,color:C.textLight}}>{l}</div><div style={{fontSize:20,fontWeight:800,color:col}}>{v}</div></div>
-          ))}
-        </div>
-        {qStatus.urgent>0&&<div style={{marginTop:10,padding:"8px 12px",background:C.dangerLight,border:`1px solid ${C.danger}`,borderRadius:8,fontSize:12,color:C.danger,fontWeight:600}}>🚨 {qStatus.urgent} invoice(s) approaching 24-hour FATOORA reporting deadline!</div>}
-      </Card>
-      {todaySales.length===0?<Card style={{textAlign:"center",padding:"40px 0"}}><div style={{fontSize:40,marginBottom:12}}>📊</div><div style={{fontSize:15,fontWeight:700,color:C.textMid}}>No sales today yet</div></Card>:<Card><div style={{fontSize:14,fontWeight:700,marginBottom:14}}>Recent Orders (Today)</div><DataTable headers={["Invoice","Time","Type","Method","Total"]} rows={todaySales.slice().reverse().slice(0,10).map(s=>[<span style={{fontFamily:"monospace",fontSize:12,color:C.primary,fontWeight:700}}>{s.id}</span>,s.time,s.type,s.payMethod,<strong style={{color:C.primary}}>{fmtSAR(s.total)}</strong>])}/></Card>}
+      {qStatus.urgent>0&&<div style={{marginBottom:16,padding:"10px 14px",background:C.dangerLight,border:`1px solid ${C.danger}`,borderRadius:8,fontSize:12,color:C.danger,fontWeight:600}}>🚨 {qStatus.urgent} invoice(s) approaching 24-hour FATOORA reporting deadline!</div>}
+      {todaySales.length===0
+        ?<Card style={{textAlign:"center",padding:"40px 0"}}><div style={{fontSize:40,marginBottom:12}}>📊</div><div style={{fontSize:15,fontWeight:700,color:C.textMid}}>No sales today yet</div></Card>
+        :<Card><div style={{fontSize:14,fontWeight:700,marginBottom:14}}>Recent Orders (Today)</div><DataTable headers={["Invoice","Time","Type","Method","Total"]} rows={todaySales.slice().reverse().slice(0,10).map(s=>[<span style={{fontFamily:"monospace",fontSize:12,color:C.primary,fontWeight:700}}>{s.id}</span>,s.time,s.type,s.payMethod,<strong style={{color:C.primary}}>{fmtSAR(s.total)}</strong>])}/></Card>}
     </div>
   );
 }
@@ -1972,30 +1986,104 @@ function OwnerDashboardInline(){
       </div>}
 
       {/* LICENSES */}
-      {tab==="licenses"&&<DCard>
+      {tab==="licenses"&&<div>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
-          <div style={{fontSize:13,fontWeight:700}}>License Keys ({licenses.length})</div>
-          <div style={{display:"flex",gap:8,fontSize:11}}>
-            <span style={{color:"#1A8A4A"}}>✅ {licenses.filter(l=>l.active&&l.activatedBy).length} Used</span>
-            <span style={{color:"#6366f1"}}>🔑 {licenses.filter(l=>l.active&&!l.activatedBy).length} Available</span>
-            <span style={{color:"#D94040"}}>❌ {licenses.filter(l=>!l.active).length} Inactive</span>
+          <div style={{fontSize:13,fontWeight:700,color:DS.text}}>License Keys ({licenses.length})</div>
+          <div style={{display:"flex",gap:10,fontSize:11}}>
+            <span style={{color:"#1A8A4A",fontWeight:700}}>✅ {licenses.filter(l=>l.active&&l.activatedBy).length} Used</span>
+            <span style={{color:"#6366f1",fontWeight:700}}>🔑 {licenses.filter(l=>l.active&&!l.activatedBy).length} Available</span>
+            <span style={{color:"#D94040",fontWeight:700}}>❌ {licenses.filter(l=>!l.active).length} Inactive</span>
           </div>
         </div>
-        <DTable
-          headers={["Key","Status","Plan","Business","Activated","Toggle"]}
-          rows={licenses.map(l=>{
+        <div style={{display:"flex",flexDirection:"column",gap:8}}>
+          {licenses.map(l=>{
             const client=activations.find(a=>a.licenseKey===l.key);
-            return[
-              <span style={{fontFamily:"monospace",color:"#C07800",fontWeight:700,fontSize:11}}>{l.key}</span>,
-              <span style={{padding:"2px 8px",borderRadius:20,fontSize:10,fontWeight:700,color:l.active?"#1A6B4A":"#D94040",background:l.active?"#E6F7ED":"#FDE8E8"}}>{l.active?"Active":"Inactive"}</span>,
-              client?<PlanBadge plan={client.subscriptionPlan}/>:<span style={{color:DS.sub,fontSize:10}}>—</span>,
-              <span style={{fontSize:11}}>{l.activatedBy||l.businessName||"—"}</span>,
-              <span style={{fontSize:10,color:DS.sub}}>{l.activatedAt?fmtDate(l.activatedAt):"—"}</span>,
-              <button onClick={()=>toggleLicense(l.id,l.active)} style={{padding:"4px 10px",background:l.active?"rgba(217,64,64,0.08)":"rgba(26,138,74,0.08)",border:`1px solid ${l.active?"rgba(217,64,64,0.2)":"rgba(26,138,74,0.2)"}`,borderRadius:5,color:l.active?"#D94040":"#1A6B4A",fontSize:10,cursor:"pointer",fontFamily:"inherit",fontWeight:700}}>{l.active?"Deactivate":"Activate"}</button>
-            ];
+            const [expanded,setExpanded]=[l._expanded||false,(v)=>setLicenses(prev=>prev.map(x=>x.id===l.id?{...x,_expanded:v}:x))];
+            return(
+              <DCard key={l.id} style={{padding:"12px 16px",border:`1px solid ${expanded?"rgba(99,102,241,0.4)":DS.border}`}}>
+                <div style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer"}} onClick={()=>setExpanded(!expanded)}>
+                  <span style={{fontFamily:"monospace",color:"#C07800",fontWeight:700,fontSize:12,flex:1}}>{l.key}</span>
+                  <span style={{padding:"2px 8px",borderRadius:20,fontSize:10,fontWeight:700,color:l.active?"#1A6B4A":"#D94040",background:l.active?"#E6F7ED":"#FDE8E8",flexShrink:0}}>{l.active?"Active":"Inactive"}</span>
+                  {client&&<PlanBadge plan={client.subscriptionPlan}/>}
+                  <span style={{fontSize:11,color:DS.sub,flexShrink:0}}>{l.activatedBy?l.businessName||client?.businessName||l.activatedBy:"Available"}</span>
+                  <span style={{fontSize:10,color:DS.sub,flexShrink:0}}>{expanded?"▲":"▼"}</span>
+                </div>
+                {expanded&&(
+                  <div style={{marginTop:12,paddingTop:12,borderTop:`1px solid ${DS.border}`}}>
+                    {client?(
+                      <div>
+                        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:12}}>
+                          {[
+                            ["Business",client.businessName||"—"],
+                            ["Owner / Contact",client.ownerName||"—"],
+                            ["CR Number",client.crNumber||"—"],
+                            ["VAT Number",client.vatNumber||"—"],
+                            ["City",client.city||"—"],
+                            ["Phone",client.phone||"—"],
+                            ["Activated",client.activatedAt?fmtDate(client.activatedAt):"—"],
+                            ["Plan",SUBSCRIPTION_PLANS[client.subscriptionPlan||"basic"]?.name||"Basic"],
+                            ["Status",client.status||"—"],
+                            ["Device OS",client.deviceInfo?.os||"—"],
+                            ["Browser",client.deviceInfo?.browser||"—"],
+                            ["Screen",client.deviceInfo?.screenW?`${client.deviceInfo.screenW}×${client.deviceInfo.screenH}`:"—"],
+                          ].map(([k,v])=>(
+                            <div key={k} style={{background:"#F8FAFC",borderRadius:8,padding:"8px 10px",border:`1px solid ${DS.border}`}}>
+                              <div style={{fontSize:9,color:DS.sub,fontWeight:700,textTransform:"uppercase",marginBottom:2}}>{k}</div>
+                              <div style={{fontSize:11,fontWeight:600,color:DS.text,wordBreak:"break-all"}}>{v}</div>
+                            </div>
+                          ))}
+                        </div>
+                        {client.location&&(
+                          <div style={{marginBottom:10,padding:"8px 12px",background:"rgba(99,102,241,0.06)",borderRadius:8,border:"1px solid rgba(99,102,241,0.15)",fontSize:11}}>
+                            📍 GPS: <strong>{client.location.lat?.toFixed(5)}, {client.location.lng?.toFixed(5)}</strong>
+                            <a href={`https://maps.google.com/?q=${client.location.lat},${client.location.lng}`} target="_blank" rel="noreferrer" style={{marginLeft:8,color:"#6366f1",fontWeight:700,textDecoration:"none"}}>Open Maps →</a>
+                          </div>
+                        )}
+                        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                          <button onClick={()=>toggleLicense(l.id,l.active)}
+                            style={{padding:"7px 16px",background:l.active?"rgba(217,64,64,0.08)":"rgba(26,138,74,0.08)",border:`1px solid ${l.active?"rgba(217,64,64,0.25)":"rgba(26,138,74,0.25)"}`,borderRadius:7,color:l.active?"#D94040":"#1A6B4A",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
+                            {l.active?"🔴 Deactivate Key":"🟢 Activate Key"}
+                          </button>
+                          <button onClick={async()=>{
+                            if(!confirm(`Force logout ${client.businessName}? Their session will be invalidated and they will need to re-enter their license key.`))return;
+                            try{
+                              await updateDoc(doc(db,"pending_activations",client.id),{forceLogout:true,forceLogoutAt:new Date().toISOString()});
+                              await updateDoc(doc(db,"licenses",l.id),{active:false,forceDeactivated:true,deactivatedAt:new Date().toISOString()});
+                              setLicenses(prev=>prev.map(x=>x.id===l.id?{...x,active:false}:x));
+                              setActivations(prev=>prev.map(a=>a.id===client.id?{...a,forceLogout:true}:a));
+                              logActivity("FORCE_LOGOUT",{licenseKey:l.key,clientId:client.id,business:client.businessName},"Owner");
+                              alert(`✅ ${client.businessName} has been logged out. Their license key has been deactivated.`);
+                            }catch(e){alert("Error: "+e.message);}
+                          }}
+                            style={{padding:"7px 16px",background:"rgba(180,0,0,0.08)",border:"1px solid rgba(180,0,0,0.25)",borderRadius:7,color:"#800000",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
+                            ⛔ Force Logout
+                          </button>
+                          <button onClick={async()=>{
+                            const newPlan=prompt("New plan (basic/professional/premium):",client.subscriptionPlan||"basic");
+                            if(!newPlan||!SUBSCRIPTION_PLANS[newPlan])return alert("Invalid plan");
+                            await upgradeSubscription(client.id,newPlan);
+                          }}
+                            style={{padding:"7px 16px",background:"rgba(240,165,0,0.08)",border:"1px solid rgba(240,165,0,0.25)",borderRadius:7,color:"#C07800",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
+                            📋 Change Plan
+                          </button>
+                        </div>
+                      </div>
+                    ):(
+                      <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                        <span style={{fontSize:12,color:DS.sub}}>This key has not been activated yet.</span>
+                        <button onClick={()=>toggleLicense(l.id,l.active)}
+                          style={{padding:"6px 14px",background:l.active?"rgba(217,64,64,0.08)":"rgba(26,138,74,0.08)",border:`1px solid ${l.active?"rgba(217,64,64,0.25)":"rgba(26,138,74,0.25)"}`,borderRadius:7,color:l.active?"#D94040":"#1A6B4A",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
+                          {l.active?"Deactivate":"Activate"}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </DCard>
+            );
           })}
-        />
-      </DCard>}
+        </div>
+      </div>}
 
       {/* DEVICES */}
       {tab==="devices"&&<DCard>
@@ -2833,7 +2921,7 @@ function FinancialReports({sales,items}){
         {fSales.length>30&&<div style={{textAlign:"center",marginTop:10,fontSize:12,color:C.textMid}}>Showing 30 of {fSales.length} transactions. Export full backup for complete ledger.</div>}
       </Card>}
 
-      {tab==="vat"&&<Card>
+      {tab==="vat"&&(sales.length===0?<Card><div style={{textAlign:"center",padding:"60px 20px",color:C.textLight}}><div style={{fontSize:48,marginBottom:12}}>🧾</div><div style={{fontSize:16,fontWeight:700,marginBottom:6}}>No VAT data yet</div><div style={{fontSize:13}}>Complete orders to see VAT reports.</div></div></Card>:<Card>
         <div style={{fontSize:15,fontWeight:800,marginBottom:16}}>🧾 VAT Liability Dashboard</div>
         <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(190px,1fr))",gap:14,marginBottom:20}}>
           <StatCard icon="💰" label="Revenue (incl. VAT)" value={fmtSAR(revenue)} color={C.primary} bg={C.primaryLight}/>
@@ -2856,7 +2944,7 @@ function FinancialReports({sales,items}){
           <div><div style={{fontSize:13,fontWeight:700,color:C.zatca}}>Total VAT Collected (All Time)</div><div style={{fontSize:11,color:C.textMid}}>Remit to ZATCA per reporting schedule</div></div>
           <div style={{fontSize:22,fontWeight:900,color:C.zatca}}>{fmtSAR(sales.reduce((s,o)=>s+(o.vat||0),0))}</div>
         </div>
-      </Card>}
+      </Card>)}
     </div>
   );
 }
@@ -2921,7 +3009,8 @@ function InvoiceEnhancements({sales,items,license,company}){
     {id:"minimal",name:"Minimal",desc:"Ultra-clean, items and totals only",preview:"⬜"},
     {id:"arabic",name:"Arabic RTL",desc:"Right-to-left Arabic layout with Tajawal font",preview:"🔤"},
   ];
-  const activeTemplate=LS.get("restopos_invoice_template")||"modern";
+  const [activeTemplate,setActiveTemplateState]=useState(()=>LS.get("restopos_invoice_template")||"modern");
+  function selectTemplate(id){setActiveTemplateState(id);LS.set("restopos_invoice_template",id);}
 
   return(
     <div>
@@ -2981,11 +3070,14 @@ function InvoiceEnhancements({sales,items,license,company}){
         <div style={{background:C.infoLight,border:`1px solid ${C.info}`,borderRadius:10,padding:"12px 16px",marginBottom:16,fontSize:13,color:C.info}}>ℹ️ Select a receipt template. The active template applies to all POS receipts. Invoice Format settings (font, footer, etc.) are in Settings → Invoice Format.</div>
         <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))",gap:16,marginBottom:20}}>
           {TEMPLATES.map(t=>(
-            <Card key={t.id} style={{border:`2px solid ${activeTemplate===t.id?C.primary:C.border}`,cursor:"pointer",background:activeTemplate===t.id?C.primaryLight:"#fff"}} onClick={()=>{LS.set("restopos_invoice_template",t.id);alert(`"${t.name}" template activated!`);}}>
+            <Card key={t.id} style={{border:`2px solid ${activeTemplate===t.id?C.primary:C.border}`,cursor:"pointer",background:activeTemplate===t.id?C.primaryLight:"#fff",transition:"all 0.15s"}} onClick={()=>selectTemplate(t.id)}>
               <div style={{fontSize:36,marginBottom:10}}>{t.preview}</div>
               <div style={{fontSize:15,fontWeight:800,marginBottom:4,color:activeTemplate===t.id?C.primary:C.text}}>{t.name}{activeTemplate===t.id?" ✓":""}</div>
-              <div style={{fontSize:12,color:C.textMid}}>{t.desc}</div>
-              {activeTemplate===t.id&&<div style={{marginTop:10,padding:"3px 10px",background:C.primary,color:"#fff",borderRadius:20,fontSize:11,fontWeight:700,display:"inline-block"}}>Active</div>}
+              <div style={{fontSize:12,color:C.textMid,marginBottom:8}}>{t.desc}</div>
+              {activeTemplate===t.id
+                ?<div style={{padding:"3px 10px",background:C.primary,color:"#fff",borderRadius:20,fontSize:11,fontWeight:700,display:"inline-block"}}>✓ Active</div>
+                :<div style={{padding:"3px 10px",background:C.bg,color:C.textMid,borderRadius:20,fontSize:11,fontWeight:600,display:"inline-block",border:`1px solid ${C.border}`}}>Click to activate</div>
+              }
             </Card>
           ))}
         </div>
@@ -3518,7 +3610,7 @@ export default function App(){
     const unsub=onSnapshot(q,(snap)=>{
       if(snap.empty)return;
       const data=snap.docs[0].data();
-      if(data.status==="suspended"||data.status==="deactivated"||data.isActive===false){
+      if(data.status==="suspended"||data.status==="deactivated"||data.isActive===false||data.forceLogout===true){
         setTerminated(true);
       }else{
         setTerminated(false);
