@@ -49,7 +49,7 @@ function generateZATCABase64(opts) { return generatePhase1QR(opts); }
 async function sha256(text) {
   const data = new TextEncoder().encode(text);
   const hashBuffer = await crypto.subtle.digest("SHA-256", data);
-  return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, "0")}).join("");
+  return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, "0")).join("");
 }
 async function sha256Base64(text) {
   const hex = await sha256(text);
