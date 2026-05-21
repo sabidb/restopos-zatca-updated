@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { initializeApp } from "firebase/app";
-import { getFirestore, collection, query, where, getDocs, updateDoc, doc, addDoc, getDoc } from "firebase/firestore";
+import { getFirestore, collection, query, where, getDocs, updateDoc, doc, addDoc, getDoc, onSnapshot, setDoc } from "firebase/firestore";
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -9,7 +9,7 @@ const firebaseConfig = {
   storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
   messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
   appId: import.meta.env.VITE_FIREBASE_APP_ID,
-}
+};
 const firebaseApp = initializeApp(firebaseConfig);
 const db = getFirestore(firebaseApp);
 
@@ -1453,15 +1453,18 @@ function OwnerDashboardInline(){
 
   async function suspendClient(clientId,suspend){
     try{
-      await updateDoc(doc(db,"pending_activations",clientId),{status:suspend?"suspended":"approved",statusUpdatedAt:new Date().toISOString()});
-      setActivations(prev=>prev.map(a=>a.id===clientId?{...a,status:suspend?"suspended":"approved"}:a));
+      await updateDoc(doc(db,"pending_activations",clientId),{status:suspend?"suspended":"approved",isActive:!suspend,statusUpdatedAt:new Date().toISOString()});
+      setActivations(prev=>prev.map(a=>a.id===clientId?{...a,status:suspend?"suspended":"approved",isActive:!suspend}:a));
       logActivity(suspend?"CLIENT_SUSPENDED":"CLIENT_REACTIVATED",{clientId},"Owner");
     }catch(e){alert("Error: "+e.message);}
   }
 
-  function saveAnnouncement(){
-    LS.set("restopos_announcement",announcementText);
-    alert("Announcement saved! Clients will see it on login.");
+  async function saveAnnouncement(){
+    try{
+      await setDoc(doc(db,"config","announcement"),{text:announcementText,updatedAt:new Date().toISOString()});
+      LS.set("restopos_announcement",announcementText);
+      alert("Announcement broadcast to all terminals!");
+    }catch(e){alert("Error broadcasting: "+e.message);}
   }
 
   const statusColor={approved:C.success,pending:C.warning,suspended:C.danger,rejected:"#999"};
@@ -1469,6 +1472,7 @@ function OwnerDashboardInline(){
   const pending=activations.filter(a=>a.status==="pending");
   const active=activations.filter(a=>a.status==="approved");
   const suspended=activations.filter(a=>a.status==="suspended");
+  const deactivated=activations.filter(a=>a.status==="deactivated");
 
   const totalMRR=activations.filter(a=>a.status==="approved").reduce((s,a)=>{
     const plan=SUBSCRIPTION_PLANS[a.subscriptionPlan||"basic"];
@@ -1562,6 +1566,7 @@ function OwnerDashboardInline(){
           [active.length,"Active","✅","#1A8A4A"],
           [pending.length,"Pending Review","⏳","#F0A500"],
           [suspended.length,"Suspended","🚫","#D94040"],
+          [deactivated.length,"Terminated","⛔","#800000"],
           [`SAR ${totalMRR.toLocaleString()}`,"MRR","💰","#F0A500"],
           [`SAR ${totalARR.toLocaleString()}`,"ARR (Est.)","📈","#10b981"],
           [newClientsLast30,"New (30d)","🆕","#6366f1"],
@@ -1763,9 +1768,17 @@ function OwnerDashboardInline(){
                       <button onClick={e=>{e.stopPropagation();if(confirm("Suspend this client?"))suspendClient(a.id,true);}}
                         style={{padding:"6px 14px",background:"rgba(217,64,64,0.15)",border:"1px solid rgba(217,64,64,0.35)",borderRadius:6,color:"#ff6b6b",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>🚫 Suspend</button>
                     )}
+                    {a.status==="approved"&&(
+                      <button onClick={e=>{e.stopPropagation();if(confirm("PERMANENTLY DEACTIVATE this client? Their screen will show TERMINATED immediately."))updateDoc(doc(db,"pending_activations",a.id),{status:"deactivated",isActive:false,statusUpdatedAt:new Date().toISOString()}).then(()=>setActivations(prev=>prev.map(x=>x.id===a.id?{...x,status:"deactivated",isActive:false}:x)));}}
+                        style={{padding:"6px 14px",background:"rgba(180,0,0,0.2)",border:"1px solid rgba(180,0,0,0.5)",borderRadius:6,color:"#ff2222",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>⛔ Terminate</button>
+                    )}
                     {a.status==="suspended"&&(
                       <button onClick={e=>{e.stopPropagation();suspendClient(a.id,false);}}
                         style={{padding:"6px 14px",background:"rgba(26,138,74,0.15)",border:"1px solid rgba(26,138,74,0.35)",borderRadius:6,color:"#4ade80",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>✅ Reactivate</button>
+                    )}
+                    {a.status==="deactivated"&&(
+                      <button onClick={e=>{e.stopPropagation();if(confirm("Restore this client's access?"))updateDoc(doc(db,"pending_activations",a.id),{status:"approved",isActive:true,statusUpdatedAt:new Date().toISOString()}).then(()=>setActivations(prev=>prev.map(x=>x.id===a.id?{...x,status:"approved",isActive:true}:x)));}}
+                        style={{padding:"6px 14px",background:"rgba(26,138,74,0.15)",border:"1px solid rgba(26,138,74,0.35)",borderRadius:6,color:"#4ade80",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>♻️ Restore Access</button>
                     )}
                     <button onClick={e=>{e.stopPropagation();setNotifClient(a);setShowSendNotif(true);}}
                       style={{padding:"6px 14px",background:"rgba(240,165,0,0.15)",border:"1px solid rgba(240,165,0,0.35)",borderRadius:6,color:"#F0A500",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>📢 Notify</button>
@@ -3339,7 +3352,27 @@ function OwnerDashboard({onLogout}){
 // ═══════════════════════════════════════════════════════════════════
 export default function App(){
   const [step,setStep]=useState("checking");const [businessData,setBusinessData]=useState(null);const [license,setLicense]=useState(null);const [currentUser,setCurrentUser]=useState(null);const [screen,setScreen]=useState("pos");const [ownerMode,setOwnerMode]=useState(false);const [ownerAuthed,setOwnerAuthed]=useState(false);
+  const [terminated,setTerminated]=useState(false);
+  const [viewport,setViewport]=useState({w:window.innerWidth,h:window.innerHeight,dpr:window.devicePixelRatio||1});
+  useEffect(()=>{const fn=()=>setViewport({w:window.innerWidth,h:window.innerHeight,dpr:window.devicePixelRatio||1});window.addEventListener("resize",fn);return()=>window.removeEventListener("resize",fn);},[]);
+  const viewportMode=viewport.w>=1024?"DESKTOP_EXPANDED":viewport.w>=640?"TABLET_CONSTRAINED":"MOBILE_FLUID";
   useEffect(()=>{const onOwner=()=>setOwnerMode(true);const onOwnerOut=()=>{setOwnerMode(false);setOwnerAuthed(false);};window.addEventListener("ownerLogin",onOwner);window.addEventListener("ownerLogout",onOwnerOut);return()=>{window.removeEventListener("ownerLogin",onOwner);window.removeEventListener("ownerLogout",onOwnerOut);};},[]);
+  // REAL-TIME KILL-SWITCH WATCHDOG — listens for status changes in Firestore
+  useEffect(()=>{
+    const savedLic=LS.get("restopos_license_v2");
+    if(!savedLic?.licenseKey)return;
+    const q=query(collection(db,"pending_activations"),where("licenseKey","==",savedLic.licenseKey));
+    const unsub=onSnapshot(q,(snap)=>{
+      if(snap.empty)return;
+      const data=snap.docs[0].data();
+      if(data.status==="suspended"||data.status==="deactivated"||data.isActive===false){
+        setTerminated(true);
+      }else{
+        setTerminated(false);
+      }
+    });
+    return()=>unsub();
+  },[]);
   const [sales,_setSales]=useState(()=>LS.get("restopos_sales")||[]);
   const [items,_setItems]=useState(()=>LS.get("restopos_items")||[]);
   const [tables,_setTables]=useState(()=>LS.get("restopos_tables")||Array.from({length:12},(_,i)=>({id:i+1,status:"free",capacity:4})));
@@ -3365,6 +3398,14 @@ export default function App(){
   if(ownerMode&&!ownerAuthed)return<OwnerLogin onLogin={()=>setOwnerAuthed(true)}/>;
   if(ownerMode&&ownerAuthed)return<OwnerDashboard onLogout={()=>{setOwnerMode(false);setOwnerAuthed(false);}}/>;
   if(step==="checking")return<div style={{minHeight:"100vh",background:"#0a1628",display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{color:"#fff",fontSize:16}}>Loading…</div></div>;
+  if(terminated)return(
+    <div style={{position:"fixed",inset:0,background:"#0a0a0a",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",zIndex:99999,fontFamily:"'Plus Jakarta Sans',sans-serif"}}>
+      <div style={{width:80,height:80,borderRadius:"50%",background:"rgba(217,64,64,0.15)",border:"2px solid rgba(217,64,64,0.5)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:36,marginBottom:24}}>🚫</div>
+      <div style={{fontSize:22,fontWeight:900,color:"#ff4444",marginBottom:12,textAlign:"center",letterSpacing:"0.05em"}}>ACCESS TERMINATED</div>
+      <div style={{fontSize:15,color:"rgba(255,255,255,0.7)",textAlign:"center",maxWidth:380,lineHeight:1.6,marginBottom:24}}>CONTACT SUPPORT, YOU'VE BEEN TERMINATED.</div>
+      <div style={{fontSize:12,color:"rgba(255,255,255,0.3)",textAlign:"center"}}>License suspended by administrator. Contact RestoPOS support to restore access.</div>
+    </div>
+  );
   if(step==="register")return<BusinessRegistration onNext={(data)=>{setBusinessData(data);setStep("license");}}/>;
   if(step==="license")return<LicenseVerification businessData={businessData||{businessName:"",crNumber:"",vatNumber:"",address:"",city:"",phone:""}} onSuccess={(lic)=>{setLicense(lic);setStep("login");}} onBack={()=>setStep("register")}/>;
   if(step==="login"||!currentUser)return<RoleLogin license={license} onLogin={(user)=>{setCurrentUser(user);setStep("app");if(user.role==="Cashier")setScreen("pos");}}/>;
@@ -3374,7 +3415,7 @@ export default function App(){
       <div style={{display:"flex",alignItems:"stretch",flexShrink:0,zIndex:100,boxShadow:"0 2px 12px rgba(0,0,0,0.18)",height:50,width:"100%"}}>
         <div style={{background:"linear-gradient(135deg,#1A3D2B 0%,#1F4D36 100%)",display:"flex",alignItems:"center",gap:8,padding:"0 14px",flexShrink:0,borderRight:"1px solid rgba(255,255,255,0.1)"}}>
           <div style={{width:28,height:28,background:"linear-gradient(135deg,#2ECC71,#F0A500)",borderRadius:7,display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontSize:14,fontWeight:900,flexShrink:0}}>R</div>
-          <div><div style={{fontSize:13,fontWeight:800,color:"#fff",lineHeight:1,whiteSpace:"nowrap"}}>RestoPOS</div><div style={{fontSize:8,color:"rgba(255,255,255,0.5)",letterSpacing:"0.1em",whiteSpace:"nowrap"}}>ZATCA PHASE 2 · v15.0</div></div>
+          <div><div style={{fontSize:13,fontWeight:800,color:"#fff",lineHeight:1,whiteSpace:"nowrap"}}>RestoPOS</div><div style={{fontSize:8,color:"rgba(255,255,255,0.5)",letterSpacing:"0.1em",whiteSpace:"nowrap"}}>ZATCA PHASE 2 · v15.1</div></div>
         </div>
         <div style={{background:"linear-gradient(90deg,#E8F4EE 0%,#F0F9F4 100%)",flex:1,display:"flex",alignItems:"center",padding:"0 6px",overflowX:"auto",borderRight:"1px solid #C8E6D4",minWidth:0}}>
           {NAV.map(([id,icon,label])=>(
@@ -3385,6 +3426,7 @@ export default function App(){
         </div>
         <div style={{background:"linear-gradient(135deg,#1A3D2B 0%,#1F4D36 100%)",display:"flex",alignItems:"center",gap:5,padding:"0 10px",flexShrink:0,borderLeft:"1px solid rgba(255,255,255,0.1)"}}>
           <span style={{fontSize:9,background:"rgba(46,204,113,0.25)",color:"#7FFAB5",padding:"2px 6px",borderRadius:4,fontWeight:700,border:"1px solid rgba(46,204,113,0.4)",whiteSpace:"nowrap"}}>● LIVE</span>
+          <span title={`${viewport.w}×${viewport.h} @ ${viewport.dpr}x DPR`} style={{fontSize:9,background:"rgba(240,165,0,0.15)",color:"#F0A500",padding:"2px 6px",borderRadius:4,fontWeight:700,border:"1px solid rgba(240,165,0,0.3)",whiteSpace:"nowrap",cursor:"default"}}>{viewport.w}×{viewport.h}</span>
           <span style={{fontSize:9,background:"rgba(99,102,241,0.25)",color:"#c7d2fe",padding:"2px 6px",borderRadius:4,fontWeight:700,border:"1px solid rgba(99,102,241,0.35)",whiteSpace:"nowrap"}}>ZATCA P2</span>
           <div style={{display:"flex",alignItems:"center",gap:3,background:"rgba(255,255,255,0.1)",borderRadius:5,padding:"2px 5px",border:"1px solid rgba(255,255,255,0.15)"}}>
             <span style={{fontSize:9,color:"rgba(255,255,255,0.5)"}}>⊞</span>
