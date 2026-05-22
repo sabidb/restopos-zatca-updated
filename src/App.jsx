@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { initializeApp } from "firebase/app";
 import { getFirestore, collection, query, where, getDocs, updateDoc, doc, addDoc, getDoc, onSnapshot, setDoc } from "firebase/firestore";
 
@@ -117,7 +117,7 @@ async function generateZATCAInvoice({seller_name,seller_vat,seller_address,selle
   const invoice = {...partial,invoice_hash,invoice_hash_base64,qr_string,ecdsa_signature:null,ecdsa_public_key:null,zatca_reported:false,phase:1};
   invoiceStorage.save(invoice);
   fatooraQueue.enqueue(invoice);
-  reportToFatoora(invoice).catch(()=>{});
+  // Report only when user clicks "Report to FATOORA" button — not automatically
   return invoice;
 }
 
@@ -147,8 +147,9 @@ function QRCodeDisplay({data,size=140}){
 // ZATCA INVOICE HISTORY COMPONENT
 // ═══════════════════════════════════════════════════════════════════
 function ZATCAInvoiceHistory(){
-  const [invoices,setInvoices]=useState([]);const [selected,setSelected]=useState(null);const [tab,setTab]=useState("list");const [queue,setQueue]=useState([]);
+  const [invoices,setInvoices]=useState([]);const [selected,setSelected]=useState(null);const [tab,setTab]=useState("list");const [queue,setQueue]=useState([]);const [reporting,setReporting]=useState(null);
   useEffect(()=>{setInvoices(invoiceStorage.getAll());setQueue(fatooraQueue.getQueue());},[]);
+  async function handleReportToFatoora(inv){setReporting(inv.invoice_number);try{await reportToFatoora(inv);const allInv=invoiceStorage.getAll().map(i=>i.invoice_number===inv.invoice_number?{...i,zatca_reported:true}:i);localStorage.setItem("zatca_invoices_v2",JSON.stringify(allInv));setInvoices(allInv);setQueue(fatooraQueue.getQueue());alert(`✅ Invoice ${inv.invoice_number} reported to FATOORA successfully.`);}catch(e){alert("Failed to report: "+e.message);}setReporting(null);}
   const urgent=queue.filter(q=>q.status!=="reported"&&new Date(q.queued_at).getTime()<Date.now()-23*60*60*1000);
   return(
     <div style={{color:C.text}}>
@@ -170,7 +171,11 @@ function ZATCAInvoiceHistory(){
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,fontSize:12,marginBottom:12}}>
                   {[["ICV",inv.icv],["UUID",inv.uuid?.slice(0,18)+"..."],["Hash",inv.invoice_hash?.slice(0,20)+"..."],["Phase",inv.phase||1]].map(([l,v])=>(<div key={l}><div style={{fontSize:10,color:C.textLight,textTransform:"uppercase",letterSpacing:1}}>{l}</div><div style={{fontFamily:"monospace",fontSize:11}}>{v}</div></div>))}
                 </div>
+                <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
                 <button style={{background:C.primary,color:"#fff",border:"none",borderRadius:6,padding:"7px 14px",cursor:"pointer",fontSize:12,fontFamily:"inherit",fontWeight:600}} onClick={()=>zatcaUtils.downloadXML(inv)}>⬇️ Download XML</button>
+                {!inv.zatca_reported&&<button style={{background:C.zatca,color:"#fff",border:"none",borderRadius:6,padding:"7px 14px",cursor:reporting===inv.invoice_number?"not-allowed":"pointer",fontSize:12,fontFamily:"inherit",fontWeight:600,opacity:reporting===inv.invoice_number?0.7:1}} onClick={()=>handleReportToFatoora(inv)} disabled={reporting===inv.invoice_number}>{reporting===inv.invoice_number?"Reporting…":"📡 Report to FATOORA"}</button>}
+                {inv.zatca_reported&&<span style={{fontSize:11,padding:"4px 10px",background:C.successLight,color:C.success,borderRadius:20,fontWeight:700,border:`1px solid ${C.success}44`}}>✓ Reported to FATOORA</span>}
+                </div>
               </div>
             )}
           </div>
@@ -544,6 +549,12 @@ function ReceiptModal({order,license,zatcaInvoice,onClose}){
   const qrData=zatcaInvoice?zatcaInvoice.qr_string:generatePhase1QR({sellerName:license.businessName,vatNumber:license.vatNumber,timestamp:new Date().toISOString(),total:order.total,vatAmount:order.vat});
   const printFrameRef=useRef();
   const qrReady=useQRScript();
+  const activeTemplate=LS.get("restopos_invoice_template")||"modern";
+  const invoiceFormat=LS.get("restopos_invoice_format")||{font:"courier",fontSize:12,footer:"Thank you for your visit!",footerAr:"شكراً لزيارتكم"};
+  const FONT_MAP={"courier":"'Courier New',monospace","georgia":"Georgia,serif","trebuchet":"'Trebuchet MS',sans-serif","arial-narrow":"'Arial Narrow',Arial,sans-serif","impact":"Impact,Haettenschweiter,sans-serif","tajawal":"'Tajawal',sans-serif","cairo":"'Cairo',sans-serif","amiri":"'Amiri',serif","scheherazade":"'Scheherazade New',serif","noto-naskh":"'Noto Naskh Arabic',serif"};
+  const fontFamily=FONT_MAP[invoiceFormat.font]||"'Courier New',monospace";
+  const footer=invoiceFormat.footer||"Thank you for your visit!";
+  const footerAr=invoiceFormat.footerAr||"شكراً لزيارتكم";
 
   function buildReceiptHTML(qrImgSrc){
     const zatcaMeta=zatcaInvoice?`<div class="row"><span>ZATCA Invoice</span><span>${zatcaInvoice.invoice_number}</span></div><div class="row"><span>ICV</span><span>${zatcaInvoice.icv}</span></div><div style="font-size:8px;text-align:center;color:#666;word-break:break-all;margin-top:2px">Hash: ${zatcaInvoice.invoice_hash?.slice(0,24)}...</div>`:"";
@@ -554,12 +565,27 @@ function ReceiptModal({order,license,zatcaInvoice,onClose}){
       return `<div style="font-size:9px;font-weight:bold;letter-spacing:0.08em;color:#555;margin-top:6px;margin-bottom:2px;text-transform:uppercase;">${cat}</div>`+
         catItems.map(it=>`<div class="row"><span class="item-name">${it.name}${it.nameAr?`<br/><span style="font-family:'Noto Naskh Arabic','Arial',sans-serif;direction:rtl;display:block;text-align:right;font-size:11px;color:#333;">${it.nameAr}</span>`:""}<br/><small style="color:#666;">${it.qty} × SAR ${it.price.toFixed(2)}</small></span><span class="item-amt">SAR ${(it.qty*it.price).toFixed(2)}</span></div>`).join("");
     }).join("");
+    // Template-specific styles
+    let headerHTML="";let bodyStyle="";let hrStyle="border:none;border-top:1px dashed #000;margin:6px 0";
+    if(activeTemplate==="modern"){
+      headerHTML=`<div style="background:#1A6B4A;color:#fff;padding:10px;margin:-4mm -4mm 8px;text-align:center;border-radius:0 0 8px 8px"><div style="font-size:18px;font-weight:900">${license.businessName}</div><div style="font-size:10px;opacity:0.85">${license.address||""}</div><div style="font-size:10px;opacity:0.85">TRN: ${license.vatNumber}</div></div><div style="text-align:center;font-size:11px;margin-bottom:6px">${order.id} | ${order.date} ${order.time}${order.customer?`<br/>Customer: ${order.customer}`:""}${order.type?`<br/>${order.type}${order.table?` · Table ${order.table}`:""}`:""}</div>`;
+      hrStyle="border:none;border-top:2px solid #1A6B4A;margin:6px 0";
+    }else if(activeTemplate==="classic"){
+      headerHTML=`<div style="text-align:center"><div style="font-size:16px;font-weight:900;letter-spacing:0.1em">${license.businessName}</div><div style="font-size:10px">${license.address||""}</div><div>TRN: ${license.vatNumber}</div><div>${order.id} | ${order.date} ${order.time}</div>${order.customer?`<div>Customer: ${order.customer}</div>`:""}<div>${order.type}${order.table?` · Table ${order.table}`:""}</div></div>`;
+    }else if(activeTemplate==="minimal"){
+      headerHTML=`<div style="font-weight:900;font-size:14px">${license.businessName}</div><div style="font-size:10px;color:#555">${order.id} · ${order.date}</div>`;
+      hrStyle="border:none;border-top:1px solid #ccc;margin:4px 0";
+    }else if(activeTemplate==="arabic"){
+      headerHTML=`<div style="direction:rtl;text-align:right;font-family:'Noto Naskh Arabic','Tajawal',sans-serif"><div style="font-size:18px;font-weight:900">${license.businessName}</div><div style="font-size:10px">${license.address||""}</div><div>الرقم الضريبي: ${license.vatNumber}</div><div>${order.id} | ${order.date} ${order.time}</div></div>`;
+    }else{
+      headerHTML=`<div class="center"><div class="big">${license.businessName}</div><div>${license.address||""}</div><div>TRN: ${license.vatNumber}</div><div>${order.id} | ${order.date} ${order.time}</div>${order.customer?`<div>Customer: ${order.customer}</div>`:""}<div>${order.type}${order.table?` · Table ${order.table}`:""}</div></div>`;
+    }
     return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Receipt ${order.id}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Noto+Naskh+Arabic:wght@400;700&display=swap" rel="stylesheet">
-<style>@page{size:80mm auto;margin:0}*{box-sizing:border-box;margin:0;padding:0}body{font-family:'Courier New',monospace;font-size:12px;color:#000;background:#fff;width:80mm;padding:4mm}.center{text-align:center}.bold{font-weight:bold}.big{font-size:16px;font-weight:bold}.hr{border:none;border-top:1px dashed #000;margin:6px 0}.row{display:flex;justify-content:space-between;margin:2px 0;align-items:flex-start}.row-total{display:flex;justify-content:space-between;margin:4px 0;font-size:15px;font-weight:900;border-top:2px solid #000;padding-top:4px}.item-name{flex:1;padding-right:4px}.item-amt{white-space:nowrap;padding-top:1px}.qr-img{width:110px;height:110px;display:block;margin:0 auto}.zatca-label{font-size:9px;font-weight:bold;letter-spacing:0.1em}@media print{body{width:80mm}}</style>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Naskh+Arabic:wght@400;700&family=Tajawal:wght@400;700&family=Cairo:wght@400;700&family=Amiri:wght@400;700&display=swap" rel="stylesheet">
+<style>@page{size:80mm auto;margin:0}*{box-sizing:border-box;margin:0;padding:0}body{font-family:${fontFamily};font-size:${invoiceFormat.fontSize||12}px;color:#000;background:#fff;width:80mm;padding:4mm}.center{text-align:center}.bold{font-weight:bold}.big{font-size:16px;font-weight:bold}.hr{${hrStyle}}.row{display:flex;justify-content:space-between;margin:2px 0;align-items:flex-start}.row-total{display:flex;justify-content:space-between;margin:4px 0;font-size:15px;font-weight:900;border-top:2px solid #000;padding-top:4px}.item-name{flex:1;padding-right:4px}.item-amt{white-space:nowrap;padding-top:1px}.qr-img{width:110px;height:110px;display:block;margin:0 auto}.zatca-label{font-size:9px;font-weight:bold;letter-spacing:0.1em}@media print{body{width:80mm}}</style>
 </head><body>
-<div class="center"><div class="big">${license.businessName}</div><div>${license.address||""}</div><div>TRN: ${license.vatNumber}</div><div>${order.id} | ${order.date} ${order.time}</div>${order.customer?`<div>Customer: ${order.customer}</div>`:""}<div>${order.type}${order.table?` · Table ${order.table}`:""}</div></div>
+${headerHTML}
 <hr class="hr"/>
 ${itemsHTML}
 <hr class="hr"/>
@@ -573,12 +599,39 @@ ${qrImgSrc?`<img class="qr-img" src="${qrImgSrc}" alt="ZATCA QR"/>`:`<div style=
 <div class="zatca-label" style="margin-top:4px;">ZATCA PHASE 2 · QR CODE</div>
 <div style="font-size:8px;color:#666;">TLV Base64 · Scan to verify</div>
 </div>
-<div class="bold center" style="margin-top:6px;font-size:13px;">Thank you for your visit!</div>
-<div style="font-family:'Noto Naskh Arabic','Arial',sans-serif;font-size:14px;font-weight:bold;text-align:center;direction:rtl;margin-top:3px;">شكراً لزيارتكم</div>
+<div class="bold center" style="margin-top:6px;font-size:13px;">${footer}</div>
+<div style="font-family:'Noto Naskh Arabic','Arial',sans-serif;font-size:14px;font-weight:bold;text-align:center;direction:rtl;margin-top:3px;">${footerAr}</div>
+${invoiceFormat.website?`<div style="text-align:center;font-size:9px;color:#666;margin-top:4px;">${invoiceFormat.website}</div>`:""}
 <br/><br/>
 </body></html>`;
   }
 
+  function handleSaveInvoice(){
+    // Save invoice as HTML file for download — no printing required
+    function doSave(){
+      let qrImgSrc="";
+      try{
+        const tempDiv=document.createElement("div");
+        tempDiv.style.cssText="position:absolute;left:-9999px;top:-9999px;width:120px;height:120px;";
+        document.body.appendChild(tempDiv);
+        new window.QRCode(tempDiv,{text:qrData,width:110,height:110,colorDark:"#000000",colorLight:"#ffffff",correctLevel:window.QRCode?.CorrectLevel?.M});
+        const canvas=tempDiv.querySelector("canvas");
+        const img=tempDiv.querySelector("img");
+        if(canvas)qrImgSrc=canvas.toDataURL("image/png");
+        else if(img&&img.src)qrImgSrc=img.src;
+        document.body.removeChild(tempDiv);
+      }catch(e){console.warn("QR gen error:",e);}
+      const html=buildReceiptHTML(qrImgSrc);
+      const blob=new Blob([html],{type:"text/html"});
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement("a");a.href=url;a.download=`Invoice-${order.id}.html`;a.click();URL.revokeObjectURL(url);
+      // Record as saved in savedInvoices
+      const saved=JSON.parse(localStorage.getItem("restopos_saved_invoices")||"[]");
+      if(!saved.find(s=>s.id===order.id)){saved.unshift({...order,savedAt:new Date().toISOString(),zatcaInvoiceNumber:zatcaInvoice?.invoice_number||null});localStorage.setItem("restopos_saved_invoices",JSON.stringify(saved.slice(0,500)));}
+    }
+    if(window.QRCode){doSave();}
+    else{const s=document.createElement("script");s.src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js";s.onload=()=>setTimeout(doSave,200);document.head.appendChild(s);}
+  }
   function handleThermalPrint(){
     function doGenQR(){
       let qrImgSrc="";
@@ -648,8 +701,9 @@ ${qrImgSrc?`<img class="qr-img" src="${qrImgSrc}" alt="ZATCA QR"/>`:`<div style=
           <div style={{fontSize:9,color:"#aaa"}}>TLV Base64 encoded · Scan to verify</div>
           <div style={{marginTop:8,fontWeight:700,fontSize:13}}>Thank you! شكراً لزيارتكم</div>
         </div>
-        <div style={{display:"flex",gap:8,marginTop:14}}>
+        <div style={{display:"flex",gap:8,marginTop:14,flexWrap:"wrap"}}>
           <Btn variant="ghost" onClick={onClose} style={{flex:1}}>Close</Btn>
+          <Btn variant="outline" onClick={handleSaveInvoice} style={{flex:1}}>💾 Save Invoice</Btn>
           <Btn variant="primary" onClick={handleThermalPrint} style={{flex:1}}>🖨️ Print Receipt</Btn>
         </div>
         {zatcaInvoice&&<div style={{marginTop:8}}><Btn variant="zatca" size="sm" onClick={()=>zatcaUtils.downloadXML(zatcaInvoice)} style={{width:"100%"}}>⬇️ Download UBL XML</Btn></div>}
@@ -1295,7 +1349,7 @@ function Transactions({sales,setSales,license}){
         {search&&<button onClick={()=>setSearch("")} style={{background:C.dangerLight,color:C.danger,border:"none",borderRadius:8,padding:"6px 12px",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>✕ Clear</button>}
       </div>
     </Card>
-    <div style={{display:"flex",gap:8,marginBottom:20,flexWrap:"wrap"}}>{[["sales","💳 Sales"],["payments","💰 Payments"],["kot","🍽 KOT"],["zatca","⬛ ZATCA Invoices"]].map(([id,label])=><button key={id} onClick={()=>setTab(id)} style={{padding:"8px 16px",borderRadius:8,border:`1.5px solid ${tab===id?C.primary:C.border}`,background:tab===id?C.primaryLight:"#fff",color:tab===id?C.primary:C.textMid,fontFamily:"inherit",fontSize:13,fontWeight:600,cursor:"pointer"}}>{label}</button>)}</div>
+    <div style={{display:"flex",gap:8,marginBottom:20,flexWrap:"wrap"}}>{[["sales","💳 Sales"],["payments","💰 Payments"],["saved","💾 Saved Invoices"],["kot","🍽 KOT"],["zatca","⬛ ZATCA Invoices"]].map(([id,label])=><button key={id} onClick={()=>setTab(id)} style={{padding:"8px 16px",borderRadius:8,border:`1.5px solid ${tab===id?C.primary:C.border}`,background:tab===id?C.primaryLight:"#fff",color:tab===id?C.primary:C.textMid,fontFamily:"inherit",fontSize:13,fontWeight:600,cursor:"pointer"}}>{label}</button>)}</div>
     {tab==="sales"&&<div style={{display:"flex",flexDirection:"column",gap:16}}>
       {!search&&<Card style={{display:"flex",gap:12,alignItems:"flex-end",flexWrap:"wrap"}}><Inp label="From" value={dateFrom} onChange={setDateFrom} type="date"/><Inp label="To" value={dateTo} onChange={setDateTo} type="date"/><div style={{marginLeft:"auto"}}><div style={{fontSize:12,color:C.textMid}}>{filtered.length} orders · VAT: {fmtSAR(vat)}</div><div style={{fontSize:20,fontWeight:800,color:C.primary}}>{fmtSAR(total)}</div></div></Card>}
       {filtered.length===0?<Card><div style={{textAlign:"center",padding:"40px 0",color:C.textMid}}><div style={{fontSize:40,marginBottom:12}}>🧾</div><div style={{fontSize:15,fontWeight:700}}>No orders yet</div></div></Card>
@@ -1315,11 +1369,7 @@ function Transactions({sales,setSales,license}){
       </div>
       <ZATCAInvoiceHistory/>
     </Card>}
-  </div>);
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// ACCOUNTS
+    {tab==="saved"&&(()=>{const savedInvoices=JSON.parse(localStorage.getItem("restopos_saved_invoices")||"[]");return savedInvoices.length===0?<Card><div style={{textAlign:"center",padding:"40px 0",color:C.textMid}}><div style={{fontSize:40,marginBottom:12}}>💾</div><div style={{fontSize:15,fontWeight:700,marginBottom:6}}>No Saved Invoices</div><div style={{fontSize:13}}>Click "Save Invoice" on any receipt to save it here without printing.</div></div></Card>:<Card><div style={{fontSize:14,fontWeight:700,marginBottom:16}}>💾 Saved Invoices ({savedInvoices.length})</div><DataTable headers={["Invoice","Date","Time","Type","Payment","Total","ZATCA #"]} rows={savedInvoices.slice(0,100).map(s=>[<span style={{fontFamily:"monospace",fontSize:12,color:C.primary,fontWeight:700}}>{s.id}</span>,s.date,s.time,s.type,<Badge color={C.info} bg={C.infoLight}>{s.payMethod}</Badge>,<strong style={{color:C.primary}}>{fmtSAR(s.total)}</strong>,s.zatcaInvoiceNumber?<span style={{fontFamily:"monospace",fontSize:10,color:C.zatca}}>{s.zatcaInvoiceNumber}</span>:<span style={{color:C.textLight}}>—</span>])}/></Card>;})()}
 // ═══════════════════════════════════════════════════════════════════
 function Accounts({sales,items}){
   const [period,setPeriod]=useState("today");const now=new Date();
@@ -1346,21 +1396,56 @@ function Accounts({sales,items}){
 // ═══════════════════════════════════════════════════════════════════
 // REPORTS
 // ═══════════════════════════════════════════════════════════════════
-function Reports({sales,items,setSales}){
+function Reports({sales,allSales,items,setSales}){
   const [tab,setTab]=useState("summary");const [dateFrom,setDateFrom]=useState(TODAY);const [dateTo,setDateTo]=useState(TODAY);const [showCloseDay,setShowCloseDay]=useState(false);
-  const dayLog=LS.get("restopos_daylog")||{};const filtered=sales.filter(s=>s.date>=dateFrom&&s.date<=dateTo);const todaySales=sales.filter(s=>s.date===TODAY);
-  function handleCloseDay(){const closeTime=new Date().toISOString();const firstSale=todaySales.length>0?todaySales[0]:null;const startTime=firstSale?`${firstSale.date}T${firstSale.time}:00`:closeTime;const log={...dayLog,[TODAY]:{startTime,closeTime,orderCount:todaySales.length,revenue:todaySales.reduce((s,o)=>s+o.total,0),vat:todaySales.reduce((s,o)=>s+o.vat,0)}};LS.set("restopos_daylog",log);setShowCloseDay(false);alert(`✅ Day closed at ${fmtDateTime(closeTime)}\nTotal orders: ${todaySales.length}`);}
+  const dayLog=LS.get("restopos_daylog")||{};
+  const closedDays=LS.get("restopos_closed_days")||[];
+  // Use allSales (active + archived) for all date-filtered queries so history is always available
+  const filtered=(allSales||sales).filter(s=>s.date>=dateFrom&&s.date<=dateTo);
+  const todaySales=sales.filter(s=>s.date===TODAY);
+  function handleCloseDay(){
+    const closeTime=new Date().toISOString();
+    const firstSale=todaySales.length>0?todaySales[0]:null;
+    const startTime=firstSale?`${firstSale.date}T${firstSale.time}:00`:closeTime;
+    const expenses=LS.get("restopos_expenses")||[];
+    const todayExpenses=expenses.filter(e=>e.date===TODAY);
+    const payBreakdown={Cash:todaySales.filter(s=>s.payMethod==="Cash").reduce((s,o)=>s+o.total,0),Mada:todaySales.filter(s=>s.payMethod==="Mada").reduce((s,o)=>s+o.total,0),"Apple Pay":todaySales.filter(s=>s.payMethod==="Apple Pay").reduce((s,o)=>s+o.total,0),"STC Pay":todaySales.filter(s=>s.payMethod==="STC Pay").reduce((s,o)=>s+o.total,0)};
+    const summary={date:TODAY,startTime,closeTime,orderCount:todaySales.length,revenue:todaySales.reduce((s,o)=>s+o.total,0),vat:todaySales.reduce((s,o)=>s+o.vat,0),expenses:todayExpenses.reduce((s,e)=>s+e.amount,0),payBreakdown,closedAt:closeTime};
+    // Store day log entry
+    const log={...dayLog,[TODAY]:{startTime,closeTime,orderCount:todaySales.length,revenue:summary.revenue,vat:summary.vat}};
+    LS.set("restopos_daylog",log);
+    // Save to closed days history
+    const updatedClosed=[summary,...closedDays.filter(d=>d.date!==TODAY).slice(0,364)];
+    LS.set("restopos_closed_days",updatedClosed);
+    // Archive today's sales permanently — never delete, always accessible by date filter
+    const archivedSales=LS.get("restopos_archived_sales")||[];
+    const existingArchiveIds=new Set(archivedSales.map(s=>s.id));
+    const newToArchive=todaySales.filter(s=>!existingArchiveIds.has(s.id));
+    LS.set("restopos_archived_sales",[...archivedSales,...newToArchive].slice(-10000));
+    // Remove today's sales from active array (they live in archive now)
+    setSales(prev=>prev.filter(s=>s.date!==TODAY));
+    // Reset KOT counter for fresh start tomorrow
+    LS.set("restopos_kot",1);
+    setShowCloseDay(false);
+    alert(`✅ Day closed!\nOrders: ${todaySales.length} · Revenue: SAR ${summary.revenue.toFixed(2)}\n\nSales archived permanently. KOTs reset for tomorrow.\nAll historical data accessible via date filter.`);
+  }
   const todayLog=dayLog[TODAY];
-  const catSales=[...new Set(items.map(i=>i.category))].map(cat=>{const catItems=items.filter(i=>i.category===cat);return{cat,revenue:catItems.reduce((s,it)=>s+filtered.reduce((ss,o)=>ss+(o.items.find(i=>i.id===it.id)?.qty||0)*it.price,0),0)};}).filter(c=>c.revenue>0).sort((a,b)=>b.revenue-a.revenue);
-  const itemSales=items.map(it=>({...it,sold:filtered.reduce((s,o)=>s+(o.items.find(i=>i.id===it.id)?.qty||0),0),revenue:filtered.reduce((s,o)=>s+(o.items.find(i=>i.id===it.id)?.qty||0)*it.price,0)})).filter(it=>it.sold>0).sort((a,b)=>b.revenue-a.revenue);
+  const catSales=[...new Set(items.map(i=>i.category))].map(cat=>{const catItems=items.filter(i=>i.category===cat);return{cat,revenue:catItems.reduce((s,it)=>s+filtered.reduce((ss,o)=>ss+(o.items?.find(i=>i.id===it.id)?.qty||0)*it.price,0),0)};}).filter(c=>c.revenue>0).sort((a,b)=>b.revenue-a.revenue);
+  const itemSales=items.map(it=>({...it,sold:filtered.reduce((s,o)=>s+(o.items?.find(i=>i.id===it.id)?.qty||0),0),revenue:filtered.reduce((s,o)=>s+(o.items?.find(i=>i.id===it.id)?.qty||0)*it.price,0)})).filter(it=>it.sold>0).sort((a,b)=>b.revenue-a.revenue);
   const DateFilter=()=><Card style={{display:"flex",gap:12,alignItems:"flex-end",marginBottom:16,flexWrap:"wrap"}}><Inp label="From" value={dateFrom} onChange={setDateFrom} type="date"/><Inp label="To" value={dateTo} onChange={setDateTo} type="date"/><div style={{marginLeft:"auto"}}><div style={{fontSize:12,color:C.textMid}}>{filtered.length} orders</div><div style={{fontSize:18,fontWeight:800,color:C.primary}}>{fmtSAR(filtered.reduce((s,o)=>s+o.total,0))}</div></div></Card>;
-  const tabs=[["summary","📋 Summary"],["category","📂 Category"],["items","🍔 Items"],["stock","📦 Stock"],["eod","🌙 End of Day"]];
+  const tabs=[["summary","📋 Summary"],["category","📂 Category"],["items","🍔 Items"],["stock","📦 Stock"],["eod","🌙 End of Day"],["dayhistory","📅 Day History"]];
   return(<div>
     {showCloseDay&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:3000,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
-      <div style={{background:"#fff",borderRadius:20,padding:32,maxWidth:400,width:"100%",boxShadow:"0 20px 60px rgba(0,0,0,0.3)"}}>
+      <div style={{background:"#fff",borderRadius:20,padding:32,maxWidth:420,width:"100%",boxShadow:"0 20px 60px rgba(0,0,0,0.3)"}}>
         <div style={{fontSize:32,textAlign:"center",marginBottom:12}}>🌙</div>
         <div style={{fontSize:18,fontWeight:800,color:C.text,textAlign:"center",marginBottom:8}}>Close the Day?</div>
-        <div style={{fontSize:13,color:C.textMid,textAlign:"center",marginBottom:20,lineHeight:1.5}}>This will record the end of day at <strong>{new Date().toLocaleTimeString()}</strong>.<br/>Today: <strong>{todaySales.length}</strong> orders · <strong>{fmtSAR(todaySales.reduce((s,o)=>s+o.total,0))}</strong></div>
+        <div style={{fontSize:13,color:C.textMid,textAlign:"center",marginBottom:8,lineHeight:1.5}}>This will record the end of day at <strong>{new Date().toLocaleTimeString()}</strong>.</div>
+        <div style={{background:C.dangerLight,border:`1px solid ${C.danger}`,borderRadius:10,padding:"10px 14px",marginBottom:16,fontSize:12,color:C.danger,fontWeight:600}}>⚠️ Sales data and KOT counter will reset to zero for the new day. A full summary will be saved to Day History.</div>
+        <div style={{background:C.bg,borderRadius:10,padding:"12px 14px",marginBottom:16,fontSize:13}}>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}><span style={{color:C.textMid}}>Orders today</span><strong>{todaySales.length}</strong></div>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}><span style={{color:C.textMid}}>Revenue</span><strong style={{color:C.primary}}>{fmtSAR(todaySales.reduce((s,o)=>s+o.total,0))}</strong></div>
+          <div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:C.textMid}}>VAT Collected</span><strong style={{color:C.zatca}}>{fmtSAR(todaySales.reduce((s,o)=>s+o.vat,0))}</strong></div>
+        </div>
         <div style={{display:"flex",gap:12}}><button onClick={()=>setShowCloseDay(false)} style={{flex:1,padding:14,background:C.bg,border:`1px solid ${C.border}`,borderRadius:12,fontSize:15,fontWeight:700,cursor:"pointer",fontFamily:"inherit",color:C.text}}>No, Cancel</button><button onClick={handleCloseDay} style={{flex:1,padding:14,background:"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:12,fontSize:15,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>Yes, Close Day</button></div>
       </div>
     </div>}
@@ -1373,6 +1458,38 @@ function Reports({sales,items,setSales}){
     {tab==="items"&&<><DateFilter/><Card><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}><div style={{fontSize:14,fontWeight:700}}>Items Sold</div></div>{itemSales.length===0?<div style={{textAlign:"center",padding:"30px 0",color:C.textMid}}>No items sold in this period</div>:<DataTable headers={["Item","Category","Price","Qty Sold","Revenue"]} rows={itemSales.map(it=>[it.name,<Badge color={C.info} bg={C.infoLight}>{it.category}</Badge>,fmtSAR(it.price),<strong style={{color:C.primary,fontSize:15}}>{it.sold}</strong>,fmtSAR(it.revenue)])}/>}</Card></>}
     {tab==="stock"&&<Card><div style={{fontSize:15,fontWeight:700,marginBottom:16}}>Stock Levels</div><DataTable headers={["Item","Category","Stock","Alert"]} rows={items.map(it=>[it.name,it.category,it.stock,it.stock<10?<Badge color={C.danger} bg={C.dangerLight}>Low</Badge>:<Badge color={C.success} bg={C.successLight}>OK</Badge>])}/></Card>}
     {tab==="eod"&&<Card><div style={{fontSize:15,fontWeight:700,marginBottom:20}}>🌙 End of Day Report — {fmtDate(TODAY)}</div>{todayLog?(<div style={{display:"flex",flexDirection:"column",gap:0}}>{[["🟢 Day Started",fmtDateTime(todayLog.startTime)],["🔴 Day Closed",fmtDateTime(todayLog.closeTime)],["Total Orders",todayLog.orderCount],["Total Revenue",fmtSAR(todayLog.revenue)],["VAT Collected",fmtSAR(todayLog.vat)],["Cash Sales",fmtSAR(todaySales.filter(s=>s.payMethod==="Cash").reduce((s,o)=>s+o.total,0))],["Card / Digital",fmtSAR(todaySales.filter(s=>s.payMethod!=="Cash").reduce((s,o)=>s+o.total,0))]].map(([l,v])=><div key={l} style={{display:"flex",justifyContent:"space-between",padding:"12px 0",borderBottom:`1px solid ${C.border}`,fontSize:14}}><span style={{color:C.textMid}}>{l}</span><strong style={{color:C.text}}>{v}</strong></div>)}</div>):(<div style={{textAlign:"center",padding:"40px 0",color:C.textMid}}><div style={{fontSize:40,marginBottom:12}}>🌙</div><div style={{fontSize:14,marginBottom:16}}>Day not closed yet. Click "Close Day" to record.</div><div style={{fontSize:13,color:C.textLight}}>Orders today: {todaySales.length} · {fmtSAR(todaySales.reduce((s,o)=>s+o.total,0))}</div></div>)}</Card>}
+    {tab==="dayhistory"&&<div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+        <div style={{fontSize:15,fontWeight:700}}>📅 Day History</div>
+        {closedDays.length>0&&(()=>{
+          const totalRev=closedDays.reduce((s,d)=>s+d.revenue,0);
+          const totalOrders=closedDays.reduce((s,d)=>s+d.orderCount,0);
+          const totalVat=closedDays.reduce((s,d)=>s+d.vat,0);
+          return(<div style={{display:"flex",gap:16,fontSize:13}}>
+            <div style={{textAlign:"right"}}><div style={{color:C.textMid,fontSize:11}}>Total Revenue</div><div style={{fontWeight:900,color:C.primary,fontSize:16}}>{fmtSAR(totalRev)}</div></div>
+            <div style={{textAlign:"right"}}><div style={{color:C.textMid,fontSize:11}}>Total Orders</div><div style={{fontWeight:900,color:C.info,fontSize:16}}>{totalOrders}</div></div>
+            <div style={{textAlign:"right"}}><div style={{color:C.textMid,fontSize:11}}>Total VAT</div><div style={{fontWeight:900,color:C.zatca,fontSize:16}}>{fmtSAR(totalVat)}</div></div>
+          </div>);
+        })()}
+      </div>
+      {closedDays.length===0?<Card><div style={{textAlign:"center",padding:"40px 0",color:C.textMid}}><div style={{fontSize:40,marginBottom:12}}>📅</div><div style={{fontSize:14}}>No closed days yet. Use "Close Day" to save daily summaries.</div></div></Card>
+      :<div>{closedDays.map(d=>{
+        const payBr=d.payBreakdown||{};
+        return(
+          <Card key={d.date} style={{marginBottom:12}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
+              <div><div style={{fontSize:15,fontWeight:800}}>{fmtDate(d.date)}</div><div style={{fontSize:11,color:C.textLight}}>Closed at {d.closeTime?.slice(11,16)} · {d.orderCount} orders</div></div>
+              <div style={{fontSize:18,fontWeight:900,color:C.primary}}>{fmtSAR(d.revenue)}</div>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(120px,1fr))",gap:8,marginBottom:d.expenses>0?10:0}}>
+              <div style={{background:C.zatcaLight,borderRadius:8,padding:"6px 10px"}}><div style={{fontSize:10,color:C.zatca,fontWeight:700,textTransform:"uppercase"}}>VAT</div><div style={{fontSize:13,fontWeight:700,color:C.zatca}}>{fmtSAR(d.vat||0)}</div></div>
+              {["Cash","Mada","Apple Pay","STC Pay"].filter(m=>payBr[m]>0).map(m=><div key={m} style={{background:C.infoLight,borderRadius:8,padding:"6px 10px"}}><div style={{fontSize:10,color:C.info,fontWeight:700,textTransform:"uppercase"}}>{m}</div><div style={{fontSize:13,fontWeight:700,color:C.info}}>{fmtSAR(payBr[m]||0)}</div></div>)}
+              {d.expenses>0&&<div style={{background:C.dangerLight,borderRadius:8,padding:"6px 10px"}}><div style={{fontSize:10,color:C.danger,fontWeight:700,textTransform:"uppercase"}}>Expenses</div><div style={{fontSize:13,fontWeight:700,color:C.danger}}>{fmtSAR(d.expenses||0)}</div></div>}
+            </div>
+          </Card>
+        );
+      })}</div>}
+    </div>}
   </div>);
 }
 
@@ -1534,8 +1651,8 @@ function OwnerDashboardInline(){
     }catch(e){alert("Error broadcasting: "+e.message);}
   }
 
-  const statusColor={approved:C.success,pending:C.warning,suspended:C.danger,rejected:"#999"};
-  const statusBg={approved:C.successLight,pending:C.warningLight,suspended:C.dangerLight,rejected:"#f5f5f5"};
+  const statusColor={approved:"#10b981",pending:"#F0A500",suspended:"#ef4444",rejected:"#94A3B8"};
+  const statusBg={approved:"rgba(16,185,129,0.15)",pending:"rgba(240,165,0,0.15)",suspended:"rgba(239,68,68,0.15)",rejected:"rgba(148,163,184,0.1)"};
   const pending=activations.filter(a=>a.status==="pending");
   const active=activations.filter(a=>a.status==="approved");
   const suspended=activations.filter(a=>a.status==="suspended");
@@ -1589,32 +1706,32 @@ function OwnerDashboardInline(){
   });
 
   const OTab=({id,label,count})=>(
-    <button onClick={()=>setTab(id)} style={{padding:"8px 14px",background:tab===id?"rgba(99,102,241,0.12)":"rgba(0,0,0,0.03)",border:`1.5px solid ${tab===id?"rgba(99,102,241,0.5)":"rgba(0,0,0,0.08)"}`,borderRadius:8,color:tab===id?"#4F46E5":"#64748B",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:"inherit",display:"flex",alignItems:"center",gap:5}}>
-      {label}{count>0&&<span style={{background:tab===id?"#6366f1":"rgba(99,102,241,0.12)",color:tab===id?"#fff":"#6366f1",borderRadius:20,padding:"1px 6px",fontSize:10,fontWeight:700}}>{count}</span>}
+    <button onClick={()=>setTab(id)} style={{padding:"8px 14px",background:tab===id?"rgba(99,102,241,0.2)":"rgba(255,255,255,0.05)",border:`1.5px solid ${tab===id?"rgba(99,102,241,0.6)":"rgba(255,255,255,0.1)"}`,borderRadius:8,color:tab===id?"#a5b4fc":"#94A3B8",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:"inherit",display:"flex",alignItems:"center",gap:5}}>
+      {label}{count>0&&<span style={{background:tab===id?"#6366f1":"rgba(99,102,241,0.2)",color:tab===id?"#fff":"#a5b4fc",borderRadius:20,padding:"1px 6px",fontSize:10,fontWeight:700}}>{count}</span>}
     </button>
   );
 
   const PlanBadge=({plan})=>{
     const p=SUBSCRIPTION_PLANS[plan||"basic"];
-    return <span style={{padding:"2px 8px",borderRadius:20,fontSize:10,fontWeight:700,background:p.color+"22",color:p.color,border:`1px solid ${p.color}44`}}>{p.name}</span>;
+    return <span style={{padding:"2px 8px",borderRadius:20,fontSize:10,fontWeight:700,background:p.color+"25",color:p.color,border:`1px solid ${p.color}44`}}>{p.name}</span>;
   };
 
   if(loading)return<div style={{textAlign:"center",padding:40,color:"#64748B",fontSize:13}}>Loading client data from Firestore…</div>;
 
-  const DS={bg:"#F0F4F8",card:"#FFFFFF",border:"#E2E8F0",text:"#1a2332",sub:"#64748B",accent:"#F0A500"};
+  const DS={bg:"#0F1929",card:"#1A2A3F",border:"rgba(255,255,255,0.08)",text:"#F1F5F9",sub:"#94A3B8",accent:"#F0A500",indigo:"#6366f1",success:"#10b981",danger:"#ef4444",warning:"#F0A500"};
 
   const DCard=({children,style={}})=>(
-    <div style={{background:DS.card,border:`1px solid ${DS.border}`,borderRadius:12,padding:16,boxShadow:"0 1px 6px rgba(0,0,0,0.05)",...style}}>{children}</div>
+    <div style={{background:DS.card,border:`1px solid ${DS.border}`,borderRadius:14,padding:18,boxShadow:"0 2px 12px rgba(0,0,0,0.2)",...style}}>{children}</div>
   );
 
   const DTable=({headers,rows})=>(
     <div style={{overflowX:"auto"}}>
       <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-        <thead><tr style={{background:"#F8FAFC"}}>
+        <thead><tr style={{background:"rgba(255,255,255,0.04)"}}>
           {headers.map(h=><th key={h} style={{padding:"9px 12px",textAlign:"left",color:DS.sub,fontWeight:700,fontSize:10,textTransform:"uppercase",borderBottom:`1px solid ${DS.border}`,whiteSpace:"nowrap"}}>{h}</th>)}
         </tr></thead>
         <tbody>{rows.length===0?<tr><td colSpan={headers.length} style={{textAlign:"center",padding:32,color:DS.sub}}>No data</td></tr>:rows.map((row,i)=>(
-          <tr key={i} style={{borderBottom:`1px solid ${DS.border}`,background:i%2===0?"#fff":"#F8FAFC"}}>
+          <tr key={i} style={{borderBottom:`1px solid ${DS.border}`,background:i%2===0?"transparent":"rgba(255,255,255,0.02)"}}>
             {row.map((cell,j)=><td key={j} style={{padding:"9px 12px",color:DS.text,verticalAlign:"middle"}}>{cell}</td>)}
           </tr>
         ))}</tbody>
@@ -1625,32 +1742,33 @@ function OwnerDashboardInline(){
   const maxBar=Math.max(...monthlyActivations.map(m=>m.count),1);
 
   return(
-    <div style={{fontFamily:"'Plus Jakarta Sans',sans-serif",color:DS.text}}>
+    <div style={{fontFamily:"'Plus Jakarta Sans',sans-serif",color:DS.text,width:"100%",minHeight:"100vh",background:"linear-gradient(135deg,#0a1020 0%,#0F1929 100%)",padding:0}}>
       {/* KPI Row */}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(130px,1fr))",gap:10,marginBottom:16}}>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))",gap:10,marginBottom:20}}>
         {[
           [activations.length,"Total Clients","🏢","#6366f1"],
-          [active.length,"Active","✅","#1A8A4A"],
-          [pending.length,"Pending Review","⏳","#C07800"],
-          [suspended.length,"Suspended","🚫","#D94040"],
+          [active.length,"Active","✅","#10b981"],
+          [pending.length,"Pending Review","⏳","#F0A500"],
+          [suspended.length,"Suspended","🚫","#ef4444"],
           [deactivated.length,"Terminated","⛔","#800000"],
-          [`SAR ${totalMRR.toLocaleString()}`,"MRR","💰","#C07800"],
-          [`SAR ${totalARR.toLocaleString()}`,"ARR (Est.)","📈","#1A8A4A"],
+          [`SAR ${totalMRR.toLocaleString()}`,"MRR","💰","#F0A500"],
+          [`SAR ${totalARR.toLocaleString()}`,"ARR (Est.)","📈","#10b981"],
           [newClientsLast30,"New (30d)","🆕","#6366f1"],
-          [licenses.filter(l=>l.active&&!l.activatedBy).length,"Keys Available","🔑","#6366f1"]
+          [licenses.filter(l=>l.active&&!l.activatedBy).length,"Keys Available","🔑","#a5b4fc"]
         ].map(([v,l,ic,col])=>(
-          <div key={l} style={{background:`${col}12`,border:`1px solid ${col}30`,borderRadius:10,padding:"12px 14px",boxShadow:"0 1px 4px rgba(0,0,0,0.04)"}}>
-            <div style={{fontSize:10,color:col,fontWeight:700,marginBottom:4}}>{ic} {l}</div>
-            <div style={{fontSize:15,fontWeight:900,color:col}}>{v}</div>
+          <div key={l} style={{background:`${col}15`,border:`1px solid ${col}35`,borderRadius:12,padding:"14px 16px",boxShadow:"0 2px 8px rgba(0,0,0,0.15)"}}>
+            <div style={{fontSize:10,color:col,fontWeight:700,marginBottom:5}}>{ic} {l}</div>
+            <div style={{fontSize:16,fontWeight:900,color:col}}>{v}</div>
           </div>
         ))}
       </div>
 
       {/* Tabs */}
-      <div style={{display:"flex",gap:6,marginBottom:16,flexWrap:"wrap"}}>
+      <div style={{display:"flex",gap:6,marginBottom:18,flexWrap:"wrap"}}>
         <OTab id="overview" label="📊 Overview" count={0}/>
         <OTab id="clients" label="👥 Clients" count={active.length}/>
         <OTab id="pending" label="⏳ Pending" count={pending.length}/>
+        <OTab id="tickets" label="🆘 Support" count={0}/>
         <OTab id="map" label="🗺️ Map" count={0}/>
         <OTab id="licenses" label="🔑 Licenses" count={0}/>
         <OTab id="devices" label="📱 Devices" count={0}/>
@@ -1661,7 +1779,7 @@ function OwnerDashboardInline(){
       </div>
 
       {/* OVERVIEW */}
-      {tab==="overview"&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+      {tab==="overview"&&<div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:14}}>
         <DCard>
           <div style={{fontSize:13,fontWeight:700,marginBottom:12,color:DS.text}}>📊 Subscription Breakdown</div>
           {planDist.map(p=>(
@@ -1674,11 +1792,11 @@ function OwnerDashboardInline(){
           ))}
           <div style={{marginTop:12,paddingTop:10,borderTop:`1px solid ${DS.border}`,display:"flex",justifyContent:"space-between",fontSize:13,fontWeight:800}}>
             <span style={{color:DS.sub}}>Total MRR</span>
-            <span style={{color:"#C07800"}}>SAR {totalMRR.toLocaleString()}</span>
+            <span style={{color:DS.accent}}>SAR {totalMRR.toLocaleString()}</span>
           </div>
           <div style={{display:"flex",justifyContent:"space-between",fontSize:11,marginTop:6}}>
             <span style={{color:DS.sub}}>ARR Projection</span>
-            <span style={{color:"#1A8A4A",fontWeight:700}}>SAR {totalARR.toLocaleString()}</span>
+            <span style={{color:DS.success,fontWeight:700}}>SAR {totalARR.toLocaleString()}</span>
           </div>
         </DCard>
         <DCard>
@@ -1687,13 +1805,13 @@ function OwnerDashboardInline(){
             {monthlyActivations.map(m=>(
               <div key={m.ym} style={{display:"flex",flexDirection:"column",alignItems:"center",flex:1,gap:3}}>
                 <div style={{fontSize:9,color:DS.sub,fontWeight:600}}>{m.count||""}</div>
-                <div style={{width:"100%",background:m.count>0?"#6366f1":"#E2E8F0",borderRadius:"3px 3px 0 0",height:`${Math.max(4,(m.count/maxBar)*60)}px`,transition:"height 0.3s"}}/>
+                <div style={{width:"100%",background:m.count>0?"#6366f1":"rgba(255,255,255,0.06)",borderRadius:"3px 3px 0 0",height:`${Math.max(4,(m.count/maxBar)*60)}px`,transition:"height 0.3s"}}/>
                 <div style={{fontSize:9,color:DS.sub}}>{m.month}</div>
               </div>
             ))}
           </div>
           <div style={{fontSize:11,color:DS.sub,borderTop:`1px solid ${DS.border}`,paddingTop:8,marginTop:4}}>
-            New clients last 30 days: <strong style={{color:"#6366f1"}}>{newClientsLast30}</strong> · Churn: <strong style={{color:"#D94040"}}>{churnLast30}</strong>
+            New clients last 30 days: <strong style={{color:"#a5b4fc"}}>{newClientsLast30}</strong> · Churn: <strong style={{color:DS.danger}}>{churnLast30}</strong>
           </div>
         </DCard>
         <DCard>
@@ -1702,10 +1820,10 @@ function OwnerDashboardInline(){
             <div key={city} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:`1px solid ${DS.border}`}}>
               <span style={{fontSize:12,color:DS.sub}}>📍 {city}</span>
               <div style={{display:"flex",alignItems:"center",gap:8}}>
-                <div style={{width:60,height:4,background:"#E2E8F0",borderRadius:2}}>
+                <div style={{width:60,height:4,background:"rgba(255,255,255,0.08)",borderRadius:2}}>
                   <div style={{height:"100%",background:"#6366f1",borderRadius:2,width:`${(count/activations.length)*100}%`}}/>
                 </div>
-                <span style={{fontSize:12,fontWeight:700,color:"#6366f1",minWidth:14}}>{count}</span>
+                <span style={{fontSize:12,fontWeight:700,color:"#a5b4fc",minWidth:14}}>{count}</span>
               </div>
             </div>
           ))}
@@ -1714,29 +1832,28 @@ function OwnerDashboardInline(){
           <div style={{fontSize:13,fontWeight:700,marginBottom:12,color:DS.text}}>🕐 Recent Activity</div>
           {activityLog.length===0?<div style={{color:DS.sub,fontSize:12,textAlign:"center",padding:16}}>No activity yet</div>:activityLog.slice(0,8).map((l,i)=>(
             <div key={i} style={{fontSize:11,padding:"6px 0",borderBottom:`1px solid ${DS.border}`,display:"flex",justifyContent:"space-between"}}>
-              <span style={{color:"#6366f1",fontWeight:600}}>{l.action.replace(/_/g," ")}</span>
+              <span style={{color:"#a5b4fc",fontWeight:600}}>{l.action.replace(/_/g," ")}</span>
               <span style={{color:DS.sub,fontSize:10}}>{l.timestamp?.slice(0,16).replace("T"," ")}</span>
             </div>
           ))}
-          {activityLog.length===0&&<div style={{fontSize:12,color:DS.sub,textAlign:"center",padding:"20px 0"}}>No activity yet</div>}
         </DCard>
         <DCard>
           <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>📢 System Announcement</div>
           <textarea value={announcementText} onChange={e=>setAnnouncementText(e.target.value)}
             placeholder="Enter a system-wide announcement for all clients..."
-            style={{width:"100%",height:80,padding:"8px 12px",background:"rgba(255,255,255,0.06)",border:`1px solid ${DS.border}`,borderRadius:8,color:"#fff",fontSize:12,fontFamily:"inherit",resize:"none"}}/>
-          <button onClick={saveAnnouncement} style={{marginTop:8,padding:"8px 16px",background:"rgba(240,165,0,0.2)",border:"1px solid rgba(240,165,0,0.4)",borderRadius:8,color:"#F0A500",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>💾 Save Announcement</button>
+            style={{width:"100%",height:80,padding:"8px 12px",background:"rgba(255,255,255,0.06)",border:`1px solid ${DS.border}`,borderRadius:8,color:DS.text,fontSize:12,fontFamily:"inherit",resize:"none"}}/>
+          <button onClick={saveAnnouncement} style={{marginTop:8,padding:"8px 16px",background:"rgba(240,165,0,0.15)",border:"1px solid rgba(240,165,0,0.35)",borderRadius:8,color:"#F0A500",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>💾 Broadcast Announcement</button>
         </DCard>
         <DCard>
           <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>📊 System Stats</div>
           {[
-            ["Total Licenses",licenses.length,"#6366f1"],
-            ["Active Clients",active.length,"#1A8A4A"],
+            ["Total Licenses",licenses.length,"#a5b4fc"],
+            ["Active Clients",active.length,"#10b981"],
             ["Pending Reviews",pending.length,"#F0A500"],
-            ["Suspended",suspended.length,"#D94040"],
+            ["Suspended",suspended.length,"#ef4444"],
             ["Available Keys",licenses.filter(l=>l.active&&!l.activatedBy).length,"#a5b4fc"],
             ["Activation Rate",licenses.length>0?Math.round((activations.length/licenses.length)*100)+"%":"—","#10b981"],
-            ["Activity Logs",activityLog.length,"rgba(255,255,255,0.6)"],
+            ["Activity Logs",activityLog.length,"rgba(255,255,255,0.5)"],
           ].map(([k,v,c])=>(
             <div key={k} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:`1px solid ${DS.border}`}}>
               <span style={{fontSize:12,color:DS.sub}}>{k}</span>
@@ -1760,10 +1877,10 @@ function OwnerDashboardInline(){
         <div style={{display:"grid",gap:10}}>
           {filteredClients.map(a=>(
             <div key={a.id} onClick={()=>setSelectedClient(selectedClient?.id===a.id?null:a)}
-              style={{background:selectedClient?.id===a.id?"rgba(99,102,241,0.06)":"#fff",border:`1.5px solid ${selectedClient?.id===a.id?"rgba(99,102,241,0.4)":DS.border}`,borderRadius:10,padding:"12px 16px",cursor:"pointer",boxShadow:"0 1px 4px rgba(0,0,0,0.04)"}}>
+              style={{background:selectedClient?.id===a.id?"rgba(99,102,241,0.12)":DS.card,border:`1.5px solid ${selectedClient?.id===a.id?"rgba(99,102,241,0.5)":DS.border}`,borderRadius:12,padding:"12px 16px",cursor:"pointer",boxShadow:"0 2px 8px rgba(0,0,0,0.15)"}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
                 <div style={{display:"flex",alignItems:"center",gap:10}}>
-                  <div style={{width:36,height:36,background:"rgba(99,102,241,0.1)",borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>🏢</div>
+                  <div style={{width:36,height:36,background:"rgba(99,102,241,0.15)",borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>🏢</div>
                   <div>
                     <div style={{fontSize:13,fontWeight:700,color:DS.text}}>{a.businessName}</div>
                     <div style={{fontSize:11,color:DS.sub}}>CR: {a.crNumber} · VAT: {a.vatNumber} · 📍{a.city||"—"}</div>
@@ -1771,8 +1888,8 @@ function OwnerDashboardInline(){
                 </div>
                 <div style={{display:"flex",gap:8,alignItems:"center"}}>
                   <PlanBadge plan={a.subscriptionPlan}/>
-                  <span style={{padding:"3px 10px",borderRadius:20,fontSize:10,fontWeight:700,color:statusColor[a.status]||"#999",background:statusBg[a.status]||"rgba(0,0,0,0.05)"}}>{a.status}</span>
-                  <span style={{fontSize:11,color:"#C07800",fontFamily:"monospace",fontWeight:700}}>{a.licenseKey}</span>
+                  <span style={{padding:"3px 10px",borderRadius:20,fontSize:10,fontWeight:700,color:statusColor[a.status]||"#999",background:statusBg[a.status]||"rgba(255,255,255,0.06)"}}>{a.status}</span>
+                  <span style={{fontSize:11,color:DS.accent,fontFamily:"monospace",fontWeight:700}}>{a.licenseKey}</span>
                 </div>
               </div>
               {selectedClient?.id===a.id&&(
@@ -1789,7 +1906,7 @@ function OwnerDashboardInline(){
                       ["Status Updated",a.statusUpdatedAt?fmtDate(a.statusUpdatedAt):"—"],
                       ["License ID",a.licenseKey||"—"],
                     ].map(([k,v])=>(
-                      <div key={k} style={{background:"#F8FAFC",borderRadius:8,padding:"8px 12px",border:`1px solid ${DS.border}`}}>
+                      <div key={k} style={{background:"rgba(255,255,255,0.04)",borderRadius:8,padding:"8px 12px",border:`1px solid ${DS.border}`}}>
                         <div style={{fontSize:10,color:DS.sub,fontWeight:700,marginBottom:2}}>{k}</div>
                         <div style={{fontSize:11,wordBreak:"break-all",color:DS.text}}>{v}</div>
                       </div>
@@ -1914,6 +2031,31 @@ function OwnerDashboardInline(){
           </div>
         )}
       </div>}
+
+      {/* SUPPORT TICKETS */}
+      {tab==="tickets"&&(()=>{
+        const [tickets,setTickets]=useState([]);const [tickLoading,setTickLoading]=useState(true);
+        useEffect(()=>{getDocs(collection(db,"support_tickets")).then(snap=>{setTickets(snap.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>b.submittedAt?.localeCompare(a.submittedAt||"")||0));setTickLoading(false);}).catch(()=>setTickLoading(false));},[]);
+        const priorityColor={Normal:DS.sub,Urgent:DS.warning,"Critical — System Down":DS.danger};
+        return tickLoading?<DCard><div style={{textAlign:"center",padding:40,color:DS.sub}}>Loading tickets…</div></DCard>:tickets.length===0?<DCard><div style={{textAlign:"center",padding:"60px 0"}}><div style={{fontSize:48,marginBottom:12}}>🎉</div><div style={{color:DS.sub,fontSize:14}}>No support tickets yet</div></div></DCard>:<div style={{display:"grid",gap:12}}>{tickets.map(t=>(
+          <DCard key={t.id} style={{borderLeft:`4px solid ${priorityColor[t.priority]||DS.sub}`}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
+              <div>
+                <div style={{fontSize:14,fontWeight:700,color:DS.text}}>{t.name} <span style={{fontSize:11,color:DS.sub}}>· {t.businessName||"Unknown"}</span></div>
+                <div style={{fontSize:11,color:DS.sub,marginTop:2}}>{t.phone} {t.email?`· ${t.email}`:""} · {t.submittedAt?.slice(0,16).replace("T"," ")}</div>
+              </div>
+              <span style={{padding:"3px 10px",borderRadius:20,fontSize:10,fontWeight:700,background:`${priorityColor[t.priority]||DS.sub}25`,color:priorityColor[t.priority]||DS.sub,border:`1px solid ${priorityColor[t.priority]||DS.sub}44`,flexShrink:0}}>{t.priority}</span>
+            </div>
+            <div style={{background:"rgba(255,255,255,0.04)",borderRadius:8,padding:"10px 12px",fontSize:12,color:DS.text,lineHeight:1.6}}>{t.issue}</div>
+            {t.licenseKey&&<div style={{marginTop:8,fontSize:10,color:DS.sub,fontFamily:"monospace"}}>License: {t.licenseKey} · VAT: {t.vatNumber||"—"}</div>}
+            <div style={{display:"flex",gap:8,marginTop:10}}>
+              <button onClick={async()=>{await updateDoc(doc(db,"support_tickets",t.id),{status:"resolved",resolvedAt:new Date().toISOString()});setTickets(prev=>prev.map(x=>x.id===t.id?{...x,status:"resolved"}:x));}} style={{padding:"5px 14px",background:"rgba(16,185,129,0.15)",border:"1px solid rgba(16,185,129,0.3)",borderRadius:6,color:"#10b981",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>✓ Mark Resolved</button>
+              <a href={`https://wa.me/${t.phone?.replace(/\D/g,"")}`} target="_blank" rel="noreferrer" style={{padding:"5px 14px",background:"rgba(37,211,102,0.15)",border:"1px solid rgba(37,211,102,0.3)",borderRadius:6,color:"#25d366",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit",textDecoration:"none"}}>💬 WhatsApp</a>
+              {t.status==="resolved"&&<span style={{fontSize:11,color:"#10b981",fontWeight:700,alignSelf:"center"}}>✓ Resolved</span>}
+            </div>
+          </DCard>
+        ))}</div>;
+      })()}
 
       {/* MAP TAB */}
       {tab==="map"&&<div>
@@ -2299,6 +2441,7 @@ function OwnerDashboardInline(){
 // ═══════════════════════════════════════════════════════════════════
 function Help(){
   const [tab,setTab]=useState("guide");const [aiMessages,setAiMessages]=useState([{role:"assistant",content:"Hi! I'm the RestoPOS Assistant 🤖 Ask me anything — billing, ZATCA compliance, ICV counters, hash chains, UBL XML, reports, settings, or any feature!"}]);const [aiInput,setAiInput]=useState("");const [aiLoading,setAiLoading]=useState(false);const chatRef=useRef();
+  const [liveForm,setLiveForm]=useState({name:"",phone:"",email:"",issue:"",priority:"Normal"});const [liveSent,setLiveSent]=useState(false);const [liveLoading,setLiveSending]=useState(false);
   async function sendMessage(){
     if(!aiInput.trim()||aiLoading)return;const userMsg=aiInput.trim();setAiInput("");setAiMessages(prev=>[...prev,{role:"user",content:userMsg}]);setAiLoading(true);
     try{
@@ -2310,12 +2453,24 @@ function Help(){
     }catch(e){setAiMessages(prev=>[...prev,{role:"assistant",content:`⚠️ ${e.message||"Unknown error."}`}]);}
     setAiLoading(false);setTimeout(()=>chatRef.current?.scrollTo({top:chatRef.current.scrollHeight,behavior:"smooth"}),100);
   }
-  const sections=[["guide","🚀","Guide"],["zatca","⬛","ZATCA"],["ai","🤖","AI Help"],["support","📞","Support"]];
+  async function submitLiveHelp(){
+    if(!liveForm.name||!liveForm.issue)return alert("Please fill in your name and describe the issue.");
+    setLiveSending(true);
+    try{
+      const license=LS.get("restopos_license_v2")||{};
+      const ticket={...liveForm,businessName:license.businessName||"Unknown",licenseKey:license.licenseKey||"",vatNumber:license.vatNumber||"",submittedAt:new Date().toISOString(),status:"open",source:"in-app-help"};
+      await addDoc(collection(db,"support_tickets"),ticket);
+      setLiveSent(true);
+      logActivity("SUPPORT_TICKET",{after:{name:liveForm.name,issue:liveForm.issue.slice(0,80)}},"System");
+    }catch(e){alert("Failed to submit: "+e.message);}
+    setLiveSending(false);
+  }
+  const sections=[["guide","🚀","Guide"],["zatca","⬛","ZATCA"],["ai","🤖","AI Help"],["live","🆘","Live Help"],["support","📞","Support"]];
   return(<div style={{display:"flex",gap:20}}>
     <div style={{width:160,flexShrink:0}}><Card style={{padding:8}}>{sections.map(([id,icon,label])=><button key={id} onClick={()=>setTab(id)} style={{width:"100%",display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:tab===id?C.primaryLight:"transparent",color:tab===id?C.primary:C.textMid,border:"none",borderRadius:8,cursor:"pointer",fontFamily:"inherit",fontSize:13,fontWeight:tab===id?700:500,textAlign:"left",marginBottom:2}}><span>{icon}</span><span>{label}</span></button>)}</Card></div>
     <div style={{flex:1}}>
-      {tab==="guide"&&<Card><div style={{fontSize:18,fontWeight:800,marginBottom:20}}>Getting Started</div>{[{n:"1",t:"Activate License",d:"Enter your CR number, VAT number, and 12-digit license key. Saved permanently."},{n:"2",t:"Login by Role",d:"Select Admin, Manager, or Cashier and enter your 4-digit PIN."},{n:"3",t:"Setup Menu",d:"Go to Create → Items to add your menu with Arabic names, prices, and barcodes."},{n:"4",t:"Start Billing",d:"POS opens in Takeaway mode. Add items, fill customer details, process payment."},{n:"5",t:"ZATCA Invoice",d:"Every receipt auto-generates a ZATCA invoice with ICV, UUID, SHA-256 hash, and UBL XML."},{n:"6",t:"Close Day",d:"Go to Reports → click Close Day to record end of day with exact timestamps."}].map((s,i)=><div key={i} style={{display:"flex",gap:14,marginBottom:14,padding:14,background:C.bg,borderRadius:10}}><div style={{width:34,height:34,background:C.primary,color:"#fff",borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:800,flexShrink:0}}>{s.n}</div><div><div style={{fontSize:14,fontWeight:700,marginBottom:3}}>{s.t}</div><div style={{fontSize:13,color:C.textMid}}>{s.d}</div></div></div>)}</Card>}
-      {tab==="zatca"&&<Card><div style={{fontSize:18,fontWeight:800,marginBottom:20}}>⬛ ZATCA Compliance</div>{[["Standard","ZATCA Phase 1 & Phase 2 Ready"],["QR Encoding","TLV (Tag-Length-Value) → Base64, multi-byte length support"],["Phase 1 QR","5 tags: Seller, VAT, Timestamp, Total, VAT Amount"],["Phase 2 QR","8 tags: + Invoice Hash, ECDSA Signature, Public Key (needs CSID)"],["ICV Counter","Sequential invoice counter — never resets across sessions"],["Hash Chain","SHA-256 hash of each invoice linked to previous (Web Crypto API)"],["UBL 2.1 XML","Full FATOORA-ready XML, downloadable per invoice from Transactions tab"],["FATOORA Queue","24-hour reporting queue with urgency alerts"],["Scannable QR","Real QR code generated on every receipt — works with any ZATCA scanner"]].map(([k,v])=><div key={k} style={{display:"flex",gap:12,padding:"10px 14px",background:C.zatcaLight,borderRadius:8,marginBottom:8}}><span style={{fontSize:12,fontWeight:700,color:C.zatca,width:130,flexShrink:0}}>{k}</span><span style={{fontSize:13}}>{v}</span></div>)}</Card>}
+      {tab==="guide"&&<Card><div style={{fontSize:18,fontWeight:800,marginBottom:20}}>Getting Started</div>{[{n:"1",t:"Activate License",d:"Enter your CR number, VAT number, and 12-digit license key. Saved permanently."},{n:"2",t:"Login by Role",d:"Select Admin, Manager, or Cashier and enter your 4-digit PIN."},{n:"3",t:"Setup Menu",d:"Go to Create → Items to add your menu with Arabic names, prices, and barcodes."},{n:"4",t:"Start Billing",d:"POS opens in Takeaway mode. Add items, fill customer details, process payment."},{n:"5",t:"ZATCA Invoice",d:"Every receipt auto-generates a ZATCA invoice with ICV, UUID, SHA-256 hash, and UBL XML."},{n:"6",t:"Close Day",d:"Go to Reports → click Close Day to record end of day. Sales reset for tomorrow."}].map((s,i)=><div key={i} style={{display:"flex",gap:14,marginBottom:14,padding:14,background:C.bg,borderRadius:10}}><div style={{width:34,height:34,background:C.primary,color:"#fff",borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:800,flexShrink:0}}>{s.n}</div><div><div style={{fontSize:14,fontWeight:700,marginBottom:3}}>{s.t}</div><div style={{fontSize:13,color:C.textMid}}>{s.d}</div></div></div>)}</Card>}
+      {tab==="zatca"&&<Card><div style={{fontSize:18,fontWeight:800,marginBottom:20}}>⬛ ZATCA Compliance</div>{[["Standard","ZATCA Phase 1 & Phase 2 Ready"],["QR Encoding","TLV (Tag-Length-Value) → Base64, multi-byte length support"],["Phase 1 QR","5 tags: Seller, VAT, Timestamp, Total, VAT Amount"],["Phase 2 QR","8 tags: + Invoice Hash, ECDSA Signature, Public Key (needs CSID)"],["ICV Counter","Sequential invoice counter — never resets across sessions"],["Hash Chain","SHA-256 hash of each invoice linked to previous (Web Crypto API)"],["UBL 2.1 XML","Full FATOORA-ready XML, downloadable per invoice from Transactions tab"],["FATOORA Queue","Report manually via Invoices → ZATCA History → Report button"],["Scannable QR","Real QR code generated on every receipt — works with any ZATCA scanner"]].map(([k,v])=><div key={k} style={{display:"flex",gap:12,padding:"10px 14px",background:C.zatcaLight,borderRadius:8,marginBottom:8}}><span style={{fontSize:12,fontWeight:700,color:C.zatca,width:130,flexShrink:0}}>{k}</span><span style={{fontSize:13}}>{v}</span></div>)}</Card>}
       {tab==="ai"&&<Card style={{display:"flex",flexDirection:"column",height:560}}>
         <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12}}><div style={{width:38,height:38,background:"linear-gradient(135deg,#6366f1,#4f46e5)",borderRadius:10,display:"flex",alignItems:"center",justifyContent:"center",fontSize:20}}>🤖</div><div><div style={{fontSize:15,fontWeight:800,color:C.text}}>RestoPOS AI Assistant</div><div style={{fontSize:11,color:C.success,fontWeight:600}}>● Powered by Claude · ZATCA & POS expert</div></div></div>
         <div ref={chatRef} style={{flex:1,overflowY:"auto",display:"flex",flexDirection:"column",gap:10,marginBottom:12,paddingRight:4}}>
@@ -2327,7 +2482,41 @@ function Help(){
           <button onClick={sendMessage} disabled={aiLoading||!aiInput.trim()} style={{padding:"11px 22px",background:aiLoading||!aiInput.trim()?"#ccc":"linear-gradient(135deg,#6366f1,#4f46e5)",color:"#fff",border:"none",borderRadius:12,cursor:aiLoading||!aiInput.trim()?"not-allowed":"pointer",fontSize:13,fontWeight:700,fontFamily:"inherit"}}>{aiLoading?"...":"Send ↑"}</button>
         </div>
       </Card>}
-      {tab==="support"&&<Card><div style={{fontSize:18,fontWeight:800,marginBottom:20}}>Support & Contact</div>{[{icon:"📦",label:"Product",value:"RestoPOS v8.0 · ZATCA Phase 2"},{icon:"🌍",label:"Region",value:"Kingdom of Saudi Arabia"},{icon:"📧",label:"Email",value:"support@restopos.sa"},{icon:"📞",label:"Phone",value:"+966 50 000 0000 (9AM–6PM)"},{icon:"💬",label:"WhatsApp",value:"+966 50 000 0000"}].map((item,i)=><div key={i} style={{display:"flex",gap:14,padding:"12px 0",borderBottom:`1px solid ${C.border}`,alignItems:"center"}}><span style={{fontSize:20,width:28}}>{item.icon}</span><div style={{fontSize:12,fontWeight:700,color:C.textMid,width:90}}>{item.label}</div><div style={{fontSize:13,color:C.text,fontWeight:600}}>{item.value}</div></div>)}</Card>}
+      {tab==="live"&&<Card>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:20}}>
+          <div style={{width:44,height:44,background:"linear-gradient(135deg,#D94040,#ff6b6b)",borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22}}>🆘</div>
+          <div><div style={{fontSize:17,fontWeight:800}}>Live Help Request</div><div style={{fontSize:12,color:C.textMid}}>Submit a support request — we'll be notified immediately</div></div>
+        </div>
+        {liveSent?(
+          <div style={{textAlign:"center",padding:"40px 20px"}}>
+            <div style={{fontSize:48,marginBottom:12}}>✅</div>
+            <div style={{fontSize:17,fontWeight:800,color:C.success,marginBottom:8}}>Help Request Submitted!</div>
+            <div style={{fontSize:13,color:C.textMid,lineHeight:1.6}}>We've been notified and will contact you shortly via phone or WhatsApp.<br/>You can also reach us directly at +966 50 000 0000.</div>
+            <button onClick={()=>{setLiveSent(false);setLiveForm({name:"",phone:"",email:"",issue:"",priority:"Normal"});}} style={{marginTop:20,padding:"10px 24px",background:C.primary,color:"#fff",border:"none",borderRadius:10,cursor:"pointer",fontFamily:"inherit",fontSize:13,fontWeight:700}}>Submit Another Request</button>
+          </div>
+        ):(
+          <div style={{display:"flex",flexDirection:"column",gap:14}}>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+              <Inp label="Your Name *" value={liveForm.name} onChange={v=>setLiveForm(f=>({...f,name:v}))} placeholder="Staff name"/>
+              <Inp label="Phone / WhatsApp *" value={liveForm.phone} onChange={v=>setLiveForm(f=>({...f,phone:v}))} placeholder="+966..."/>
+              <Inp label="Email (optional)" value={liveForm.email} onChange={v=>setLiveForm(f=>({...f,email:v}))} placeholder="your@email.com"/>
+              <div>
+                <label style={{fontSize:12,fontWeight:600,color:C.textMid,display:"block",marginBottom:5}}>Priority</label>
+                <select value={liveForm.priority} onChange={e=>setLiveForm(f=>({...f,priority:e.target.value}))} style={{width:"100%",padding:"9px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontSize:13,fontFamily:"inherit",background:"#fff"}}>
+                  {["Normal","Urgent","Critical — System Down"].map(p=><option key={p} value={p}>{p}</option>)}
+                </select>
+              </div>
+            </div>
+            <div>
+              <label style={{fontSize:12,fontWeight:600,color:C.textMid,display:"block",marginBottom:5}}>Describe your issue *</label>
+              <textarea value={liveForm.issue} onChange={e=>setLiveForm(f=>({...f,issue:e.target.value}))} rows={4} placeholder="Describe what's happening — the more detail the faster we can help..." style={{width:"100%",padding:"9px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontSize:13,fontFamily:"inherit",resize:"vertical"}}/>
+            </div>
+            {liveForm.priority==="Critical — System Down"&&<div style={{background:C.dangerLight,border:`1px solid ${C.danger}`,borderRadius:10,padding:"10px 14px",fontSize:12,color:C.danger,fontWeight:600}}>🚨 Critical issue — please also call us directly at +966 50 000 0000 for immediate assistance.</div>}
+            <Btn onClick={submitLiveHelp} disabled={liveLoading||!liveForm.name||!liveForm.issue} style={{background:"linear-gradient(135deg,#D94040,#b02020)"}}>{liveLoading?"Submitting…":"🆘 Submit Help Request"}</Btn>
+          </div>
+        )}
+      </Card>}
+      {tab==="support"&&<Card><div style={{fontSize:18,fontWeight:800,marginBottom:20}}>Support & Contact</div>{[{icon:"📦",label:"Product",value:"RestoPOS v17 · ZATCA Phase 2"},{icon:"🌍",label:"Region",value:"Kingdom of Saudi Arabia"},{icon:"📧",label:"Email",value:"support@restopos.sa"},{icon:"📞",label:"Phone",value:"+966 50 000 0000 (9AM–6PM)"},{icon:"💬",label:"WhatsApp",value:"+966 50 000 0000"}].map((item,i)=><div key={i} style={{display:"flex",gap:14,padding:"12px 0",borderBottom:`1px solid ${C.border}`,alignItems:"center"}}><span style={{fontSize:20,width:28}}>{item.icon}</span><div style={{fontSize:12,fontWeight:700,color:C.textMid,width:90}}>{item.label}</div><div style={{fontSize:13,color:C.text,fontWeight:600}}>{item.value}</div></div>)}</Card>}
     </div>
   </div>);
 }
@@ -3453,13 +3642,40 @@ function ShiftManager({sales,currentUser}){
     if(!activeShift)return;
     const shiftSales=sales.filter(s=>new Date(s.date+"T"+(s.time||"00:00")).getTime()>=new Date(activeShift.startTime).getTime());
     const revenue=shiftSales.reduce((s,o)=>s+o.total,0);
-    const closed={...activeShift,endTime:new Date().toISOString(),closingCash:parseFloat(cashDrawer)||0,shiftRevenue:revenue,shiftOrders:shiftSales.length};
+    const expenses=LS.get("restopos_expenses")||[];
+    const shiftExpenses=expenses.filter(e=>new Date(e.date).getTime()>=new Date(activeShift.startTime).setHours(0,0,0,0));
+    const closed={...activeShift,endTime:new Date().toISOString(),closingCash:parseFloat(cashDrawer)||0,shiftRevenue:revenue,shiftOrders:shiftSales.length,payBreakdown:{Cash:shiftSales.filter(s=>s.payMethod==="Cash").reduce((s,o)=>s+o.total,0),Mada:shiftSales.filter(s=>s.payMethod==="Mada").reduce((s,o)=>s+o.total,0),"Apple Pay":shiftSales.filter(s=>s.payMethod==="Apple Pay").reduce((s,o)=>s+o.total,0),"STC Pay":shiftSales.filter(s=>s.payMethod==="STC Pay").reduce((s,o)=>s+o.total,0)},shiftVat:shiftSales.reduce((s,o)=>s+(o.vat||0),0),shiftExpenses:shiftExpenses.reduce((s,e)=>s+e.amount,0)};
     const updated=shifts.map(s=>s.id===activeShift.id?closed:s);setShifts(updated);LS.set("restopos_shifts",updated);
     LS.set("restopos_active_shift",null);setActiveShift(null);setCashDrawer("");
     logActivity("SHIFT_ENDED",{after:{user:closed.user,revenue,orders:shiftSales.length}},currentUser?.role||"System");
   }
+  function exportShiftPDF(s){
+    const payBr=s.payBreakdown||{};
+    const html=`<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body{font-family:'Segoe UI',sans-serif;max-width:720px;margin:40px auto;padding:32px;color:#111;font-size:13px}h1{font-size:22px;font-weight:900;color:#1A6B4A;margin:0}h2{font-size:14px;font-weight:700;color:#1A6B4A;margin:16px 0 6px;border-bottom:2px solid #C8E6D4;padding-bottom:4px}.hdr{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:24px;padding-bottom:16px;border-bottom:3px solid #1A6B4A}.row{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid #eee;font-size:13px}.row strong{color:#1A6B4A}.total-row{display:flex;justify-content:space-between;padding:10px 0;font-size:17px;font-weight:900;color:#1A6B4A;border-top:2px solid #1A6B4A;margin-top:8px}table{width:100%;border-collapse:collapse;margin:10px 0}th{background:#F0F9F4;padding:8px 10px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.05em;border-bottom:2px solid #C8E6D4}td{padding:8px 10px;border-bottom:1px solid #f0f0f0;font-size:12px}@media print{button{display:none}}</style></head><body>
+    <div class="hdr"><div><h1>Shift Report</h1><div style="font-size:11px;color:#666;margin-top:4px">${s.user} · ID ${s.id}</div></div><div style="text-align:right;font-size:12px;color:#666"><div><strong>Started:</strong> ${s.startTime?.slice(0,16).replace("T"," ")}</div><div><strong>Ended:</strong> ${s.endTime?.slice(0,16).replace("T"," ")}</div></div></div>
+    <h2>📊 Sales Summary</h2>
+    <div class="row"><span>Total Orders</span><strong>${s.shiftOrders||0}</strong></div>
+    <div class="row"><span>Total Revenue (incl. VAT)</span><strong>SAR ${(s.shiftRevenue||0).toFixed(2)}</strong></div>
+    <div class="row"><span>VAT Collected (15%)</span><strong>SAR ${(s.shiftVat||0).toFixed(2)}</strong></div>
+    <div class="row"><span>Revenue (excl. VAT)</span><strong>SAR ${((s.shiftRevenue||0)-(s.shiftVat||0)).toFixed(2)}</strong></div>
+    <h2>💳 Payment Breakdown</h2>
+    ${["Cash","Mada","Apple Pay","STC Pay"].map(m=>`<div class="row"><span>${m}</span><strong>SAR ${(payBr[m]||0).toFixed(2)}</strong></div>`).join("")}
+    <h2>💰 Cash Reconciliation</h2>
+    <div class="row"><span>Opening Cash</span><strong>SAR ${(s.openingCash||0).toFixed(2)}</strong></div>
+    <div class="row"><span>Cash Sales</span><strong>SAR ${(payBr["Cash"]||0).toFixed(2)}</strong></div>
+    <div class="row"><span>Expected in Drawer</span><strong>SAR ${((s.openingCash||0)+(payBr["Cash"]||0)).toFixed(2)}</strong></div>
+    <div class="row"><span>Actual Closing Cash</span><strong>SAR ${(s.closingCash||0).toFixed(2)}</strong></div>
+    <div class="total-row"><span>Cash Difference</span><span style="color:${((s.closingCash||0)-((s.openingCash||0)+(payBr["Cash"]||0)))>=0?"#1A6B4A":"#D94040"}">SAR ${((s.closingCash||0)-((s.openingCash||0)+(payBr["Cash"]||0))).toFixed(2)}</span></div>
+    ${(s.shiftExpenses||0)>0?`<h2>💸 Expenses During Shift</h2><div class="row"><span>Total Expenses</span><strong style="color:#D94040">SAR ${(s.shiftExpenses||0).toFixed(2)}</strong></div>`:""}
+    ${s.note?`<h2>📝 Notes</h2><div style="padding:10px;background:#F8F9FB;border-radius:8px;font-size:12px;color:#555;">${s.note}</div>`:""}
+    <div style="margin-top:32px;padding-top:12px;border-top:1px solid #eee;font-size:10px;color:#aaa;text-align:center">Generated by RestoPOS v17 · ${new Date().toLocaleString()}</div>
+    <script>window.onload=()=>{window.print();}<\/script></body></html>`;
+    const w=window.open("","_blank","width=800,height=900");if(w){w.document.write(html);w.document.close();}
+  }
   const shiftDuration=activeShift?Math.floor((Date.now()-new Date(activeShift.startTime).getTime())/60000):0;
   const shiftSales=activeShift?sales.filter(s=>new Date(s.date+"T"+(s.time||"00:00")).getTime()>=new Date(activeShift.startTime).getTime()):[];
+  const shiftVat=shiftSales.reduce((s,o)=>s+(o.vat||0),0);
+  const payMethods=["Cash","Mada","Apple Pay","STC Pay"];
   return(
     <div>
       <div style={{fontSize:20,fontWeight:800,marginBottom:20}}>🔄 Shift Management</div>
@@ -3481,9 +3697,13 @@ function ShiftManager({sales,currentUser}){
           </Card>
           <Card>
             <div style={{fontSize:14,fontWeight:700,marginBottom:16}}>This Shift</div>
-            <div style={{display:"flex",flexDirection:"column",gap:12}}>
+            <div style={{display:"flex",flexDirection:"column",gap:10}}>
               <StatCard icon="🧾" label="Orders" value={shiftSales.length} color={C.primary} bg={C.primaryLight}/>
               <StatCard icon="💰" label="Revenue" value={fmtSAR(shiftSales.reduce((s,o)=>s+o.total,0))} color={C.success} bg={C.successLight}/>
+              <StatCard icon="⬛" label="VAT" value={fmtSAR(shiftVat)} color={C.zatca} bg={C.zatcaLight}/>
+              <div style={{marginTop:6}}>
+                {payMethods.map(m=>{const t=shiftSales.filter(s=>s.payMethod===m).reduce((s,o)=>s+o.total,0);return t>0?<div key={m} style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"3px 0"}}><span style={{color:C.textMid}}>{m}</span><strong>{fmtSAR(t)}</strong></div>:null;})}
+              </div>
             </div>
           </Card>
         </div>
@@ -3503,14 +3723,32 @@ function ShiftManager({sales,currentUser}){
       <Card>
         <div style={{fontSize:14,fontWeight:700,marginBottom:16}}>📋 Shift History</div>
         {shifts.filter(s=>s.endTime).length===0?<div style={{color:C.textLight,textAlign:"center",padding:24}}>No completed shifts yet</div>
-        :<DataTable headers={["Start","End","User","Orders","Revenue","Opening","Closing"]} rows={shifts.filter(s=>s.endTime).slice(0,20).map(s=>[
-          <span style={{fontFamily:"monospace",fontSize:11}}>{s.startTime.slice(0,16).replace("T"," ")}</span>,
-          <span style={{fontFamily:"monospace",fontSize:11}}>{s.endTime.slice(0,16).replace("T"," ")}</span>,
-          s.user,s.shiftOrders||0,
-          <strong style={{color:C.primary}}>{fmtSAR(s.shiftRevenue||0)}</strong>,
-          fmtSAR(s.openingCash||0),
-          <span style={{color:s.closingCash>0?C.success:C.textLight}}>{fmtSAR(s.closingCash||0)}</span>
-        ])}/>}
+        :<div>{shifts.filter(s=>s.endTime).slice(0,20).map(s=>{
+          const payBr=s.payBreakdown||{};
+          return(
+            <div key={s.id} style={{marginBottom:16,border:`1px solid ${C.border}`,borderRadius:12,overflow:"hidden"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 16px",background:C.bg,borderBottom:`1px solid ${C.border}`}}>
+                <div>
+                  <div style={{fontWeight:700,fontSize:14}}>{s.user} · {s.startTime?.slice(0,10)}</div>
+                  <div style={{fontSize:11,color:C.textLight}}>{s.startTime?.slice(11,16)} → {s.endTime?.slice(11,16)}</div>
+                </div>
+                <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                  <div style={{textAlign:"right"}}><div style={{fontSize:15,fontWeight:900,color:C.primary}}>{fmtSAR(s.shiftRevenue||0)}</div><div style={{fontSize:11,color:C.textLight}}>{s.shiftOrders||0} orders</div></div>
+                  <Btn size="sm" variant="outline" onClick={()=>exportShiftPDF(s)}>📄 PDF</Btn>
+                </div>
+              </div>
+              <div style={{padding:"12px 16px",display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))",gap:10}}>
+                <div><div style={{fontSize:10,color:C.textLight,fontWeight:700,textTransform:"uppercase",letterSpacing:1}}>VAT Collected</div><div style={{fontSize:13,fontWeight:700,color:C.zatca}}>{fmtSAR(s.shiftVat||0)}</div></div>
+                <div><div style={{fontSize:10,color:C.textLight,fontWeight:700,textTransform:"uppercase",letterSpacing:1}}>Opening Cash</div><div style={{fontSize:13,fontWeight:700}}>{fmtSAR(s.openingCash||0)}</div></div>
+                <div><div style={{fontSize:10,color:C.textLight,fontWeight:700,textTransform:"uppercase",letterSpacing:1}}>Closing Cash</div><div style={{fontSize:13,fontWeight:700,color:s.closingCash>0?C.success:C.textLight}}>{fmtSAR(s.closingCash||0)}</div></div>
+                {s.shiftExpenses>0&&<div><div style={{fontSize:10,color:C.textLight,fontWeight:700,textTransform:"uppercase",letterSpacing:1}}>Expenses</div><div style={{fontSize:13,fontWeight:700,color:C.danger}}>{fmtSAR(s.shiftExpenses||0)}</div></div>}
+              </div>
+              {Object.keys(payBr).some(k=>payBr[k]>0)&&<div style={{padding:"0 16px 12px",display:"flex",gap:12,flexWrap:"wrap"}}>
+                {payMethods.filter(m=>payBr[m]>0).map(m=><span key={m} style={{fontSize:11,padding:"2px 8px",borderRadius:20,background:C.infoLight,color:C.info,fontWeight:700,border:`1px solid ${C.info}33`}}>{m}: {fmtSAR(payBr[m])}</span>)}
+              </div>}
+            </div>
+          );
+        })}</div>}
       </Card>
     </div>
   );
@@ -3572,20 +3810,20 @@ function OwnerLogin({onLogin}){
 function OwnerDashboard({onLogout}){
   const [refreshKey,setRefreshKey]=useState(0);
   return(
-    <div style={{fontFamily:"'Plus Jakarta Sans',sans-serif",background:"#F0F4F8",minHeight:"100vh",color:"#1a2332"}}>
+    <div style={{fontFamily:"'Plus Jakarta Sans',sans-serif",background:"#F0F4F8",minHeight:"100vh",color:"#1a2332",width:"100%"}}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');*{box-sizing:border-box;margin:0;padding:0}::-webkit-scrollbar{width:5px}::-webkit-scrollbar-thumb{background:rgba(0,0,0,0.15);border-radius:3px}`}</style>
-      <div style={{background:"linear-gradient(135deg,#fff 0%,#F8FAFC 100%)",borderBottom:"1px solid #E2E8F0",padding:"0 24px",height:56,display:"flex",alignItems:"center",justifyContent:"space-between",position:"sticky",top:0,zIndex:100,boxShadow:"0 1px 8px rgba(0,0,0,0.06)"}}>
+      <div style={{background:"linear-gradient(135deg,#1a2332 0%,#0F2340 100%)",borderBottom:"1px solid rgba(255,255,255,0.08)",padding:"0 24px",height:56,display:"flex",alignItems:"center",justifyContent:"space-between",position:"sticky",top:0,zIndex:100,boxShadow:"0 2px 12px rgba(0,0,0,0.2)",width:"100%"}}>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
           <div style={{width:32,height:32,background:"linear-gradient(135deg,#F0A500,#e09000)",borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16}}>👑</div>
-          <div style={{fontSize:15,fontWeight:800,color:"#1a2332"}}>Owner Dashboard</div>
-          <span style={{fontSize:10,background:"rgba(240,165,0,0.12)",color:"#C07800",padding:"2px 8px",borderRadius:20,fontWeight:700,border:"1px solid rgba(240,165,0,0.3)"}}>RestoPOS v16</span>
+          <div style={{fontSize:15,fontWeight:800,color:"#fff"}}>Owner Dashboard</div>
+          <span style={{fontSize:10,background:"rgba(240,165,0,0.15)",color:"#F0A500",padding:"2px 8px",borderRadius:20,fontWeight:700,border:"1px solid rgba(240,165,0,0.3)"}}>RestoPOS v18</span>
         </div>
         <div style={{display:"flex",gap:8}}>
-          <button onClick={()=>setRefreshKey(k=>k+1)} style={{padding:"6px 14px",background:"rgba(99,102,241,0.08)",border:"1px solid rgba(99,102,241,0.2)",borderRadius:8,color:"#6366f1",fontSize:12,cursor:"pointer",fontFamily:"inherit",fontWeight:600}}>🔄 Refresh</button>
-          <button onClick={onLogout} style={{padding:"6px 14px",background:"rgba(217,64,64,0.08)",border:"1px solid rgba(217,64,64,0.2)",borderRadius:8,color:"#D94040",fontSize:12,cursor:"pointer",fontFamily:"inherit",fontWeight:600}}>← Exit</button>
+          <button onClick={()=>setRefreshKey(k=>k+1)} style={{padding:"6px 14px",background:"rgba(99,102,241,0.15)",border:"1px solid rgba(99,102,241,0.3)",borderRadius:8,color:"#a5b4fc",fontSize:12,cursor:"pointer",fontFamily:"inherit",fontWeight:600}}>🔄 Refresh</button>
+          <button onClick={onLogout} style={{padding:"6px 14px",background:"rgba(217,64,64,0.15)",border:"1px solid rgba(217,64,64,0.3)",borderRadius:8,color:"#fca5a5",fontSize:12,cursor:"pointer",fontFamily:"inherit",fontWeight:600}}>← Exit</button>
         </div>
       </div>
-      <div style={{padding:24,overflowY:"auto"}}>
+      <div style={{padding:"20px 24px",overflowY:"auto",width:"100%",maxWidth:"100%"}}>
         <OwnerDashboardInline key={refreshKey}/>
       </div>
     </div>
@@ -3625,12 +3863,15 @@ export default function App(){
   const [sales,_setSales]=useState(()=>LS.get("restopos_sales")||[]);
   const [items,_setItems]=useState(()=>LS.get("restopos_items")||[]);
   const [tables,_setTables]=useState(()=>LS.get("restopos_tables")||Array.from({length:12},(_,i)=>({id:i+1,status:"free",capacity:4})));
-  const [users,_setUsers]=useState(()=>LS.get("restopos_users")||[{id:1,name:"Admin User",username:"admin",role:"Admin",active:true,lastLogin:"Today"},{id:2,name:"Manager",username:"manager",role:"Manager",active:true,lastLogin:"Today"},{id:3,name:"Cashier",username:"cashier",role:"Cashier",active:true,lastLogin:"Today"}]);
-  const [promos,_setPromos]=useState(()=>LS.get("restopos_promos")||[{id:1,code:"SAVE10",type:"%",value:10,active:true,minOrder:30},{id:2,code:"FLAT20",type:"flat",value:20,active:true,minOrder:100}]);
+  const [users,_setUsers]=useState(()=>LS.get("restopos_users")||[]);
+  const [promos,_setPromos]=useState(()=>LS.get("restopos_promos")||[]);
   const [company,_setCompany]=useState(()=>LS.get("restopos_company")||{phone:"",email:"",address:"",city:"Riyadh"});
   const [pins,_setPins]=useState(()=>LS.get("restopos_pins")||DEFAULT_PINS);
   const [invoiceFormat,_setInvoiceFormat]=useState(()=>LS.get("restopos_invoice_format")||{font:"courier",fontSize:12,shopNameOverride:"",footer:"Thank you for your visit!",footerAr:"شكراً لزيارتكم",website:"",social:"",tagline:""});
   function setSales(v){_setSales(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_sales",n.slice(-500));return n;});}
+  // allSales merges active sales + permanently archived closed-day sales for full history queries
+  const archivedSalesRaw=LS.get("restopos_archived_sales")||[];
+  const allSales=useMemo(()=>{const activeIds=new Set(sales.map(s=>s.id));const archived=archivedSalesRaw.filter(s=>!activeIds.has(s.id));return[...sales,...archived].sort((a,b)=>b.date.localeCompare(a.date)||b.id.localeCompare(a.id));},[sales,archivedSalesRaw.length]);}
   function setItems(v){_setItems(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_items",n);if(n.length!==p.length)logActivity(n.length>p.length?"ITEM_ADDED":"ITEM_DELETED",{after:{itemCount:n.length}},currentUser?.role||"System");return n;});}
   function setTables(v){_setTables(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_tables",n);return n;});}
   function setUsers(v){_setUsers(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_users",n);if(n.length!==p.length)logActivity(n.length>p.length?"USER_ADDED":"USER_DELETED",{after:{userCount:n.length}},currentUser?.role||"System");return n;});}
@@ -3664,7 +3905,7 @@ export default function App(){
       <div style={{display:"flex",alignItems:"stretch",flexShrink:0,zIndex:100,boxShadow:"0 2px 12px rgba(0,0,0,0.18)",minHeight:50,width:"100%",flexWrap:"nowrap"}}>
         <div style={{background:"linear-gradient(135deg,#1A3D2B 0%,#1F4D36 100%)",display:"flex",alignItems:"center",gap:8,padding:"0 12px",flexShrink:0,borderRight:"1px solid rgba(255,255,255,0.1)"}}>
           <div style={{width:26,height:26,background:"linear-gradient(135deg,#2ECC71,#F0A500)",borderRadius:6,display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontSize:13,fontWeight:900,flexShrink:0}}>R</div>
-          <div style={{display:viewport.w<500?"none":"block"}}><div style={{fontSize:12,fontWeight:800,color:"#fff",lineHeight:1,whiteSpace:"nowrap"}}>RestoPOS</div><div style={{fontSize:7,color:"rgba(255,255,255,0.5)",letterSpacing:"0.1em",whiteSpace:"nowrap"}}>ZATCA P2 · v16</div></div>
+          <div style={{display:viewport.w<500?"none":"block"}}><div style={{fontSize:12,fontWeight:800,color:"#fff",lineHeight:1,whiteSpace:"nowrap"}}>RestoPOS</div><div style={{fontSize:7,color:"rgba(255,255,255,0.5)",letterSpacing:"0.1em",whiteSpace:"nowrap"}}>ZATCA P2 · v18</div></div>
         </div>
         <div style={{background:"linear-gradient(90deg,#E8F4EE 0%,#F0F9F4 100%)",flex:1,display:"flex",alignItems:"center",padding:"0 4px",overflowX:"auto",borderRight:"1px solid #C8E6D4",minWidth:0}}>
           {NAV.map(([id,icon,label])=>(
@@ -3686,22 +3927,22 @@ export default function App(){
         </div>
       </div>
       <div style={{flex:1,padding:screen==="pos"?0:20,overflowY:screen==="pos"?"hidden":"auto",width:"100%",minHeight:0,height:"calc(100vh - 50px)"}}>
-        {screen==="dashboard"&&<Dashboard sales={sales} items={items} license={license}/>}
+        {screen==="dashboard"&&<Dashboard sales={allSales} items={items} license={license}/>}
         {screen==="pos"&&<POS items={items} sales={sales} setSales={setSales} tables={tables} setTables={setTables} promos={promos} license={license}/>}
         {screen==="settings"&&<Settings company={company} setCompany={setCompany} tables={tables} setTables={setTables} license={license} onClearLicense={handleClearLicense} pins={pins} setPins={setPins} invoiceFormat={invoiceFormat} setInvoiceFormat={setInvoiceFormat}/>}
         {screen==="create"&&<Create items={items} setItems={setItems} promos={promos} setPromos={setPromos}/>}
-        {screen==="transactions"&&<Transactions sales={sales} setSales={setSales} license={license}/>}
-        {screen==="accounts"&&<ProfitLoss sales={sales} items={items}/>}
-        {screen==="financials"&&<FinancialReports sales={sales} items={items}/>}
-        {screen==="invoices"&&<InvoiceEnhancements sales={sales} items={items} license={license} company={company}/>}
+        {screen==="transactions"&&<Transactions sales={allSales} setSales={setSales} license={license}/>}
+        {screen==="accounts"&&<ProfitLoss sales={allSales} items={items}/>}
+        {screen==="financials"&&<FinancialReports sales={allSales} items={items}/>}
+        {screen==="invoices"&&<InvoiceEnhancements sales={allSales} items={items} license={license} company={company}/>}
         {screen==="expenses"&&<Expenses/>}
-        {screen==="customers"&&<Customers sales={sales}/>}
-        {screen==="reports"&&<Reports sales={sales} items={items} setSales={setSales}/>}
-        {screen==="analytics"&&<AdvancedReports sales={sales} items={items}/>}
-        {screen==="backup"&&<BackupManager sales={sales} items={items}/>}
-        {screen==="shifts"&&<ShiftManager sales={sales} currentUser={currentUser}/>}
+        {screen==="customers"&&<Customers sales={allSales}/>}
+        {screen==="reports"&&<Reports sales={sales} allSales={allSales} items={items} setSales={setSales}/>}
+        {screen==="analytics"&&<AdvancedReports sales={allSales} items={items}/>}
+        {screen==="backup"&&<BackupManager sales={allSales} items={items}/>}
+        {screen==="shifts"&&<ShiftManager sales={allSales} currentUser={currentUser}/>}
         {screen==="audit"&&<AuditTrail/>}
-        {screen==="tools"&&<Tools sales={sales} items={items} setItems={setItems}/>}
+        {screen==="tools"&&<Tools sales={allSales} items={items} setItems={setItems}/>}
         {screen==="useradmin"&&<UserAdmin users={users} setUsers={setUsers}/>}
         {screen==="help"&&<Help/>}
       </div>
