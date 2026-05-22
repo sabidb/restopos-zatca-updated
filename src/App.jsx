@@ -1589,6 +1589,46 @@ function UserAdmin({users,setUsers}){
 // ═══════════════════════════════════════════════════════════════════
 // OWNER DASHBOARD INLINE (for modal inside UserAdmin)
 // ═══════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════
+// SUPPORT TICKETS TAB — proper component so hooks are valid
+// ═══════════════════════════════════════════════════════════════════
+function SupportTicketsTab(){
+  const [tickets,setTickets]=useState([]);
+  const [tickLoading,setTickLoading]=useState(true);
+  const DS={card:"#1A2A3F",border:"rgba(255,255,255,0.08)",text:"#F1F5F9",sub:"#94A3B8",success:"#10b981",warning:"#F0A500",danger:"#ef4444"};
+  useEffect(()=>{
+    getDocs(collection(db,"support_tickets"))
+      .then(snap=>{setTickets(snap.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>(b.submittedAt||"").localeCompare(a.submittedAt||"")));setTickLoading(false);})
+      .catch(()=>setTickLoading(false));
+  },[]);
+  const priorityColor={Normal:DS.sub,Urgent:DS.warning,"Critical — System Down":DS.danger};
+  const DCard=({children,style={}})=>(<div style={{background:DS.card,border:`1px solid ${DS.border}`,borderRadius:14,padding:18,boxShadow:"0 2px 12px rgba(0,0,0,0.2)",...style}}>{children}</div>);
+  if(tickLoading)return<DCard><div style={{textAlign:"center",padding:40,color:DS.sub}}>Loading tickets…</div></DCard>;
+  if(tickets.length===0)return<DCard><div style={{textAlign:"center",padding:"60px 0"}}><div style={{fontSize:48,marginBottom:12}}>🎉</div><div style={{color:DS.sub,fontSize:14}}>No support tickets yet</div></div></DCard>;
+  return(
+    <div style={{display:"grid",gap:12}}>
+      {tickets.map(t=>(
+        <DCard key={t.id} style={{borderLeft:`4px solid ${priorityColor[t.priority]||DS.sub}`}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
+            <div>
+              <div style={{fontSize:14,fontWeight:700,color:DS.text}}>{t.name} <span style={{fontSize:11,color:DS.sub}}>· {t.businessName||"Unknown"}</span></div>
+              <div style={{fontSize:11,color:DS.sub,marginTop:2}}>{t.phone}{t.email?` · ${t.email}`:""} · {t.submittedAt?.slice(0,16).replace("T"," ")}</div>
+            </div>
+            <span style={{padding:"3px 10px",borderRadius:20,fontSize:10,fontWeight:700,background:`${priorityColor[t.priority]||DS.sub}25`,color:priorityColor[t.priority]||DS.sub,border:`1px solid ${priorityColor[t.priority]||DS.sub}44`,flexShrink:0}}>{t.priority}</span>
+          </div>
+          <div style={{background:"rgba(255,255,255,0.04)",borderRadius:8,padding:"10px 12px",fontSize:12,color:DS.text,lineHeight:1.6}}>{t.issue}</div>
+          {t.licenseKey&&<div style={{marginTop:8,fontSize:10,color:DS.sub,fontFamily:"monospace"}}>License: {t.licenseKey} · VAT: {t.vatNumber||"—"}</div>}
+          <div style={{display:"flex",gap:8,marginTop:10}}>
+            <button onClick={async()=>{await updateDoc(doc(db,"support_tickets",t.id),{status:"resolved",resolvedAt:new Date().toISOString()});setTickets(prev=>prev.map(x=>x.id===t.id?{...x,status:"resolved"}:x));}} style={{padding:"5px 14px",background:"rgba(16,185,129,0.15)",border:"1px solid rgba(16,185,129,0.3)",borderRadius:6,color:"#10b981",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>✓ Mark Resolved</button>
+            <a href={`https://wa.me/${t.phone?.replace(/\D/g,"")}`} target="_blank" rel="noreferrer" style={{padding:"5px 14px",background:"rgba(37,211,102,0.15)",border:"1px solid rgba(37,211,102,0.3)",borderRadius:6,color:"#25d366",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit",textDecoration:"none"}}>💬 WhatsApp</a>
+            {t.status==="resolved"&&<span style={{fontSize:11,color:"#10b981",fontWeight:700,alignSelf:"center"}}>✓ Resolved</span>}
+          </div>
+        </DCard>
+      ))}
+    </div>
+  );
+}
+
 function OwnerDashboardInline(){
   const [tab,setTab]=useState("overview");
   const [activations,setActivations]=useState([]);
@@ -2033,29 +2073,7 @@ function OwnerDashboardInline(){
       </div>}
 
       {/* SUPPORT TICKETS */}
-      {tab==="tickets"&&(()=>{
-        const [tickets,setTickets]=useState([]);const [tickLoading,setTickLoading]=useState(true);
-        useEffect(()=>{getDocs(collection(db,"support_tickets")).then(snap=>{setTickets(snap.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>b.submittedAt?.localeCompare(a.submittedAt||"")||0));setTickLoading(false);}).catch(()=>setTickLoading(false));},[]);
-        const priorityColor={Normal:DS.sub,Urgent:DS.warning,"Critical — System Down":DS.danger};
-        return tickLoading?<DCard><div style={{textAlign:"center",padding:40,color:DS.sub}}>Loading tickets…</div></DCard>:tickets.length===0?<DCard><div style={{textAlign:"center",padding:"60px 0"}}><div style={{fontSize:48,marginBottom:12}}>🎉</div><div style={{color:DS.sub,fontSize:14}}>No support tickets yet</div></div></DCard>:<div style={{display:"grid",gap:12}}>{tickets.map(t=>(
-          <DCard key={t.id} style={{borderLeft:`4px solid ${priorityColor[t.priority]||DS.sub}`}}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
-              <div>
-                <div style={{fontSize:14,fontWeight:700,color:DS.text}}>{t.name} <span style={{fontSize:11,color:DS.sub}}>· {t.businessName||"Unknown"}</span></div>
-                <div style={{fontSize:11,color:DS.sub,marginTop:2}}>{t.phone} {t.email?`· ${t.email}`:""} · {t.submittedAt?.slice(0,16).replace("T"," ")}</div>
-              </div>
-              <span style={{padding:"3px 10px",borderRadius:20,fontSize:10,fontWeight:700,background:`${priorityColor[t.priority]||DS.sub}25`,color:priorityColor[t.priority]||DS.sub,border:`1px solid ${priorityColor[t.priority]||DS.sub}44`,flexShrink:0}}>{t.priority}</span>
-            </div>
-            <div style={{background:"rgba(255,255,255,0.04)",borderRadius:8,padding:"10px 12px",fontSize:12,color:DS.text,lineHeight:1.6}}>{t.issue}</div>
-            {t.licenseKey&&<div style={{marginTop:8,fontSize:10,color:DS.sub,fontFamily:"monospace"}}>License: {t.licenseKey} · VAT: {t.vatNumber||"—"}</div>}
-            <div style={{display:"flex",gap:8,marginTop:10}}>
-              <button onClick={async()=>{await updateDoc(doc(db,"support_tickets",t.id),{status:"resolved",resolvedAt:new Date().toISOString()});setTickets(prev=>prev.map(x=>x.id===t.id?{...x,status:"resolved"}:x));}} style={{padding:"5px 14px",background:"rgba(16,185,129,0.15)",border:"1px solid rgba(16,185,129,0.3)",borderRadius:6,color:"#10b981",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>✓ Mark Resolved</button>
-              <a href={`https://wa.me/${t.phone?.replace(/\D/g,"")}`} target="_blank" rel="noreferrer" style={{padding:"5px 14px",background:"rgba(37,211,102,0.15)",border:"1px solid rgba(37,211,102,0.3)",borderRadius:6,color:"#25d366",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit",textDecoration:"none"}}>💬 WhatsApp</a>
-              {t.status==="resolved"&&<span style={{fontSize:11,color:"#10b981",fontWeight:700,alignSelf:"center"}}>✓ Resolved</span>}
-            </div>
-          </DCard>
-        ))}</div>;
-      })()}
+      {tab==="tickets"&&<SupportTicketsTab/>}
 
       {/* MAP TAB */}
       {tab==="map"&&<div>
