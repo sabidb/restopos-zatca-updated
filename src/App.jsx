@@ -219,6 +219,352 @@ function ZATCAInvoiceHistory(){
 const LS={get:(k)=>{try{return JSON.parse(localStorage.getItem(k));}catch{return null;}},set:(k,v)=>localStorage.setItem(k,JSON.stringify(v)),del:(k)=>localStorage.removeItem(k)};
 
 // ═══════════════════════════════════════════════════════════════════
+// CREDENTIAL HELPERS — simple hash for local storage
+// ═══════════════════════════════════════════════════════════════════
+async function hashPassword(pw){
+  const data=new TextEncoder().encode(pw+"restopos_salt_v1");
+  const buf=await crypto.subtle.digest("SHA-256",data);
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,"0")).join("");
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// SET CREDENTIALS — shown after first-time license activation
+// ═══════════════════════════════════════════════════════════════════
+function SetCredentials({license,onDone}){
+  const [username,setUsername]=useState("");
+  const [password,setPassword]=useState("");
+  const [confirm,setConfirm]=useState("");
+  const [showPw,setShowPw]=useState(false);
+  const [error,setError]=useState("");
+  const [loading,setLoading]=useState(false);
+
+  async function handleSave(){
+    setError("");
+    if(!username.trim()||username.trim().length<3)return setError("Username must be at least 3 characters.");
+    if(password.length<6)return setError("Password must be at least 6 characters.");
+    if(password!==confirm)return setError("Passwords do not match.");
+    setLoading(true);
+    try{
+      const hashed=await hashPassword(password);
+      // Save credentials locally (pending approval)
+      LS.set("restopos_client_creds",{username:username.trim().toLowerCase(),passwordHash:hashed,approved:false,crNumber:license.crNumber});
+      // Save to Firestore so admin can see and approve
+      const q=query(collection(db,"pending_activations"),where("licenseKey","==",license.licenseKey));
+      const snap=await getDocs(q);
+      if(!snap.empty){
+        await updateDoc(doc(db,"pending_activations",snap.docs[0].id),{
+          clientUsername:username.trim().toLowerCase(),
+          credentialsSet:true,
+          credentialsApproved:false,
+          credentialsSetAt:new Date().toISOString()
+        });
+      }
+      onDone();
+    }catch(e){setError("Failed to save: "+e.message);}
+    setLoading(false);
+  }
+
+  const inp={width:"100%",padding:"12px 14px",background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:10,fontSize:14,color:"#fff",fontFamily:"inherit"};
+  return(
+    <div style={{minHeight:"100vh",background:"linear-gradient(135deg,#0a1628 0%,#1A3A5C 50%,#0a2818 100%)",display:"flex",alignItems:"center",justifyContent:"center",padding:20,fontFamily:"'Plus Jakarta Sans',sans-serif"}}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');*{box-sizing:border-box;margin:0;padding:0}`}</style>
+      <div style={{width:"100%",maxWidth:460}}>
+        <div style={{textAlign:"center",marginBottom:28}}>
+          <div style={{width:56,height:56,background:"linear-gradient(135deg,#1A6B4A,#F0A500)",borderRadius:16,display:"flex",alignItems:"center",justifyContent:"center",fontSize:26,margin:"0 auto 12px"}}>🔐</div>
+          <div style={{fontSize:22,fontWeight:900,color:"#fff"}}>Create Login</div>
+          <div style={{fontSize:13,color:"rgba(255,255,255,0.5)",marginTop:4}}>Set a username & password for your account</div>
+        </div>
+        <div style={{background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:20,padding:32}}>
+          <div style={{background:"rgba(46,204,113,0.1)",border:"1px solid rgba(46,204,113,0.3)",borderRadius:10,padding:"10px 14px",marginBottom:20,fontSize:12,color:"rgba(255,255,255,0.7)",lineHeight:1.5}}>
+            <strong style={{color:"#2ECC71"}}>✓ License Activated!</strong><br/>
+            Once you set your login, our team will review and approve your account. You'll then be able to sign in anytime.
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:14}}>
+            <div>
+              <label style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.6)",display:"block",marginBottom:5}}>Username</label>
+              <input value={username} onChange={e=>setUsername(e.target.value)} placeholder="e.g. albaik_riyadh" style={inp}/>
+            </div>
+            <div>
+              <label style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.6)",display:"block",marginBottom:5}}>Password</label>
+              <div style={{position:"relative"}}>
+                <input type={showPw?"text":"password"} value={password} onChange={e=>setPassword(e.target.value)} placeholder="Min 6 characters" style={{...inp,paddingRight:44}}/>
+                <button onClick={()=>setShowPw(x=>!x)} style={{position:"absolute",right:12,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",color:"rgba(255,255,255,0.5)",cursor:"pointer",fontSize:16}}>{showPw?"🙈":"👁"}</button>
+              </div>
+            </div>
+            <div>
+              <label style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.6)",display:"block",marginBottom:5}}>Confirm Password</label>
+              <input type={showPw?"text":"password"} value={confirm} onChange={e=>setConfirm(e.target.value)} placeholder="Re-enter password" style={inp}/>
+            </div>
+          </div>
+          {error&&<div style={{marginTop:12,padding:"8px 12px",background:"rgba(217,64,64,0.2)",border:"1px solid rgba(217,64,64,0.4)",borderRadius:8,fontSize:12,color:"#ff8080"}}>{error}</div>}
+          <button onClick={handleSave} disabled={loading} style={{width:"100%",marginTop:18,padding:14,background:loading?"#444":"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:12,fontSize:15,fontWeight:800,cursor:loading?"not-allowed":"pointer",fontFamily:"inherit"}}>
+            {loading?"Saving…":"✓ Save & Submit for Approval"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PENDING APPROVAL SCREEN
+// ═══════════════════════════════════════════════════════════════════
+function PendingApprovalScreen({license,onApproved}){
+  const [checking,setChecking]=useState(false);
+  const [error,setError]=useState("");
+  const creds=LS.get("restopos_client_creds");
+
+  // Auto-check approval status periodically
+  useEffect(()=>{
+    async function checkApproval(){
+      try{
+        const q=query(collection(db,"pending_activations"),where("licenseKey","==",license.licenseKey));
+        const snap=await getDocs(q);
+        if(!snap.empty){
+          const data=snap.docs[0].data();
+          if(data.credentialsApproved===true){
+            // Update local creds
+            const localCreds=LS.get("restopos_client_creds");
+            if(localCreds)LS.set("restopos_client_creds",{...localCreds,approved:true});
+            onApproved();
+          }
+        }
+      }catch(e){console.warn("Approval check failed:",e);}
+    }
+    checkApproval();
+    const interval=setInterval(checkApproval,15000);
+    return()=>clearInterval(interval);
+  },[license.licenseKey]);
+
+  async function handleManualCheck(){
+    setChecking(true);setError("");
+    try{
+      const q=query(collection(db,"pending_activations"),where("licenseKey","==",license.licenseKey));
+      const snap=await getDocs(q);
+      if(!snap.empty){
+        const data=snap.docs[0].data();
+        if(data.credentialsApproved===true){
+          const localCreds=LS.get("restopos_client_creds");
+          if(localCreds)LS.set("restopos_client_creds",{...localCreds,approved:true});
+          onApproved();return;
+        }
+      }
+      setError("Not yet approved. Please wait for admin confirmation.");
+    }catch(e){setError("Check failed: "+e.message);}
+    setChecking(false);
+  }
+
+  return(
+    <div style={{minHeight:"100vh",background:"linear-gradient(135deg,#0a1628 0%,#1A3A5C 50%,#0a2818 100%)",display:"flex",alignItems:"center",justifyContent:"center",padding:20,fontFamily:"'Plus Jakarta Sans',sans-serif"}}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');*{box-sizing:border-box;margin:0;padding:0}`}</style>
+      <div style={{width:"100%",maxWidth:440,textAlign:"center"}}>
+        <div style={{width:72,height:72,background:"rgba(240,165,0,0.15)",border:"2px solid rgba(240,165,0,0.4)",borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:32,margin:"0 auto 20px"}}>⏳</div>
+        <div style={{fontSize:22,fontWeight:900,color:"#fff",marginBottom:8}}>Awaiting Approval</div>
+        <div style={{fontSize:13,color:"rgba(255,255,255,0.5)",marginBottom:24,lineHeight:1.6}}>
+          Your account has been submitted.<br/>
+          Once our team approves your account, you'll be able to log in.<br/>
+          <span style={{color:"rgba(255,255,255,0.3)"}}>This usually takes a few minutes to hours.</span>
+        </div>
+        <div style={{background:"rgba(255,255,255,0.07)",border:"1px solid rgba(255,255,255,0.12)",borderRadius:14,padding:"16px 20px",marginBottom:20,fontSize:13,color:"rgba(255,255,255,0.6)"}}>
+          <div style={{fontWeight:700,color:"#fff",marginBottom:4}}>{license.businessName}</div>
+          <div>Username: <span style={{color:"#F0A500",fontWeight:700}}>{creds?.username||"—"}</span></div>
+          <div>CR: {license.crNumber}</div>
+        </div>
+        {error&&<div style={{background:"rgba(217,64,64,0.15)",border:"1px solid rgba(217,64,64,0.3)",borderRadius:8,padding:"8px 12px",fontSize:12,color:"#ff8080",marginBottom:12}}>{error}</div>}
+        <button onClick={handleManualCheck} disabled={checking} style={{width:"100%",padding:13,background:checking?"#333":"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:12,fontSize:14,fontWeight:700,cursor:checking?"not-allowed":"pointer",fontFamily:"inherit"}}>
+          {checking?"Checking…":"🔄 Check Approval Status"}
+        </button>
+        <div style={{marginTop:12,fontSize:11,color:"rgba(255,255,255,0.2)"}}>Auto-checks every 15 seconds</div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// CLIENT LOGIN — username + password
+// ═══════════════════════════════════════════════════════════════════
+function ClientLogin({license,onSuccess,onForgotPassword}){
+  const [mode,setMode]=useState("login"); // "login" | "already"
+  const [username,setUsername]=useState("");
+  const [password,setPassword]=useState("");
+  const [showPw,setShowPw]=useState(false);
+  const [error,setError]=useState("");
+  const [loading,setLoading]=useState(false);
+  const creds=LS.get("restopos_client_creds");
+
+  async function handleLogin(){
+    setError("");setLoading(true);
+    if(!username.trim()||!password){setError("Please enter username and password.");setLoading(false);return;}
+    try{
+      const hashed=await hashPassword(password);
+      if(username.trim().toLowerCase()===creds?.username&&hashed===creds?.passwordHash){
+        onSuccess();
+      }else{
+        setError("Incorrect username or password.");
+      }
+    }catch(e){setError("Login failed: "+e.message);}
+    setLoading(false);
+  }
+
+  const inp={width:"100%",padding:"12px 14px",background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:10,fontSize:14,color:"#fff",fontFamily:"inherit"};
+
+  return(
+    <div style={{minHeight:"100vh",background:"linear-gradient(135deg,#0a1628 0%,#1A3A5C 50%,#0a2818 100%)",display:"flex",alignItems:"center",justifyContent:"center",padding:20,fontFamily:"'Plus Jakarta Sans',sans-serif"}}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');*{box-sizing:border-box;margin:0;padding:0}`}</style>
+      <div style={{width:"100%",maxWidth:420}}>
+        <div style={{textAlign:"center",marginBottom:24}}>
+          <div style={{display:"inline-flex",alignItems:"center",gap:10,marginBottom:6}}>
+            <div style={{width:44,height:44,background:"linear-gradient(135deg,#1A6B4A,#F0A500)",borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,fontWeight:900,color:"#fff"}}>R</div>
+            <div style={{fontSize:24,fontWeight:900,color:"#fff"}}>RestoPOS</div>
+          </div>
+          <div style={{fontSize:13,color:"rgba(255,255,255,0.4)"}}>{license?.businessName||""}</div>
+        </div>
+
+        {/* Already signed up banner */}
+        <div style={{background:"rgba(46,204,113,0.08)",border:"1px solid rgba(46,204,113,0.25)",borderRadius:14,padding:"14px 18px",marginBottom:16,display:"flex",alignItems:"center",justifyContent:"space-between",gap:12}}>
+          <div>
+            <div style={{fontSize:13,fontWeight:700,color:"#2ECC71"}}>✓ Already signed up</div>
+            <div style={{fontSize:11,color:"rgba(255,255,255,0.4)",marginTop:2}}>Sign in with your username & password</div>
+          </div>
+          <div style={{width:32,height:32,background:"rgba(46,204,113,0.15)",borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>👤</div>
+        </div>
+
+        <div style={{background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:20,padding:28}}>
+          <div style={{fontSize:16,fontWeight:800,color:"#fff",marginBottom:18,textAlign:"center"}}>Sign In</div>
+          <div style={{display:"flex",flexDirection:"column",gap:12}}>
+            <div>
+              <label style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.6)",display:"block",marginBottom:5}}>Username</label>
+              <input value={username} onChange={e=>setUsername(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handleLogin()} placeholder="Your username" style={inp}/>
+            </div>
+            <div>
+              <label style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.6)",display:"block",marginBottom:5}}>Password</label>
+              <div style={{position:"relative"}}>
+                <input type={showPw?"text":"password"} value={password} onChange={e=>setPassword(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handleLogin()} placeholder="Your password" style={{...inp,paddingRight:44}}/>
+                <button onClick={()=>setShowPw(x=>!x)} style={{position:"absolute",right:12,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",color:"rgba(255,255,255,0.5)",cursor:"pointer",fontSize:16}}>{showPw?"🙈":"👁"}</button>
+              </div>
+            </div>
+          </div>
+          {error&&<div style={{marginTop:10,padding:"8px 12px",background:"rgba(217,64,64,0.2)",border:"1px solid rgba(217,64,64,0.4)",borderRadius:8,fontSize:12,color:"#ff8080"}}>{error}</div>}
+          <button onClick={handleLogin} disabled={loading} style={{width:"100%",marginTop:16,padding:13,background:loading?"#333":"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:12,fontSize:15,fontWeight:800,cursor:loading?"not-allowed":"pointer",fontFamily:"inherit"}}>
+            {loading?"Signing in…":"→ Sign In"}
+          </button>
+          <button onClick={onForgotPassword} style={{width:"100%",marginTop:10,padding:10,background:"transparent",color:"rgba(255,255,255,0.35)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:10,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>
+            🔑 Forgot password?
+          </button>
+          <button onClick={()=>window.dispatchEvent(new Event("ownerLogin"))} style={{width:"100%",marginTop:8,background:"none",border:"none",color:"rgba(255,255,255,0.15)",fontSize:11,cursor:"pointer",fontFamily:"inherit",padding:"4px 0"}}>⚙ Owner Panel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// FORGOT PASSWORD — verify via license key + CR number
+// ═══════════════════════════════════════════════════════════════════
+function ForgotPassword({onBack,onReset}){
+  const [step,setStep]=useState("verify"); // "verify" | "reset"
+  const [licenseKey,setLicenseKey]=useState("");
+  const [crNumber,setCrNumber]=useState("");
+  const [newPassword,setNewPassword]=useState("");
+  const [confirmPw,setConfirmPw]=useState("");
+  const [showPw,setShowPw]=useState(false);
+  const [error,setError]=useState("");
+  const [loading,setLoading]=useState(false);
+  const [verifiedCr,setVerifiedCr]=useState("");
+
+  async function handleVerify(){
+    setError("");setLoading(true);
+    const cleanKey=licenseKey.trim().toUpperCase();
+    const cleanCr=crNumber.trim();
+    if(!/^[A-Z0-9]{12}$/.test(cleanKey)){setError("License key must be 12 alphanumeric characters.");setLoading(false);return;}
+    if(!/^\d{12}$/.test(cleanCr)){setError("CR Number must be 12 digits.");setLoading(false);return;}
+    try{
+      const q=query(collection(db,"licenses"),where("key","==",cleanKey),where("activatedBy","==",cleanCr));
+      const snap=await getDocs(q);
+      if(snap.empty){setError("No account found with this license key and CR number combination.");setLoading(false);return;}
+      setVerifiedCr(cleanCr);
+      setStep("reset");
+    }catch(e){setError("Verification failed: "+e.message);}
+    setLoading(false);
+  }
+
+  async function handleReset(){
+    setError("");
+    if(newPassword.length<6)return setError("Password must be at least 6 characters.");
+    if(newPassword!==confirmPw)return setError("Passwords do not match.");
+    setLoading(true);
+    try{
+      const hashed=await hashPassword(newPassword);
+      const localCreds=LS.get("restopos_client_creds");
+      if(localCreds&&localCreds.crNumber===verifiedCr){
+        LS.set("restopos_client_creds",{...localCreds,passwordHash:hashed});
+        onReset();
+      }else{
+        setError("Credentials not found locally. Please contact support.");
+      }
+    }catch(e){setError("Reset failed: "+e.message);}
+    setLoading(false);
+  }
+
+  const inp={width:"100%",padding:"12px 14px",background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:10,fontSize:14,color:"#fff",fontFamily:"inherit"};
+
+  return(
+    <div style={{minHeight:"100vh",background:"linear-gradient(135deg,#0a1628 0%,#1A3A5C 50%,#0a2818 100%)",display:"flex",alignItems:"center",justifyContent:"center",padding:20,fontFamily:"'Plus Jakarta Sans',sans-serif"}}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');*{box-sizing:border-box;margin:0;padding:0}`}</style>
+      <div style={{width:"100%",maxWidth:440}}>
+        <div style={{textAlign:"center",marginBottom:24}}>
+          <div style={{width:52,height:52,background:"rgba(240,165,0,0.15)",border:"2px solid rgba(240,165,0,0.3)",borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:24,margin:"0 auto 12px"}}>🔑</div>
+          <div style={{fontSize:21,fontWeight:900,color:"#fff"}}>{step==="verify"?"Forgot Password":"Reset Password"}</div>
+          <div style={{fontSize:12,color:"rgba(255,255,255,0.4)",marginTop:4}}>{step==="verify"?"Verify your identity to reset your password":"Enter your new password"}</div>
+        </div>
+        <div style={{background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:20,padding:28}}>
+          {step==="verify"?(
+            <>
+              <div style={{display:"flex",flexDirection:"column",gap:12}}>
+                <div>
+                  <label style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.6)",display:"block",marginBottom:5}}>License Key</label>
+                  <input value={licenseKey} onChange={e=>setLicenseKey(e.target.value.toUpperCase())} placeholder="XXXXXXXXXXXX" style={{...inp,textAlign:"center",letterSpacing:"0.12em",fontFamily:"monospace",fontSize:16,fontWeight:700}}/>
+                </div>
+                <div>
+                  <label style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.6)",display:"block",marginBottom:5}}>CR Registration Number</label>
+                  <input value={crNumber} onChange={e=>setCrNumber(e.target.value)} placeholder="12-digit CR number" style={inp}/>
+                </div>
+              </div>
+              {error&&<div style={{marginTop:10,padding:"8px 12px",background:"rgba(217,64,64,0.2)",border:"1px solid rgba(217,64,64,0.4)",borderRadius:8,fontSize:12,color:"#ff8080"}}>{error}</div>}
+              <button onClick={handleVerify} disabled={loading} style={{width:"100%",marginTop:16,padding:13,background:loading?"#333":"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:12,fontSize:14,fontWeight:800,cursor:loading?"not-allowed":"pointer",fontFamily:"inherit"}}>
+                {loading?"Verifying…":"→ Verify Identity"}
+              </button>
+            </>
+          ):(
+            <>
+              <div style={{background:"rgba(46,204,113,0.1)",border:"1px solid rgba(46,204,113,0.3)",borderRadius:8,padding:"10px 14px",marginBottom:16,fontSize:12,color:"#7FFAB5",fontWeight:600}}>✓ Identity verified! Set your new password.</div>
+              <div style={{display:"flex",flexDirection:"column",gap:12}}>
+                <div>
+                  <label style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.6)",display:"block",marginBottom:5}}>New Password</label>
+                  <div style={{position:"relative"}}>
+                    <input type={showPw?"text":"password"} value={newPassword} onChange={e=>setNewPassword(e.target.value)} placeholder="Min 6 characters" style={{...inp,paddingRight:44}}/>
+                    <button onClick={()=>setShowPw(x=>!x)} style={{position:"absolute",right:12,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",color:"rgba(255,255,255,0.5)",cursor:"pointer",fontSize:16}}>{showPw?"🙈":"👁"}</button>
+                  </div>
+                </div>
+                <div>
+                  <label style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.6)",display:"block",marginBottom:5}}>Confirm New Password</label>
+                  <input type={showPw?"text":"password"} value={confirmPw} onChange={e=>setConfirmPw(e.target.value)} placeholder="Re-enter password" style={inp}/>
+                </div>
+              </div>
+              {error&&<div style={{marginTop:10,padding:"8px 12px",background:"rgba(217,64,64,0.2)",border:"1px solid rgba(217,64,64,0.4)",borderRadius:8,fontSize:12,color:"#ff8080"}}>{error}</div>}
+              <button onClick={handleReset} disabled={loading} style={{width:"100%",marginTop:16,padding:13,background:loading?"#333":"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:12,fontSize:14,fontWeight:800,cursor:loading?"not-allowed":"pointer",fontFamily:"inherit"}}>
+                {loading?"Resetting…":"✓ Reset Password"}
+              </button>
+            </>
+          )}
+          <button onClick={onBack} style={{width:"100%",marginTop:10,padding:10,background:"transparent",color:"rgba(255,255,255,0.35)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:10,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>← Back to Login</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // SUBSCRIPTION PLANS
 // ═══════════════════════════════════════════════════════════════════
 const SUBSCRIPTION_PLANS={
@@ -2004,6 +2350,25 @@ function OwnerDashboardInline(){
                       </button>
                     ))}
                   </div>
+                  {/* Credentials Badge */}
+                  {a.credentialsSet&&!a.credentialsApproved&&(
+                    <div style={{marginBottom:8,padding:"8px 12px",background:"rgba(240,165,0,0.1)",border:"1px solid rgba(240,165,0,0.3)",borderRadius:8,display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,flexWrap:"wrap"}}>
+                      <div>
+                        <span style={{fontSize:11,fontWeight:700,color:"#F0A500"}}>🔐 Login Request Pending</span>
+                        <span style={{fontSize:11,color:"rgba(255,255,255,0.5)",marginLeft:8}}>Username: <strong style={{color:"#fff"}}>{a.clientUsername||"—"}</strong></span>
+                      </div>
+                      <button onClick={e=>{e.stopPropagation();if(confirm("Approve login credentials for "+a.businessName+"?"))updateDoc(doc(db,"pending_activations",a.id),{credentialsApproved:true,credentialsApprovedAt:new Date().toISOString()}).then(()=>setActivations(prev=>prev.map(x=>x.id===a.id?{...x,credentialsApproved:true}:x)));}}
+                        style={{padding:"5px 14px",background:"rgba(26,138,74,0.2)",border:"1px solid rgba(26,138,74,0.4)",borderRadius:6,color:"#4ade80",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit",flexShrink:0}}>
+                        ✓ Approve Login
+                      </button>
+                    </div>
+                  )}
+                  {a.credentialsApproved&&(
+                    <div style={{marginBottom:8,padding:"6px 12px",background:"rgba(46,204,113,0.08)",border:"1px solid rgba(46,204,113,0.2)",borderRadius:8,fontSize:11,color:"#4ade80",display:"flex",alignItems:"center",gap:8}}>
+                      <span>✓ Login Approved</span>
+                      <span style={{color:"rgba(255,255,255,0.4)"}}>Username: <strong style={{color:"#fff"}}>{a.clientUsername||"—"}</strong></span>
+                    </div>
+                  )}
                   {/* Actions */}
                   <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
                     {a.status==="approved"&&(
@@ -2052,6 +2417,7 @@ function OwnerDashboardInline(){
                     <div style={{fontSize:11,color:DS.sub,marginTop:2}}>CR: {a.crNumber} · VAT: {a.vatNumber} · 🔑 {a.licenseKey}</div>
                     <div style={{fontSize:11,color:"rgba(255,255,255,0.35)",marginTop:2}}>Submitted: {a.submittedAt?fmtDateTime(a.submittedAt):"—"} · City: {a.city||"—"} · Phone: {a.phone||"—"}</div>
                     {a.ownerName&&<div style={{fontSize:11,color:"#a5b4fc",marginTop:2}}>👤 Owner: {a.ownerName}</div>}
+                    {a.credentialsSet&&<div style={{fontSize:11,color:"#F0A500",marginTop:2}}>🔐 Login requested · Username: <strong>{a.clientUsername||"—"}</strong></div>}
                     {a.location&&<div style={{fontSize:10,color:"#a5b4fc",marginTop:2}}>📍 GPS: {a.location.lat?.toFixed(4)}, {a.location.lng?.toFixed(4)}</div>}
                   </div>
                 </div>
@@ -2073,7 +2439,8 @@ function OwnerDashboardInline(){
                 <div style={{display:"flex",gap:8,marginTop:12}}>
                   <button onClick={async()=>{
                     if(confirm(`Approve with ${SUBSCRIPTION_PLANS[selectedPlan]?.name||"Basic"} plan?`)){
-                      await updateDoc(doc(db,"pending_activations",a.id),{status:"approved",subscriptionPlan:selectedPlan,reviewedAt:new Date().toISOString()});
+                      const credApprove=a.credentialsSet?{credentialsApproved:true,credentialsApprovedAt:new Date().toISOString()}:{};
+                      await updateDoc(doc(db,"pending_activations",a.id),{status:"approved",subscriptionPlan:selectedPlan,reviewedAt:new Date().toISOString(),...credApprove});
                       setActivations(prev=>prev.map(x=>x.id===a.id?{...x,status:"approved",subscriptionPlan:selectedPlan}:x));
                       logActivity("PLAN_CHANGE",{clientId:a.id,after:{plan:selectedPlan,status:"approved"}},"Owner");
                     }}}
@@ -4032,7 +4399,18 @@ export default function App(){
   function setInvoiceFormat(v){_setInvoiceFormat(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_invoice_format",n);return n;});}
   const [uiScale,setUiScale]=useState(()=>parseInt(LS.get("restopos_ui_scale")||"100"));
   function handleScaleChange(v){const s=Math.max(70,Math.min(130,parseInt(v)||100));setUiScale(s);LS.set("restopos_ui_scale",String(s));}
-  useEffect(()=>{const saved=LS.get("restopos_license_v2");const pendingId=localStorage.getItem("restopos_pending_id");if(saved){setLicense(saved);setStep("login");}else if(pendingId){setStep("license");}else setStep("register");},[]);
+  useEffect(()=>{
+    const saved=LS.get("restopos_license_v2");
+    const pendingId=localStorage.getItem("restopos_pending_id");
+    const creds=LS.get("restopos_client_creds");
+    if(saved){
+      setLicense(saved);
+      if(!creds){setStep("setCredentials");}
+      else if(!creds.approved){setStep("pendingApproval");}
+      else{setStep("clientLogin");}
+    }else if(pendingId){setStep("license");}
+    else setStep("register");
+  },[]);
   function handleClearLicense(){LS.del("restopos_license_v2");LS.del("restopos_pins");setLicense(null);setCurrentUser(null);setStep("register");}
   const ALL_NAV=[["dashboard","📊","Dashboard",["Admin","Manager"]],["pos","🖥️","POS",["Admin","Manager","Cashier"]],["settings","⚙️","Settings",["Admin"]],["create","➕","Create",["Admin","Manager"]],["transactions","💳","Transactions",["Admin","Manager"]],["accounts","📈","P&L",["Admin","Manager"]],["financials","🏦","Financials",["Admin","Manager"]],["invoices","📄","Invoices",["Admin","Manager"]],["expenses","💸","Expenses",["Admin","Manager"]],["customers","👥","CRM",["Admin","Manager"]],["reports","📋","Reports",["Admin","Manager"]],["analytics","📉","Analytics",["Admin","Manager"]],["backup","💾","Backup",["Admin"]],["shifts","🔄","Shifts",["Admin","Manager"]],["audit","🔍","Audit",["Admin"]],["tools","🔧","Tools",["Admin"]],["useradmin","👤","Users",["Admin"]],["help","❓","Help",["Admin","Manager","Cashier"]]];
   const NAV=ALL_NAV.filter(([,,,roles])=>currentUser&&roles.includes(currentUser.role));
@@ -4048,7 +4426,11 @@ export default function App(){
     </div>
   );
   if(step==="register")return<BusinessRegistration onNext={(data)=>{setBusinessData(data);setStep("license");}}/>;
-  if(step==="license")return<LicenseVerification businessData={businessData||{businessName:"",crNumber:"",vatNumber:"",address:"",city:"",phone:""}} onSuccess={(lic)=>{setLicense(lic);setStep("login");}} onBack={()=>setStep("register")}/>;
+  if(step==="license")return<LicenseVerification businessData={businessData||{businessName:"",crNumber:"",vatNumber:"",address:"",city:"",phone:""}} onSuccess={(lic)=>{setLicense(lic);setStep("setCredentials");}} onBack={()=>setStep("register")}/>;
+  if(step==="setCredentials")return<SetCredentials license={license} onDone={()=>setStep("pendingApproval")}/>;
+  if(step==="pendingApproval")return<PendingApprovalScreen license={license} onApproved={()=>setStep("clientLogin")}/>;
+  if(step==="clientLogin")return<ClientLogin license={license} onSuccess={()=>setStep("login")} onForgotPassword={()=>setStep("forgotPassword")}/>;
+  if(step==="forgotPassword")return<ForgotPassword onBack={()=>setStep("clientLogin")} onReset={()=>setStep("clientLogin")}/>;
   if(step==="login"||!currentUser)return<RoleLogin license={license} onLogin={(user)=>{setCurrentUser(user);setStep("app");if(user.role==="Cashier")setScreen("pos");}}/>;
   return(
     <div style={{fontFamily:"'Plus Jakarta Sans','Tajawal',sans-serif",background:C.bg,height:"100vh",display:"flex",flexDirection:"column",overflow:"hidden",fontSize:`${uiScale}%`}}>
