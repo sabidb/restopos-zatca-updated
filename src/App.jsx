@@ -300,6 +300,7 @@ function SetCredentials({license,onDone}){
           <button onClick={handleSave} disabled={loading} style={{width:"100%",marginTop:18,padding:14,background:loading?"#444":"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:12,fontSize:15,fontWeight:800,cursor:loading?"not-allowed":"pointer",fontFamily:"inherit"}}>
             {loading?"Saving…":"✓ Save & Submit for Approval"}
           </button>
+          <button onClick={()=>window.dispatchEvent(new Event("ownerLogin"))} style={{marginTop:8,background:"none",border:"none",color:"rgba(255,255,255,0.2)",fontSize:11,cursor:"pointer",fontFamily:"inherit"}}>⚙ Owner</button>
         </div>
       </div>
     </div>
@@ -374,7 +375,8 @@ function PendingApprovalScreen({license,onApproved}){
         <button onClick={handleManualCheck} disabled={checking} style={{width:"100%",padding:13,background:checking?"#333":"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:12,fontSize:14,fontWeight:700,cursor:checking?"not-allowed":"pointer",fontFamily:"inherit"}}>
           {checking?"Checking…":"🔄 Check Approval Status"}
         </button>
-        <div style={{marginTop:12,fontSize:11,color:"rgba(255,255,255,0.2)"}}>Auto-checks every 15 seconds</div>
+        <button onClick={()=>window.dispatchEvent(new Event("ownerLogin"))} style={{marginTop:10,background:"none",border:"none",color:"rgba(255,255,255,0.2)",fontSize:11,cursor:"pointer",fontFamily:"inherit",display:"block",width:"100%",textAlign:"center"}}>⚙ Owner</button>
+        <div style={{marginTop:8,fontSize:11,color:"rgba(255,255,255,0.2)"}}>Auto-checks every 15 seconds</div>
       </div>
     </div>
   );
@@ -558,6 +560,7 @@ function ForgotPassword({onBack,onReset}){
             </>
           )}
           <button onClick={onBack} style={{width:"100%",marginTop:10,padding:10,background:"transparent",color:"rgba(255,255,255,0.35)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:10,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>← Back to Login</button>
+          <button onClick={()=>window.dispatchEvent(new Event("ownerLogin"))} style={{width:"100%",marginTop:8,background:"none",border:"none",color:"rgba(255,255,255,0.2)",fontSize:11,cursor:"pointer",fontFamily:"inherit",padding:"4px 0"}}>⚙ Owner</button>
         </div>
       </div>
     </div>
@@ -704,6 +707,7 @@ function BusinessRegistration({onNext}){
           </div>
           {error&&<div style={{marginTop:14,padding:"10px 14px",background:"rgba(217,64,64,0.2)",border:"1px solid rgba(217,64,64,0.4)",borderRadius:8,fontSize:13,color:"#ff8080"}}>{error}</div>}
           <button onClick={handleNext} style={{width:"100%",marginTop:20,padding:14,background:"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:12,fontSize:15,fontWeight:800,cursor:"pointer",fontFamily:"inherit"}}>Next: Enter License Key →</button>
+          <button onClick={()=>window.dispatchEvent(new Event("ownerLogin"))} style={{width:"100%",marginTop:8,background:"none",border:"none",color:"rgba(255,255,255,0.2)",fontSize:11,cursor:"pointer",fontFamily:"inherit",padding:"4px 0"}}>⚙ Owner</button>
         </div>
       </div>
     </div>
@@ -757,6 +761,7 @@ function LicenseVerification({businessData,onSuccess,onBack}){
             {loading?"Verifying…":"✓ Activate License"}
           </button>
           <button onClick={onBack} style={{width:"100%",marginTop:10,padding:12,background:"transparent",color:"rgba(255,255,255,0.4)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:12,fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>← Back</button>
+          <button onClick={()=>window.dispatchEvent(new Event("ownerLogin"))} style={{width:"100%",marginTop:8,background:"none",border:"none",color:"rgba(255,255,255,0.2)",fontSize:11,cursor:"pointer",fontFamily:"inherit",padding:"4px 0"}}>⚙ Owner</button>
         </div>
       </div>
     </div>
