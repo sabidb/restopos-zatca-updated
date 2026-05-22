@@ -1370,6 +1370,11 @@ function Transactions({sales,setSales,license}){
       <ZATCAInvoiceHistory/>
     </Card>}
     {tab==="saved"&&(()=>{const savedInvoices=JSON.parse(localStorage.getItem("restopos_saved_invoices")||"[]");return savedInvoices.length===0?<Card><div style={{textAlign:"center",padding:"40px 0",color:C.textMid}}><div style={{fontSize:40,marginBottom:12}}>💾</div><div style={{fontSize:15,fontWeight:700,marginBottom:6}}>No Saved Invoices</div><div style={{fontSize:13}}>Click "Save Invoice" on any receipt to save it here without printing.</div></div></Card>:<Card><div style={{fontSize:14,fontWeight:700,marginBottom:16}}>💾 Saved Invoices ({savedInvoices.length})</div><DataTable headers={["Invoice","Date","Time","Type","Payment","Total","ZATCA #"]} rows={savedInvoices.slice(0,100).map(s=>[<span style={{fontFamily:"monospace",fontSize:12,color:C.primary,fontWeight:700}}>{s.id}</span>,s.date,s.time,s.type,<Badge color={C.info} bg={C.infoLight}>{s.payMethod}</Badge>,<strong style={{color:C.primary}}>{fmtSAR(s.total)}</strong>,s.zatcaInvoiceNumber?<span style={{fontFamily:"monospace",fontSize:10,color:C.zatca}}>{s.zatcaInvoiceNumber}</span>:<span style={{color:C.textLight}}>—</span>])}/></Card>;})()}
+  </div>);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ACCOUNTS
 // ═══════════════════════════════════════════════════════════════════
 function Accounts({sales,items}){
   const [period,setPeriod]=useState("today");const now=new Date();
@@ -1608,18 +1613,30 @@ function SupportTicketsTab(){
   return(
     <div style={{display:"grid",gap:12}}>
       {tickets.map(t=>(
-        <DCard key={t.id} style={{borderLeft:`4px solid ${priorityColor[t.priority]||DS.sub}`}}>
+        <DCard key={t.id} style={{borderLeft:`4px solid ${t.requestType==="plan_upgrade"?"#F0A500":priorityColor[t.priority]||DS.sub}`}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
             <div>
+              {t.requestType==="plan_upgrade"&&<div style={{fontSize:10,fontWeight:800,color:"#F0A500",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:4}}>⬆️ Plan Upgrade Request · {SUBSCRIPTION_PLANS[t.fromPlan]?.name||t.fromPlan} → {SUBSCRIPTION_PLANS[t.toPlan]?.name||t.toPlan}</div>}
               <div style={{fontSize:14,fontWeight:700,color:DS.text}}>{t.name} <span style={{fontSize:11,color:DS.sub}}>· {t.businessName||"Unknown"}</span></div>
               <div style={{fontSize:11,color:DS.sub,marginTop:2}}>{t.phone}{t.email?` · ${t.email}`:""} · {t.submittedAt?.slice(0,16).replace("T"," ")}</div>
             </div>
-            <span style={{padding:"3px 10px",borderRadius:20,fontSize:10,fontWeight:700,background:`${priorityColor[t.priority]||DS.sub}25`,color:priorityColor[t.priority]||DS.sub,border:`1px solid ${priorityColor[t.priority]||DS.sub}44`,flexShrink:0}}>{t.priority}</span>
+            <span style={{padding:"3px 10px",borderRadius:20,fontSize:10,fontWeight:700,background:`${t.requestType==="plan_upgrade"?"#F0A500":priorityColor[t.priority]||DS.sub}25`,color:t.requestType==="plan_upgrade"?"#F0A500":priorityColor[t.priority]||DS.sub,border:`1px solid ${t.requestType==="plan_upgrade"?"#F0A500":priorityColor[t.priority]||DS.sub}44`,flexShrink:0}}>{t.requestType==="plan_upgrade"?"Upgrade":""+t.priority}</span>
           </div>
           <div style={{background:"rgba(255,255,255,0.04)",borderRadius:8,padding:"10px 12px",fontSize:12,color:DS.text,lineHeight:1.6}}>{t.issue}</div>
           {t.licenseKey&&<div style={{marginTop:8,fontSize:10,color:DS.sub,fontFamily:"monospace"}}>License: {t.licenseKey} · VAT: {t.vatNumber||"—"}</div>}
           <div style={{display:"flex",gap:8,marginTop:10}}>
             <button onClick={async()=>{await updateDoc(doc(db,"support_tickets",t.id),{status:"resolved",resolvedAt:new Date().toISOString()});setTickets(prev=>prev.map(x=>x.id===t.id?{...x,status:"resolved"}:x));}} style={{padding:"5px 14px",background:"rgba(16,185,129,0.15)",border:"1px solid rgba(16,185,129,0.3)",borderRadius:6,color:"#10b981",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>✓ Mark Resolved</button>
+            {t.requestType==="plan_upgrade"&&t.toPlan&&(
+              <button onClick={async()=>{
+                const clientSnap=await getDocs(query(collection(db,"pending_activations"),where("licenseKey","==",t.licenseKey)));
+                if(clientSnap.empty)return alert("Client not found in activations.");
+                const clientDoc=clientSnap.docs[0];
+                await updateDoc(doc(db,"pending_activations",clientDoc.id),{subscriptionPlan:t.toPlan,planUpdatedAt:new Date().toISOString()});
+                await updateDoc(doc(db,"support_tickets",t.id),{status:"resolved",resolvedAt:new Date().toISOString()});
+                setTickets(prev=>prev.map(x=>x.id===t.id?{...x,status:"resolved"}:x));
+                alert(`✅ Plan upgraded to ${SUBSCRIPTION_PLANS[t.toPlan]?.name} for ${t.businessName}!`);
+              }} style={{padding:"5px 14px",background:"rgba(240,165,0,0.15)",border:"1px solid rgba(240,165,0,0.35)",borderRadius:6,color:"#F0A500",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>⬆️ Apply Upgrade Now</button>
+            )}
             <a href={`https://wa.me/${t.phone?.replace(/\D/g,"")}`} target="_blank" rel="noreferrer" style={{padding:"5px 14px",background:"rgba(37,211,102,0.15)",border:"1px solid rgba(37,211,102,0.3)",borderRadius:6,color:"#25d366",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit",textDecoration:"none"}}>💬 WhatsApp</a>
             {t.status==="resolved"&&<span style={{fontSize:11,color:"#10b981",fontWeight:700,alignSelf:"center"}}>✓ Resolved</span>}
           </div>
@@ -2483,7 +2500,27 @@ function Help(){
     }catch(e){alert("Failed to submit: "+e.message);}
     setLiveSending(false);
   }
-  const sections=[["guide","🚀","Guide"],["zatca","⬛","ZATCA"],["ai","🤖","AI Help"],["live","🆘","Live Help"],["support","📞","Support"]];
+  const [upgradeSent,setUpgradeSent]=useState(false);const [upgradeLoading,setUpgradeLoading]=useState(false);const [selectedPlan,setSelectedPlan]=useState("");
+  async function submitUpgradeRequest(){
+    if(!selectedPlan)return alert("Please select a plan to upgrade to.");
+    setUpgradeLoading(true);
+    try{
+      const license=LS.get("restopos_license_v2")||{};
+      const currentPlan=license.subscriptionPlan||"basic";
+      await addDoc(collection(db,"support_tickets"),{
+        name:license.businessName||"Unknown",phone:license.phone||"—",email:"",
+        issue:`PLAN UPGRADE REQUEST\nFrom: ${SUBSCRIPTION_PLANS[currentPlan]?.name||"Basic"}\nTo: ${SUBSCRIPTION_PLANS[selectedPlan]?.name}\nPrice: SAR ${SUBSCRIPTION_PLANS[selectedPlan]?.price}/mo\nBusiness: ${license.businessName}\nLicense: ${license.licenseKey}\nVAT: ${license.vatNumber}`,
+        priority:"Urgent",businessName:license.businessName||"Unknown",
+        licenseKey:license.licenseKey||"",vatNumber:license.vatNumber||"",
+        submittedAt:new Date().toISOString(),status:"open",source:"upgrade-request",
+        requestType:"plan_upgrade",fromPlan:currentPlan,toPlan:selectedPlan
+      });
+      setUpgradeSent(true);
+      logActivity("UPGRADE_REQUEST",{after:{from:currentPlan,to:selectedPlan}},"System");
+    }catch(e){alert("Failed to submit: "+e.message);}
+    setUpgradeLoading(false);
+  }
+  const sections=[["guide","🚀","Guide"],["zatca","⬛","ZATCA"],["ai","🤖","AI Help"],["upgrade","⬆️","Upgrade"],["live","🆘","Live Help"],["support","📞","Support"]];
   return(<div style={{display:"flex",gap:20}}>
     <div style={{width:160,flexShrink:0}}><Card style={{padding:8}}>{sections.map(([id,icon,label])=><button key={id} onClick={()=>setTab(id)} style={{width:"100%",display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:tab===id?C.primaryLight:"transparent",color:tab===id?C.primary:C.textMid,border:"none",borderRadius:8,cursor:"pointer",fontFamily:"inherit",fontSize:13,fontWeight:tab===id?700:500,textAlign:"left",marginBottom:2}}><span>{icon}</span><span>{label}</span></button>)}</Card></div>
     <div style={{flex:1}}>
@@ -2500,6 +2537,102 @@ function Help(){
           <button onClick={sendMessage} disabled={aiLoading||!aiInput.trim()} style={{padding:"11px 22px",background:aiLoading||!aiInput.trim()?"#ccc":"linear-gradient(135deg,#6366f1,#4f46e5)",color:"#fff",border:"none",borderRadius:12,cursor:aiLoading||!aiInput.trim()?"not-allowed":"pointer",fontSize:13,fontWeight:700,fontFamily:"inherit"}}>{aiLoading?"...":"Send ↑"}</button>
         </div>
       </Card>}
+      {tab==="upgrade"&&(()=>{
+        const license=LS.get("restopos_license_v2")||{};
+        const currentPlan=license.subscriptionPlan||"basic";
+        const currentPlanDef=SUBSCRIPTION_PLANS[currentPlan];
+        return(
+          <div style={{display:"flex",flexDirection:"column",gap:16}}>
+            {/* Current plan banner */}
+            <Card style={{background:`linear-gradient(135deg,${currentPlanDef.color}18,${currentPlanDef.color}08)`,border:`2px solid ${currentPlanDef.color}44`}}>
+              <div style={{display:"flex",alignItems:"center",gap:14}}>
+                <div style={{width:48,height:48,borderRadius:14,background:currentPlanDef.color+"22",border:`2px solid ${currentPlanDef.color}44`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:24,flexShrink:0}}>⭐</div>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:11,fontWeight:700,color:currentPlanDef.color,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:2}}>Current Plan</div>
+                  <div style={{fontSize:20,fontWeight:900,color:currentPlanDef.color}}>{currentPlanDef.name}</div>
+                  <div style={{fontSize:12,color:C.textMid,marginTop:2}}>SAR {currentPlanDef.price}/month · {license.businessName||"—"}</div>
+                </div>
+                <div style={{textAlign:"right"}}>
+                  <div style={{fontSize:11,color:C.textLight}}>License</div>
+                  <div style={{fontSize:12,fontWeight:700,fontFamily:"monospace",color:C.text}}>{license.licenseKey||"—"}</div>
+                </div>
+              </div>
+            </Card>
+
+            {upgradeSent?(
+              <Card style={{textAlign:"center",padding:"40px 20px"}}>
+                <div style={{fontSize:48,marginBottom:12}}>🎉</div>
+                <div style={{fontSize:18,fontWeight:800,color:C.success,marginBottom:8}}>Upgrade Request Sent!</div>
+                <div style={{fontSize:13,color:C.textMid,lineHeight:1.7,marginBottom:20}}>
+                  We've received your request to upgrade to <strong style={{color:C.primary}}>{SUBSCRIPTION_PLANS[selectedPlan]?.name}</strong>.<br/>
+                  We'll contact you shortly to process the upgrade and payment.
+                </div>
+                <div style={{display:"flex",gap:10,justifyContent:"center",flexWrap:"wrap"}}>
+                  <a href="https://wa.me/966500000000" target="_blank" rel="noreferrer" style={{padding:"10px 20px",background:"#25d366",color:"#fff",borderRadius:10,fontWeight:700,fontSize:13,textDecoration:"none",display:"inline-flex",alignItems:"center",gap:6}}>💬 WhatsApp Us</a>
+                  <button onClick={()=>{setUpgradeSent(false);setSelectedPlan("");}} style={{padding:"10px 20px",background:C.bg,border:`1px solid ${C.border}`,color:C.text,borderRadius:10,fontWeight:700,fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>Back to Plans</button>
+                </div>
+              </Card>
+            ):(
+              <>
+                {/* Plan cards */}
+                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(240px,1fr))",gap:14}}>
+                  {Object.values(SUBSCRIPTION_PLANS).map(plan=>{
+                    const isCurrent=plan.id===currentPlan;
+                    const isSelected=plan.id===selectedPlan;
+                    const isDowngrade=Object.values(SUBSCRIPTION_PLANS).indexOf(plan)<Object.values(SUBSCRIPTION_PLANS).indexOf(currentPlanDef);
+                    return(
+                      <div key={plan.id} onClick={()=>!isCurrent&&!isDowngrade&&setSelectedPlan(plan.id===selectedPlan?"":plan.id)}
+                        style={{border:`2px solid ${isSelected?plan.color:isCurrent?plan.color+"66":C.border}`,borderRadius:16,padding:20,cursor:isCurrent||isDowngrade?"default":"pointer",background:isSelected?plan.color+"12":isCurrent?plan.color+"08":"#fff",transition:"all 0.15s",opacity:isDowngrade?0.45:1}}>
+                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:12}}>
+                          <div>
+                            <div style={{fontSize:16,fontWeight:900,color:plan.color}}>{plan.name}</div>
+                            <div style={{fontSize:11,color:C.textLight,marginTop:2}}>{plan.nameAr}</div>
+                          </div>
+                          {isCurrent&&<span style={{fontSize:10,padding:"3px 8px",borderRadius:20,background:plan.color+"22",color:plan.color,fontWeight:700,border:`1px solid ${plan.color}44`}}>Current</span>}
+                          {isSelected&&<span style={{fontSize:10,padding:"3px 8px",borderRadius:20,background:plan.color,color:"#fff",fontWeight:700}}>✓ Selected</span>}
+                          {isDowngrade&&<span style={{fontSize:10,padding:"3px 8px",borderRadius:20,background:C.bg,color:C.textLight,fontWeight:700,border:`1px solid ${C.border}`}}>Lower Plan</span>}
+                        </div>
+                        <div style={{fontSize:26,fontWeight:900,color:plan.color,marginBottom:14}}>SAR {plan.price}<span style={{fontSize:13,fontWeight:500,color:C.textLight}}>/mo</span></div>
+                        <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                          {plan.features.slice(0,5).map((f,i)=>(
+                            <div key={i} style={{display:"flex",gap:8,alignItems:"flex-start",fontSize:12,color:C.textMid}}>
+                              <span style={{color:plan.color,flexShrink:0,marginTop:1}}>✓</span>{f}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Contact & submit */}
+                <Card style={{background:"linear-gradient(135deg,#F0F9FF,#EFF6FF)",border:`1px solid ${C.info}33`}}>
+                  <div style={{fontSize:14,fontWeight:700,marginBottom:12,color:C.text}}>📞 How Upgrading Works</div>
+                  <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:16}}>
+                    {[["1","Select your new plan above","📋"],["2","Click Request Upgrade — we're notified instantly","📡"],["3","We contact you to arrange payment","💳"],["4","Plan activated within minutes","⚡"]].map(([n,t,ic])=>(
+                      <div key={n} style={{display:"flex",gap:10,alignItems:"center",fontSize:13,color:C.textMid}}>
+                        <div style={{width:24,height:24,borderRadius:"50%",background:C.primary,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:800,flexShrink:0}}>{n}</div>
+                        <span>{ic} {t}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"center"}}>
+                    <button onClick={submitUpgradeRequest} disabled={upgradeLoading||!selectedPlan}
+                      style={{padding:"12px 24px",background:selectedPlan?`linear-gradient(135deg,${SUBSCRIPTION_PLANS[selectedPlan]?.color||C.primary},${SUBSCRIPTION_PLANS[selectedPlan]?.color||C.primary}cc)`:"#ccc",color:"#fff",border:"none",borderRadius:10,fontWeight:800,fontSize:14,cursor:selectedPlan&&!upgradeLoading?"pointer":"not-allowed",fontFamily:"inherit",flex:1,minWidth:180}}>
+                      {upgradeLoading?"Sending…":selectedPlan?`⬆️ Request Upgrade to ${SUBSCRIPTION_PLANS[selectedPlan]?.name}`:"Select a plan above"}
+                    </button>
+                    <a href="https://wa.me/966500000000" target="_blank" rel="noreferrer"
+                      style={{padding:"12px 20px",background:"#25d366",color:"#fff",borderRadius:10,fontWeight:700,fontSize:13,textDecoration:"none",display:"inline-flex",alignItems:"center",gap:6,flexShrink:0}}>
+                      💬 WhatsApp
+                    </a>
+                  </div>
+                  {!selectedPlan&&<div style={{marginTop:10,fontSize:12,color:C.textLight}}>👆 Click a plan card above to select it, then hit Request Upgrade.</div>}
+                </Card>
+              </>
+            )}
+          </div>
+        );
+      })()}
       {tab==="live"&&<Card>
         <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:20}}>
           <div style={{width:44,height:44,background:"linear-gradient(135deg,#D94040,#ff6b6b)",borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22}}>🆘</div>
@@ -3889,7 +4022,7 @@ export default function App(){
   function setSales(v){_setSales(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_sales",n.slice(-500));return n;});}
   // allSales merges active sales + permanently archived closed-day sales for full history queries
   const archivedSalesRaw=LS.get("restopos_archived_sales")||[];
-  const allSales=useMemo(()=>{const activeIds=new Set(sales.map(s=>s.id));const archived=archivedSalesRaw.filter(s=>!activeIds.has(s.id));return[...sales,...archived].sort((a,b)=>b.date.localeCompare(a.date)||b.id.localeCompare(a.id));},[sales,archivedSalesRaw.length]);}
+  const allSales=useMemo(()=>{const activeIds=new Set(sales.map(s=>s.id));const archived=archivedSalesRaw.filter(s=>!activeIds.has(s.id));return[...sales,...archived].sort((a,b)=>b.date.localeCompare(a.date)||b.id.localeCompare(a.id));},[sales,archivedSalesRaw.length]);
   function setItems(v){_setItems(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_items",n);if(n.length!==p.length)logActivity(n.length>p.length?"ITEM_ADDED":"ITEM_DELETED",{after:{itemCount:n.length}},currentUser?.role||"System");return n;});}
   function setTables(v){_setTables(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_tables",n);return n;});}
   function setUsers(v){_setUsers(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_users",n);if(n.length!==p.length)logActivity(n.length>p.length?"USER_ADDED":"USER_DELETED",{after:{userCount:n.length}},currentUser?.role||"System");return n;});}
