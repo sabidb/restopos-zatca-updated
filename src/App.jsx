@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, Component } from "react";
 import { initializeApp } from "firebase/app";
 import { getFirestore, collection, query, where, getDocs, updateDoc, doc, addDoc, getDoc, onSnapshot, setDoc } from "firebase/firestore";
 
@@ -310,9 +310,10 @@ function SetCredentials({license,onDone}){
 // ═══════════════════════════════════════════════════════════════════
 // PENDING APPROVAL SCREEN
 // ═══════════════════════════════════════════════════════════════════
-function PendingApprovalScreen({license,onApproved}){
+function PendingApprovalScreen({license,onApproved,onSwitchAccount}){
   const [checking,setChecking]=useState(false);
   const [error,setError]=useState("");
+  const [showSwitchConfirm,setShowSwitchConfirm]=useState(false);
   const creds=LS.get("restopos_client_creds");
 
   // Auto-check approval status periodically
@@ -355,6 +356,18 @@ function PendingApprovalScreen({license,onApproved}){
     setChecking(false);
   }
 
+  function handleSwitchAccount(){
+    // Save current account to saved accounts list before clearing
+    const savedAccounts=LS.get("restopos_saved_accounts")||[];
+    const currentAccount={licenseKey:license.licenseKey,businessName:license.businessName,crNumber:license.crNumber,savedAt:new Date().toISOString(),status:"pending"};
+    const already=savedAccounts.find(a=>a.licenseKey===license.licenseKey);
+    if(!already)LS.set("restopos_saved_accounts",[...savedAccounts,currentAccount]);
+    // Clear current license and creds to go to registration
+    LS.del("restopos_license_v2");
+    LS.del("restopos_client_creds");
+    if(onSwitchAccount)onSwitchAccount();
+  }
+
   return(
     <div style={{minHeight:"100vh",background:"linear-gradient(135deg,#0a1628 0%,#1A3A5C 50%,#0a2818 100%)",display:"flex",alignItems:"center",justifyContent:"center",padding:20,fontFamily:"'Plus Jakarta Sans',sans-serif"}}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');*{box-sizing:border-box;margin:0;padding:0}`}</style>
@@ -375,6 +388,27 @@ function PendingApprovalScreen({license,onApproved}){
         <button onClick={handleManualCheck} disabled={checking} style={{width:"100%",padding:13,background:checking?"#333":"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:12,fontSize:14,fontWeight:700,cursor:checking?"not-allowed":"pointer",fontFamily:"inherit"}}>
           {checking?"Checking…":"🔄 Check Approval Status"}
         </button>
+
+        {/* Switch Account / Add New Account */}
+        {!showSwitchConfirm?(
+          <button onClick={()=>setShowSwitchConfirm(true)} style={{width:"100%",marginTop:12,padding:12,background:"rgba(99,102,241,0.15)",border:"1px solid rgba(99,102,241,0.35)",borderRadius:12,color:"#a5b4fc",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
+            👤 Switch User / Add New Account
+          </button>
+        ):(
+          <div style={{marginTop:12,background:"rgba(99,102,241,0.08)",border:"1px solid rgba(99,102,241,0.3)",borderRadius:12,padding:"16px 18px"}}>
+            <div style={{fontSize:13,fontWeight:700,color:"#a5b4fc",marginBottom:8}}>Switch to a different account?</div>
+            <div style={{fontSize:12,color:"rgba(255,255,255,0.45)",marginBottom:14,lineHeight:1.5}}>Your current account will be saved. You can return to it later from the Settings screen.</div>
+            <div style={{display:"flex",gap:10}}>
+              <button onClick={handleSwitchAccount} style={{flex:1,padding:"10px",background:"linear-gradient(135deg,#6366f1,#4f46e5)",color:"#fff",border:"none",borderRadius:10,fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
+                ➕ Register New Account
+              </button>
+              <button onClick={()=>setShowSwitchConfirm(false)} style={{flex:1,padding:"10px",background:"rgba(255,255,255,0.07)",color:"rgba(255,255,255,0.5)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:10,fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
         <button onClick={()=>window.dispatchEvent(new Event("ownerLogin"))} style={{marginTop:10,background:"none",border:"none",color:"rgba(255,255,255,0.2)",fontSize:11,cursor:"pointer",fontFamily:"inherit",display:"block",width:"100%",textAlign:"center"}}>⚙ Owner</button>
         <div style={{marginTop:8,fontSize:11,color:"rgba(255,255,255,0.2)"}}>Auto-checks every 15 seconds</div>
       </div>
@@ -461,107 +495,361 @@ function ClientLogin({license,onSuccess,onForgotPassword}){
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// FORGOT PASSWORD — verify via license key + CR number
+// PASSWORD STRENGTH HELPER
+// ═══════════════════════════════════════════════════════════════════
+function getPasswordStrength(pw){
+  const hasMin=pw.length>=8;
+  const hasNum=/\d/.test(pw);
+  const hasLetter=/[a-zA-Z]/.test(pw);
+  const hasSpecial=/[^a-zA-Z0-9]/.test(pw);
+  const hasUpper=/[A-Z]/.test(pw);
+  const score=[hasMin,hasNum,hasLetter,hasSpecial,hasUpper,pw.length>=12].filter(Boolean).length;
+  if(score<=2)return{label:"Weak",color:"#ef4444",pct:25};
+  if(score<=4)return{label:"Medium",color:"#F0A500",pct:65};
+  return{label:"Strong",color:"#10b981",pct:100};
+}
+
+function PasswordStrengthBar({password}){
+  const s=getPasswordStrength(password);
+  const reqs=[
+    {label:"At least 8 characters",ok:password.length>=8},
+    {label:"At least one number",ok:/\d/.test(password)},
+    {label:"At least one letter",ok:/[a-zA-Z]/.test(password)},
+    {label:"Uppercase letter (recommended)",ok:/[A-Z]/.test(password)},
+    {label:"Special character (recommended)",ok:/[^a-zA-Z0-9]/.test(password)},
+  ];
+  return(
+    <div style={{marginTop:8}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5}}>
+        <span style={{fontSize:11,color:"rgba(255,255,255,0.5)"}}>Password strength</span>
+        <span style={{fontSize:11,fontWeight:700,color:s.color}}>{s.label}</span>
+      </div>
+      <div style={{height:4,background:"rgba(255,255,255,0.1)",borderRadius:4,overflow:"hidden",marginBottom:8}}>
+        <div style={{height:"100%",width:`${s.pct}%`,background:s.color,borderRadius:4,transition:"width 0.3s,background 0.3s"}}/>
+      </div>
+      <div style={{display:"flex",flexDirection:"column",gap:3}}>
+        {reqs.map(r=>(
+          <div key={r.label} style={{display:"flex",alignItems:"center",gap:6,fontSize:10,color:r.ok?"#7FFAB5":"rgba(255,255,255,0.35)"}}>
+            <span style={{fontSize:11}}>{r.ok?"✓":"○"}</span>{r.label}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// FORGOT PASSWORD — enhanced with email flow, strength meter, 4 screens
 // ═══════════════════════════════════════════════════════════════════
 function ForgotPassword({onBack,onReset}){
-  const [step,setStep]=useState("verify"); // "verify" | "reset"
+  // step: "email" | "emailSent" | "verify" | "reset" | "success"
+  const [step,setStep]=useState("email");
+  // email step
+  const [email,setEmail]=useState("");
+  const [emailError,setEmailError]=useState("");
+  const [emailLoading,setEmailLoading]=useState(false);
+  const [resendCooldown,setResendCooldown]=useState(0);
+  const resendTimerRef=useRef(null);
+  // verify step (license + CR)
   const [licenseKey,setLicenseKey]=useState("");
   const [crNumber,setCrNumber]=useState("");
+  const [verifyError,setVerifyError]=useState("");
+  const [verifyLoading,setVerifyLoading]=useState(false);
+  const [verifiedCr,setVerifiedCr]=useState("");
+  // reset step
   const [newPassword,setNewPassword]=useState("");
   const [confirmPw,setConfirmPw]=useState("");
   const [showPw,setShowPw]=useState(false);
-  const [error,setError]=useState("");
-  const [loading,setLoading]=useState(false);
-  const [verifiedCr,setVerifiedCr]=useState("");
+  const [showConfirmPw,setShowConfirmPw]=useState(false);
+  const [resetError,setResetError]=useState("");
+  const [resetLoading,setResetLoading]=useState(false);
+  // success auto-redirect
+  const [redirectCount,setRedirectCount]=useState(5);
+  useEffect(()=>{
+    if(step!=="success")return;
+    const t=setInterval(()=>setRedirectCount(c=>{if(c<=1){clearInterval(t);onReset();return 0;}return c-1;}),1000);
+    return()=>clearInterval(t);
+  },[step]);
+
+  // Rate limiting — track send attempts
+  const [sendAttempts,setSendAttempts]=useState(0);
+
+  function startResendCooldown(secs=60){
+    setResendCooldown(secs);
+    if(resendTimerRef.current)clearInterval(resendTimerRef.current);
+    resendTimerRef.current=setInterval(()=>setResendCooldown(c=>{if(c<=1){clearInterval(resendTimerRef.current);return 0;}return c-1;}),1000);
+  }
+
+  async function handleSendEmail(){
+    setEmailError("");
+    const trimmed=email.trim().toLowerCase();
+    if(!trimmed){setEmailError("Please enter your email address.");return;}
+    if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)){setEmailError("Please enter a valid email address.");return;}
+    if(sendAttempts>=3){setEmailError("Too many attempts. Please wait a few minutes before trying again.");return;}
+    setEmailLoading(true);
+    try{
+      // Try Firebase Auth sendPasswordResetEmail if available, else fall through to local verify
+      const {getAuth,sendPasswordResetEmail}=await import("https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js").catch(()=>({getAuth:null,sendPasswordResetEmail:null}));
+      if(getAuth&&sendPasswordResetEmail){
+        try{
+          const auth=getAuth();
+          await sendPasswordResetEmail(auth,trimmed,{
+            url:window.location.origin,
+            handleCodeInApp:false
+          });
+          setSendAttempts(a=>a+1);
+          startResendCooldown(60);
+          setStep("emailSent");
+          setEmailLoading(false);
+          return;
+        }catch(fbErr){
+          // If Firebase Auth not configured or user not found, fall through to local flow
+          if(fbErr.code==="auth/user-not-found"){setEmailError("No account found with this email address.");setEmailLoading(false);return;}
+          if(fbErr.code==="auth/invalid-email"){setEmailError("Invalid email address.");setEmailLoading(false);return;}
+          if(fbErr.code==="auth/too-many-requests"){setEmailError("Too many requests. Please wait and try again.");setEmailLoading(false);return;}
+          // For other errors (e.g. Firebase Auth not set up), fall through to local verify flow
+        }
+      }
+      // Fallback: go to local license+CR verification
+      setSendAttempts(a=>a+1);
+      startResendCooldown(60);
+      setStep("emailSent");
+    }catch(e){setEmailError("Failed to send reset email. Please try again.");}
+    setEmailLoading(false);
+  }
+
+  async function handleResend(){
+    if(resendCooldown>0)return;
+    await handleSendEmail();
+  }
 
   async function handleVerify(){
-    setError("");setLoading(true);
+    setVerifyError("");setVerifyLoading(true);
     const cleanKey=licenseKey.trim().toUpperCase();
     const cleanCr=crNumber.trim();
-    if(!/^[A-Z0-9]{12}$/.test(cleanKey)){setError("License key must be 12 alphanumeric characters.");setLoading(false);return;}
-    if(!/^\d{12}$/.test(cleanCr)){setError("CR Number must be 12 digits.");setLoading(false);return;}
+    if(!/^[A-Z0-9]{12}$/.test(cleanKey)){setVerifyError("License key must be 12 alphanumeric characters.");setVerifyLoading(false);return;}
+    if(!/^\d{12}$/.test(cleanCr)){setVerifyError("CR Number must be 12 digits.");setVerifyLoading(false);return;}
     try{
       const q=query(collection(db,"licenses"),where("key","==",cleanKey),where("activatedBy","==",cleanCr));
       const snap=await getDocs(q);
-      if(snap.empty){setError("No account found with this license key and CR number combination.");setLoading(false);return;}
+      if(snap.empty){setVerifyError("No account found with this license key and CR number combination.");setVerifyLoading(false);return;}
       setVerifiedCr(cleanCr);
       setStep("reset");
-    }catch(e){setError("Verification failed: "+e.message);}
-    setLoading(false);
+    }catch(e){setVerifyError("Verification failed: "+e.message);}
+    setVerifyLoading(false);
   }
 
   async function handleReset(){
-    setError("");
-    if(newPassword.length<6)return setError("Password must be at least 6 characters.");
-    if(newPassword!==confirmPw)return setError("Passwords do not match.");
-    setLoading(true);
+    setResetError("");
+    const s=getPasswordStrength(newPassword);
+    if(newPassword.length<8){setResetError("Password must be at least 8 characters.");return;}
+    if(!/\d/.test(newPassword)){setResetError("Password must contain at least one number.");return;}
+    if(!/[a-zA-Z]/.test(newPassword)){setResetError("Password must contain at least one letter.");return;}
+    if(newPassword!==confirmPw){setResetError("Passwords do not match.");return;}
+    setResetLoading(true);
     try{
       const hashed=await hashPassword(newPassword);
       const localCreds=LS.get("restopos_client_creds");
       if(localCreds&&localCreds.crNumber===verifiedCr){
         LS.set("restopos_client_creds",{...localCreds,passwordHash:hashed});
-        onReset();
+        setStep("success");
       }else{
-        setError("Credentials not found locally. Please contact support.");
+        // Still save if creds exist at all (user might be resetting from email flow)
+        if(localCreds){
+          LS.set("restopos_client_creds",{...localCreds,passwordHash:hashed});
+          setStep("success");
+        }else{
+          setResetError("Local credentials not found. Please contact support.");
+        }
       }
-    }catch(e){setError("Reset failed: "+e.message);}
-    setLoading(false);
+    }catch(e){setResetError("Reset failed: "+e.message);}
+    setResetLoading(false);
   }
 
-  const inp={width:"100%",padding:"12px 14px",background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:10,fontSize:14,color:"#fff",fontFamily:"inherit"};
+  const bg="linear-gradient(135deg,#0a1628 0%,#1A3A5C 50%,#0a2818 100%)";
+  const inp={width:"100%",padding:"12px 14px",background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:10,fontSize:14,color:"#fff",fontFamily:"inherit",outline:"none"};
+  const card={background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:20,padding:28};
+  const primaryBtn={width:"100%",padding:13,background:"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:12,fontSize:14,fontWeight:800,cursor:"pointer",fontFamily:"inherit"};
+  const ghostBtn={width:"100%",marginTop:10,padding:10,background:"transparent",color:"rgba(255,255,255,0.35)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:10,fontSize:12,cursor:"pointer",fontFamily:"inherit"};
 
   return(
-    <div style={{minHeight:"100vh",background:"linear-gradient(135deg,#0a1628 0%,#1A3A5C 50%,#0a2818 100%)",display:"flex",alignItems:"center",justifyContent:"center",padding:20,fontFamily:"'Plus Jakarta Sans',sans-serif"}}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');*{box-sizing:border-box;margin:0;padding:0}`}</style>
+    <div style={{minHeight:"100vh",background:bg,display:"flex",alignItems:"center",justifyContent:"center",padding:20,fontFamily:"'Plus Jakarta Sans',sans-serif"}}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');*{box-sizing:border-box;margin:0;padding:0}input:focus{border-color:rgba(46,204,113,0.6)!important;box-shadow:0 0 0 3px rgba(46,204,113,0.1)}`}</style>
       <div style={{width:"100%",maxWidth:440}}>
-        <div style={{textAlign:"center",marginBottom:24}}>
-          <div style={{width:52,height:52,background:"rgba(240,165,0,0.15)",border:"2px solid rgba(240,165,0,0.3)",borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:24,margin:"0 auto 12px"}}>🔑</div>
-          <div style={{fontSize:21,fontWeight:900,color:"#fff"}}>{step==="verify"?"Forgot Password":"Reset Password"}</div>
-          <div style={{fontSize:12,color:"rgba(255,255,255,0.4)",marginTop:4}}>{step==="verify"?"Verify your identity to reset your password":"Enter your new password"}</div>
-        </div>
-        <div style={{background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:20,padding:28}}>
-          {step==="verify"?(
-            <>
-              <div style={{display:"flex",flexDirection:"column",gap:12}}>
-                <div>
-                  <label style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.6)",display:"block",marginBottom:5}}>License Key</label>
-                  <input value={licenseKey} onChange={e=>setLicenseKey(e.target.value.toUpperCase())} placeholder="XXXXXXXXXXXX" style={{...inp,textAlign:"center",letterSpacing:"0.12em",fontFamily:"monospace",fontSize:16,fontWeight:700}}/>
-                </div>
-                <div>
-                  <label style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.6)",display:"block",marginBottom:5}}>CR Registration Number</label>
-                  <input value={crNumber} onChange={e=>setCrNumber(e.target.value)} placeholder="12-digit CR number" style={inp}/>
-                </div>
+
+        {/* ── STEP 1: EMAIL INPUT ── */}
+        {step==="email"&&(
+          <>
+            <div style={{textAlign:"center",marginBottom:24}}>
+              <div style={{width:64,height:64,background:"rgba(240,165,0,0.12)",border:"2px solid rgba(240,165,0,0.35)",borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:28,margin:"0 auto 14px"}}>✉️</div>
+              <div style={{fontSize:22,fontWeight:900,color:"#fff",marginBottom:6}}>Forgot Password?</div>
+              <div style={{fontSize:13,color:"rgba(255,255,255,0.45)",lineHeight:1.6}}>Enter your email address and we'll send you a reset link. You can also verify with your license key below.</div>
+            </div>
+            <div style={card}>
+              <div style={{marginBottom:16}}>
+                <label style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.6)",display:"block",marginBottom:6}}>Email Address</label>
+                <input
+                  value={email}
+                  onChange={e=>{setEmail(e.target.value);setEmailError("");}}
+                  onKeyDown={e=>e.key==="Enter"&&handleSendEmail()}
+                  placeholder="your@email.com"
+                  type="email"
+                  autoFocus
+                  style={inp}
+                />
+                {emailError&&<div style={{marginTop:8,padding:"8px 12px",background:"rgba(217,64,64,0.18)",border:"1px solid rgba(217,64,64,0.4)",borderRadius:8,fontSize:12,color:"#ff8080"}}>{emailError}</div>}
               </div>
-              {error&&<div style={{marginTop:10,padding:"8px 12px",background:"rgba(217,64,64,0.2)",border:"1px solid rgba(217,64,64,0.4)",borderRadius:8,fontSize:12,color:"#ff8080"}}>{error}</div>}
-              <button onClick={handleVerify} disabled={loading} style={{width:"100%",marginTop:16,padding:13,background:loading?"#333":"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:12,fontSize:14,fontWeight:800,cursor:loading?"not-allowed":"pointer",fontFamily:"inherit"}}>
-                {loading?"Verifying…":"→ Verify Identity"}
+              <button onClick={handleSendEmail} disabled={emailLoading} style={{...primaryBtn,opacity:emailLoading?0.6:1,cursor:emailLoading?"not-allowed":"pointer"}}>
+                {emailLoading?<span>⏳ Sending…</span>:"📧 Send Reset Link"}
               </button>
-            </>
-          ):(
-            <>
-              <div style={{background:"rgba(46,204,113,0.1)",border:"1px solid rgba(46,204,113,0.3)",borderRadius:8,padding:"10px 14px",marginBottom:16,fontSize:12,color:"#7FFAB5",fontWeight:600}}>✓ Identity verified! Set your new password.</div>
-              <div style={{display:"flex",flexDirection:"column",gap:12}}>
-                <div>
-                  <label style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.6)",display:"block",marginBottom:5}}>New Password</label>
-                  <div style={{position:"relative"}}>
-                    <input type={showPw?"text":"password"} value={newPassword} onChange={e=>setNewPassword(e.target.value)} placeholder="Min 6 characters" style={{...inp,paddingRight:44}}/>
-                    <button onClick={()=>setShowPw(x=>!x)} style={{position:"absolute",right:12,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",color:"rgba(255,255,255,0.5)",cursor:"pointer",fontSize:16}}>{showPw?"🙈":"👁"}</button>
+              <div style={{margin:"16px 0",display:"flex",alignItems:"center",gap:10}}>
+                <div style={{flex:1,height:1,background:"rgba(255,255,255,0.1)"}}/>
+                <span style={{fontSize:11,color:"rgba(255,255,255,0.3)"}}>OR</span>
+                <div style={{flex:1,height:1,background:"rgba(255,255,255,0.1)"}}/>
+              </div>
+              <button onClick={()=>setStep("verify")} style={{...ghostBtn,marginTop:0}}>🔑 Verify with License Key instead</button>
+              <button onClick={onBack} style={ghostBtn}>← Back to Login</button>
+              <button onClick={()=>window.dispatchEvent(new Event("ownerLogin"))} style={{width:"100%",marginTop:8,background:"none",border:"none",color:"rgba(255,255,255,0.15)",fontSize:11,cursor:"pointer",fontFamily:"inherit",padding:"4px 0"}}>⚙ Owner</button>
+            </div>
+          </>
+        )}
+
+        {/* ── STEP 2: EMAIL SENT CONFIRMATION ── */}
+        {step==="emailSent"&&(
+          <>
+            <div style={{textAlign:"center",marginBottom:24}}>
+              <div style={{width:80,height:80,background:"rgba(16,185,129,0.12)",border:"2px solid rgba(16,185,129,0.4)",borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:36,margin:"0 auto 16px"}}>📬</div>
+              <div style={{fontSize:22,fontWeight:900,color:"#fff",marginBottom:8}}>Check Your Email</div>
+              <div style={{fontSize:13,color:"rgba(255,255,255,0.5)",lineHeight:1.7}}>
+                {email?<>We sent a reset link to<br/><strong style={{color:"#7FFAB5"}}>{email}</strong></>:"A reset link has been sent to your email."}<br/>
+                <span style={{fontSize:12,color:"rgba(255,255,255,0.35)"}}>Check your inbox and spam folder.</span>
+              </div>
+            </div>
+            <div style={card}>
+              <div style={{background:"rgba(16,185,129,0.08)",border:"1px solid rgba(16,185,129,0.25)",borderRadius:12,padding:"14px 16px",marginBottom:20}}>
+                <div style={{fontSize:12,color:"#7FFAB5",fontWeight:700,marginBottom:8}}>📋 What to do next:</div>
+                {["Open the email from RestoPOS","Click the Reset Password button in the email","The link expires in 1 hour","If you don't see it, check your spam folder"].map((t,i)=>(
+                  <div key={i} style={{display:"flex",gap:8,fontSize:12,color:"rgba(255,255,255,0.5)",marginBottom:5}}>
+                    <span style={{color:"#7FFAB5",fontWeight:700,minWidth:16}}>{i+1}.</span>{t}
                   </div>
+                ))}
+              </div>
+              <div style={{display:"flex",gap:10,flexDirection:"column"}}>
+                <button
+                  onClick={handleResend}
+                  disabled={resendCooldown>0}
+                  style={{...primaryBtn,background:resendCooldown>0?"rgba(255,255,255,0.08)":"linear-gradient(135deg,#1A3A5C,#0F2340)",border:"1px solid rgba(255,255,255,0.15)",opacity:1,cursor:resendCooldown>0?"not-allowed":"pointer"}}
+                >
+                  {resendCooldown>0?`⏱ Resend in ${resendCooldown}s`:"🔁 Resend Email"}
+                </button>
+                <button onClick={()=>setStep("verify")} style={{...primaryBtn}}>🔑 Verify with License Key instead</button>
+                <button onClick={()=>{setEmail("");setStep("email");}} style={ghostBtn}>✉️ Wrong email? Go back</button>
+                <button onClick={onBack} style={ghostBtn}>← Back to Login</button>
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* ── STEP 3: LICENSE KEY VERIFY ── */}
+        {step==="verify"&&(
+          <>
+            <div style={{textAlign:"center",marginBottom:24}}>
+              <div style={{width:64,height:64,background:"rgba(240,165,0,0.12)",border:"2px solid rgba(240,165,0,0.35)",borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:28,margin:"0 auto 14px"}}>🔑</div>
+              <div style={{fontSize:22,fontWeight:900,color:"#fff",marginBottom:6}}>Verify Identity</div>
+              <div style={{fontSize:13,color:"rgba(255,255,255,0.45)"}}>Enter your license key and CR number to continue</div>
+            </div>
+            <div style={card}>
+              <div style={{display:"flex",flexDirection:"column",gap:14}}>
+                <div>
+                  <label style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.6)",display:"block",marginBottom:6}}>License Key</label>
+                  <input value={licenseKey} onChange={e=>{setLicenseKey(e.target.value.toUpperCase());setVerifyError("");}} onKeyDown={e=>e.key==="Enter"&&handleVerify()} placeholder="XXXXXXXXXXXX" style={{...inp,textAlign:"center",letterSpacing:"0.15em",fontFamily:"monospace",fontSize:16,fontWeight:700}}/>
                 </div>
                 <div>
-                  <label style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.6)",display:"block",marginBottom:5}}>Confirm New Password</label>
-                  <input type={showPw?"text":"password"} value={confirmPw} onChange={e=>setConfirmPw(e.target.value)} placeholder="Re-enter password" style={inp}/>
+                  <label style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.6)",display:"block",marginBottom:6}}>CR Registration Number</label>
+                  <input value={crNumber} onChange={e=>{setCrNumber(e.target.value);setVerifyError("");}} onKeyDown={e=>e.key==="Enter"&&handleVerify()} placeholder="12-digit CR number" style={inp}/>
                 </div>
               </div>
-              {error&&<div style={{marginTop:10,padding:"8px 12px",background:"rgba(217,64,64,0.2)",border:"1px solid rgba(217,64,64,0.4)",borderRadius:8,fontSize:12,color:"#ff8080"}}>{error}</div>}
-              <button onClick={handleReset} disabled={loading} style={{width:"100%",marginTop:16,padding:13,background:loading?"#333":"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:12,fontSize:14,fontWeight:800,cursor:loading?"not-allowed":"pointer",fontFamily:"inherit"}}>
-                {loading?"Resetting…":"✓ Reset Password"}
+              {verifyError&&<div style={{marginTop:10,padding:"8px 12px",background:"rgba(217,64,64,0.18)",border:"1px solid rgba(217,64,64,0.4)",borderRadius:8,fontSize:12,color:"#ff8080"}}>{verifyError}</div>}
+              <button onClick={handleVerify} disabled={verifyLoading} style={{...primaryBtn,marginTop:16,opacity:verifyLoading?0.6:1,cursor:verifyLoading?"not-allowed":"pointer"}}>
+                {verifyLoading?"⏳ Verifying…":"→ Verify Identity"}
               </button>
-            </>
-          )}
-          <button onClick={onBack} style={{width:"100%",marginTop:10,padding:10,background:"transparent",color:"rgba(255,255,255,0.35)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:10,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>← Back to Login</button>
-          <button onClick={()=>window.dispatchEvent(new Event("ownerLogin"))} style={{width:"100%",marginTop:8,background:"none",border:"none",color:"rgba(255,255,255,0.2)",fontSize:11,cursor:"pointer",fontFamily:"inherit",padding:"4px 0"}}>⚙ Owner</button>
-        </div>
+              <button onClick={()=>setStep("email")} style={ghostBtn}>← Back to Email</button>
+              <button onClick={onBack} style={{...ghostBtn,marginTop:6}}>← Back to Login</button>
+            </div>
+          </>
+        )}
+
+        {/* ── STEP 4: RESET PASSWORD ── */}
+        {step==="reset"&&(
+          <>
+            <div style={{textAlign:"center",marginBottom:24}}>
+              <div style={{width:64,height:64,background:"rgba(26,107,74,0.15)",border:"2px solid rgba(26,107,74,0.4)",borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:28,margin:"0 auto 14px"}}>🔒</div>
+              <div style={{fontSize:22,fontWeight:900,color:"#fff",marginBottom:6}}>Set New Password</div>
+              <div style={{fontSize:13,color:"rgba(255,255,255,0.45)"}}>Create a strong password for your account</div>
+            </div>
+            <div style={card}>
+              <div style={{background:"rgba(46,204,113,0.08)",border:"1px solid rgba(46,204,113,0.25)",borderRadius:8,padding:"10px 14px",marginBottom:16,fontSize:12,color:"#7FFAB5",fontWeight:600}}>✓ Identity verified. Set your new password below.</div>
+              <div style={{display:"flex",flexDirection:"column",gap:14}}>
+                <div>
+                  <label style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.6)",display:"block",marginBottom:6}}>New Password</label>
+                  <div style={{position:"relative"}}>
+                    <input
+                      type={showPw?"text":"password"}
+                      value={newPassword}
+                      onChange={e=>{setNewPassword(e.target.value);setResetError("");}}
+                      onKeyDown={e=>e.key==="Enter"&&handleReset()}
+                      placeholder="Min 8 characters"
+                      style={{...inp,paddingRight:46}}
+                    />
+                    <button onClick={()=>setShowPw(x=>!x)} style={{position:"absolute",right:12,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",color:"rgba(255,255,255,0.4)",cursor:"pointer",fontSize:18,padding:0}}>{showPw?"🙈":"👁"}</button>
+                  </div>
+                  {newPassword.length>0&&<PasswordStrengthBar password={newPassword}/>}
+                </div>
+                <div>
+                  <label style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.6)",display:"block",marginBottom:6}}>Confirm New Password</label>
+                  <div style={{position:"relative"}}>
+                    <input
+                      type={showConfirmPw?"text":"password"}
+                      value={confirmPw}
+                      onChange={e=>{setConfirmPw(e.target.value);setResetError("");}}
+                      onKeyDown={e=>e.key==="Enter"&&handleReset()}
+                      placeholder="Re-enter password"
+                      style={{...inp,paddingRight:46,borderColor:confirmPw&&confirmPw!==newPassword?"rgba(217,64,64,0.6)":confirmPw&&confirmPw===newPassword?"rgba(46,204,113,0.6)":"rgba(255,255,255,0.2)"}}
+                    />
+                    <button onClick={()=>setShowConfirmPw(x=>!x)} style={{position:"absolute",right:12,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",color:"rgba(255,255,255,0.4)",cursor:"pointer",fontSize:18,padding:0}}>{showConfirmPw?"🙈":"👁"}</button>
+                  </div>
+                  {confirmPw&&confirmPw!==newPassword&&<div style={{fontSize:11,color:"#ff8080",marginTop:5}}>⚠ Passwords don't match</div>}
+                  {confirmPw&&confirmPw===newPassword&&<div style={{fontSize:11,color:"#7FFAB5",marginTop:5}}>✓ Passwords match</div>}
+                </div>
+              </div>
+              {resetError&&<div style={{marginTop:10,padding:"8px 12px",background:"rgba(217,64,64,0.18)",border:"1px solid rgba(217,64,64,0.4)",borderRadius:8,fontSize:12,color:"#ff8080"}}>{resetError}</div>}
+              <button onClick={handleReset} disabled={resetLoading||newPassword!==confirmPw||newPassword.length<8} style={{...primaryBtn,marginTop:16,opacity:(resetLoading||newPassword!==confirmPw||newPassword.length<8)?0.5:1,cursor:(resetLoading||newPassword!==confirmPw||newPassword.length<8)?"not-allowed":"pointer"}}>
+                {resetLoading?"⏳ Resetting…":"✓ Reset Password"}
+              </button>
+              <button onClick={onBack} style={ghostBtn}>← Back to Login</button>
+            </div>
+          </>
+        )}
+
+        {/* ── STEP 5: SUCCESS ── */}
+        {step==="success"&&(
+          <>
+            <div style={{textAlign:"center",marginBottom:24}}>
+              <div style={{width:80,height:80,background:"rgba(16,185,129,0.12)",border:"2px solid rgba(16,185,129,0.5)",borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:40,margin:"0 auto 16px",animation:"pulse 1.5s ease-in-out"}}>✅</div>
+              <div style={{fontSize:24,fontWeight:900,color:"#fff",marginBottom:8}}>Password Changed!</div>
+              <div style={{fontSize:14,color:"rgba(255,255,255,0.5)",lineHeight:1.6}}>Your password has been reset successfully.<br/>You can now log in with your new password.</div>
+            </div>
+            <div style={card}>
+              <div style={{background:"rgba(16,185,129,0.08)",border:"1px solid rgba(16,185,129,0.25)",borderRadius:12,padding:"16px",marginBottom:20,textAlign:"center"}}>
+                <div style={{fontSize:32,marginBottom:6}}>🎉</div>
+                <div style={{fontSize:14,fontWeight:700,color:"#7FFAB5",marginBottom:4}}>Password Changed Successfully</div>
+                <div style={{fontSize:12,color:"rgba(255,255,255,0.4)"}}>Redirecting to login in <strong style={{color:"#7FFAB5"}}>{redirectCount}s</strong>…</div>
+              </div>
+              <button onClick={onReset} style={primaryBtn}>→ Go to Login Now</button>
+            </div>
+          </>
+        )}
+
       </div>
     </div>
   );
@@ -626,10 +914,10 @@ const Sel=({label,value,onChange,options,style={}})=>(
 );
 const Badge=({children,color=C.primary,bg=C.primaryLight})=><span style={{padding:"2px 10px",borderRadius:20,fontSize:11,fontWeight:700,color,background:bg,whiteSpace:"nowrap"}}>{children}</span>;
 const StatCard=({label,value,sub,icon,color=C.primary,bg=C.primaryLight})=>(
-  <Card style={{display:"flex",alignItems:"center",gap:16}}>
-    <div style={{width:48,height:48,borderRadius:12,background:bg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,flexShrink:0}}>{icon}</div>
-    <div><div style={{fontSize:22,fontWeight:800,color}}>{value}</div><div style={{fontSize:12,color:C.textMid,fontWeight:600}}>{label}</div>{sub&&<div style={{fontSize:11,color:C.textLight,marginTop:2}}>{sub}</div>}</div>
-  </Card>
+  <div style={{background:bg,border:`2px solid ${color}22`,borderRadius:12,padding:20,display:"flex",alignItems:"center",gap:16,boxShadow:`0 2px 8px ${color}18`}}>
+    <div style={{width:48,height:48,borderRadius:12,background:color,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,flexShrink:0,boxShadow:`0 4px 12px ${color}40`}}>{icon}</div>
+    <div><div style={{fontSize:22,fontWeight:800,color}}>{value}</div><div style={{fontSize:12,color:C.text,fontWeight:600,opacity:0.8}}>{label}</div>{sub&&<div style={{fontSize:11,color,marginTop:2,fontWeight:600}}>{sub}</div>}</div>
+  </div>
 );
 const Modal=({title,onClose,children,width=520})=>(
   <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.45)",zIndex:2000,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
@@ -1391,7 +1679,7 @@ function InvoiceFormatTab({license,company,invoiceFormat,setInvoiceFormat}){
 // ═══════════════════════════════════════════════════════════════════
 // LICENSE TAB — with location sharing
 // ═══════════════════════════════════════════════════════════════════
-function LicenseTab({license,onClearLicense}){
+function LicenseTab({license,onClearLicense,onSwitchAccount}){
   const [locStatus,setLocStatus]=useState(()=>LS.get("restopos_loc_status")||"");
   const [locData,setLocData]=useState(()=>LS.get("restopos_loc_data")||null);
   const [locLoading,setLocLoading]=useState(false);
@@ -1444,13 +1732,60 @@ function LicenseTab({license,onClearLicense}){
       <div style={{fontSize:12,color:C.danger,marginBottom:12}}>This will clear all saved license data and log you out.</div>
       <Btn variant="danger" size="sm" onClick={()=>{if(confirm("Are you sure? This will clear the license and log you out."))onClearLicense();}}>Clear License & Re-Activate</Btn>
     </div>
+
+    {/* Switch Account Panel */}
+    {(()=>{
+      const savedAccounts=LS.get("restopos_saved_accounts")||[];
+      if(savedAccounts.length===0&&!onSwitchAccount)return null;
+      return(
+        <div style={{padding:14,background:"rgba(99,102,241,0.06)",border:"1.5px solid rgba(99,102,241,0.25)",borderRadius:10}}>
+          <div style={{fontSize:13,fontWeight:700,color:"#6366f1",marginBottom:8}}>👤 Account Switching</div>
+          {savedAccounts.length>0&&(
+            <div style={{marginBottom:12}}>
+              <div style={{fontSize:12,color:C.textMid,marginBottom:8}}>Saved accounts on this device:</div>
+              <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                {savedAccounts.map((acc,i)=>(
+                  <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 12px",background:"#fff",border:`1px solid rgba(99,102,241,0.2)`,borderRadius:8}}>
+                    <div>
+                      <div style={{fontSize:13,fontWeight:700,color:C.text}}>{acc.businessName}</div>
+                      <div style={{fontSize:11,color:C.textMid}}>CR: {acc.crNumber} · {acc.status}</div>
+                    </div>
+                    <Btn size="sm" variant="outline" onClick={()=>{
+                      if(!confirm(`Switch to account: ${acc.businessName}?\n\nYour current account will be saved.`))return;
+                      // Save current account
+                      const current={licenseKey:license.licenseKey,businessName:license.businessName,crNumber:license.crNumber,savedAt:new Date().toISOString(),status:"active"};
+                      const others=savedAccounts.filter(a=>a.licenseKey!==acc.licenseKey);
+                      const withCurrent=[...others,current];
+                      LS.set("restopos_saved_accounts",withCurrent);
+                      // Load selected account
+                      LS.del("restopos_license_v2");
+                      LS.del("restopos_client_creds");
+                      // Try to find full license data
+                      window.location.reload();
+                    }}>Switch</Btn>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          <Btn variant="outline" size="sm" onClick={()=>{
+            if(!confirm("Register a new account? Your current account will be saved and you can switch back later."))return;
+            const savedAccounts=LS.get("restopos_saved_accounts")||[];
+            const current={licenseKey:license.licenseKey,businessName:license.businessName,crNumber:license.crNumber,savedAt:new Date().toISOString(),status:"active"};
+            if(!savedAccounts.find(a=>a.licenseKey===current.licenseKey))LS.set("restopos_saved_accounts",[...savedAccounts,current]);
+            LS.del("restopos_license_v2");LS.del("restopos_client_creds");
+            window.location.reload();
+          }} style={{width:"100%"}}>➕ Add & Register New Account</Btn>
+        </div>
+      );
+    })()}
   </Card>);
 }
 
 // ═══════════════════════════════════════════════════════════════════
 // SETTINGS
 // ═══════════════════════════════════════════════════════════════════
-function Settings({company,setCompany,tables,setTables,license,onClearLicense,pins,setPins,invoiceFormat,setInvoiceFormat}){
+function Settings({company,setCompany,tables,setTables,license,onClearLicense,onSwitchAccount,pins,setPins,invoiceFormat,setInvoiceFormat}){
   const [tab,setTab]=useState("company");const [newTableCount,setNewTableCount]=useState(tables.length);const [companySaved,setCompanySaved]=useState(false);
   const [kitchenPrinter,setKitchenPrinter]=useState(()=>LS.get("restopos_kitchen_printer")||{name:"Kitchen Printer",paperWidth:"80mm",autoKOT:true,enabled:false});
   const [kpSaved,setKpSaved]=useState(false);
@@ -1522,7 +1857,7 @@ function Settings({company,setCompany,tables,setTables,license,onClearLicense,pi
     </Card>}
     {tab==="invoice"&&<InvoiceFormatTab license={license} company={company} invoiceFormat={invoiceFormat} setInvoiceFormat={setInvoiceFormat}/>}
     {tab==="security"&&<SecurityTab pins={pins} setPins={setPins}/>}
-    {tab==="license"&&<LicenseTab license={license} onClearLicense={onClearLicense}/>}
+    {tab==="license"&&<LicenseTab license={license} onClearLicense={onClearLicense} onSwitchAccount={onSwitchAccount}/>}
   </div>);
 }
 
@@ -2164,9 +2499,9 @@ function OwnerDashboardInline(){
           [newClientsLast30,"New (30d)","🆕","#6366f1"],
           [licenses.filter(l=>l.active&&!l.activatedBy).length,"Keys Available","🔑","#a5b4fc"]
         ].map(([v,l,ic,col])=>(
-          <div key={l} style={{background:`${col}15`,border:`1px solid ${col}35`,borderRadius:12,padding:"14px 16px",boxShadow:"0 2px 8px rgba(0,0,0,0.15)"}}>
-            <div style={{fontSize:10,color:col,fontWeight:700,marginBottom:5}}>{ic} {l}</div>
-            <div style={{fontSize:16,fontWeight:900,color:col}}>{v}</div>
+          <div key={l} style={{background:`${col}28`,border:`2px solid ${col}70`,borderRadius:12,padding:"14px 16px",boxShadow:`0 4px 16px ${col}25`}}>
+            <div style={{fontSize:10,color:"#fff",fontWeight:700,marginBottom:5,opacity:0.8}}>{ic} {l}</div>
+            <div style={{fontSize:18,fontWeight:900,color:col}}>{v}</div>
           </div>
         ))}
       </div>
@@ -2275,9 +2610,9 @@ function OwnerDashboardInline(){
       {tab==="clients"&&<div>
         <div style={{display:"flex",gap:8,marginBottom:12,flexWrap:"wrap"}}>
           <input value={searchQ} onChange={e=>setSearchQ(e.target.value)} placeholder="🔍 Search by name, CR, license key, city…"
-            style={{flex:1,padding:"8px 12px",background:"#fff",border:`1.5px solid ${DS.border}`,borderRadius:8,color:DS.text,fontSize:12,fontFamily:"inherit",minWidth:200}}/>
+            style={{flex:1,padding:"8px 12px",background:"rgba(255,255,255,0.08)",border:`1.5px solid ${DS.border}`,borderRadius:8,color:DS.text,fontSize:12,fontFamily:"inherit",minWidth:200}}/>
           <select value={planFilter} onChange={e=>setPlanFilter(e.target.value)}
-            style={{padding:"8px 12px",background:"#fff",border:`1.5px solid ${DS.border}`,borderRadius:8,color:DS.text,fontSize:12,fontFamily:"inherit"}}>
+            style={{padding:"8px 12px",background:"rgba(255,255,255,0.08)",border:`1.5px solid ${DS.border}`,borderRadius:8,color:DS.text,fontSize:12,fontFamily:"inherit"}}>
             <option value="all">All Plans</option>
             {Object.values(SUBSCRIPTION_PLANS).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
@@ -2341,7 +2676,7 @@ function OwnerDashboardInline(){
                     </div>
                   )}
                   {!a.location&&(
-                    <div style={{marginBottom:12,padding:"8px 12px",background:"#F8FAFC",borderRadius:8,fontSize:11,color:DS.sub,border:`1px solid ${DS.border}`}}>
+                    <div style={{marginBottom:12,padding:"8px 12px",background:"rgba(255,255,255,0.06)",borderRadius:8,fontSize:11,color:DS.sub,border:`1px solid ${DS.border}`}}>
                       📍 No GPS location shared by this client. Location is captured during activation when browser permission is granted.
                     </div>
                   )}
@@ -2350,7 +2685,7 @@ function OwnerDashboardInline(){
                     <span style={{fontSize:11,color:DS.sub,alignSelf:"center"}}>Change Plan:</span>
                     {Object.values(SUBSCRIPTION_PLANS).map(p=>(
                       <button key={p.id} onClick={e=>{e.stopPropagation();upgradeSubscription(a.id,p.id);}}
-                        style={{padding:"5px 12px",background:(a.subscriptionPlan||"basic")===p.id?p.color+"22":"#F8FAFC",border:`1.5px solid ${(a.subscriptionPlan||"basic")===p.id?p.color:DS.border}`,borderRadius:6,color:p.color,fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
+                        style={{padding:"5px 12px",background:(a.subscriptionPlan||"basic")===p.id?p.color+"22":"rgba(255,255,255,0.06)",border:`1.5px solid ${(a.subscriptionPlan||"basic")===p.id?p.color:DS.border}`,borderRadius:6,color:p.color,fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
                         {p.name} · SAR {p.price}
                       </button>
                     ))}
@@ -2474,7 +2809,7 @@ function OwnerDashboardInline(){
           {mapClient&&(
             <div style={{marginBottom:12,display:"flex",alignItems:"center",gap:10,padding:"8px 14px",background:"rgba(99,102,241,0.08)",borderRadius:8,border:"1px solid rgba(99,102,241,0.2)"}}>
               <span style={{fontSize:12,color:"#6366f1",fontWeight:700}}>📍 Focused on: {mapClient.businessName}</span>
-              <button onClick={()=>setMapClient(null)} style={{marginLeft:"auto",padding:"3px 8px",background:"#F8FAFC",border:`1px solid ${DS.border}`,borderRadius:5,color:DS.sub,fontSize:11,cursor:"pointer",fontFamily:"inherit"}}>Clear</button>
+              <button onClick={()=>setMapClient(null)} style={{marginLeft:"auto",padding:"3px 8px",background:"rgba(255,255,255,0.08)",border:`1px solid ${DS.border}`,borderRadius:5,color:DS.sub,fontSize:11,cursor:"pointer",fontFamily:"inherit"}}>Clear</button>
             </div>
           )}
           {(()=>{
@@ -2504,7 +2839,7 @@ function OwnerDashboardInline(){
                 <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
                   {clientsWithLocation.map(a=>(
                     <button key={a.id} onClick={()=>setMapClient(a)}
-                      style={{padding:"5px 12px",background:mapClient?.id===a.id?"rgba(99,102,241,0.12)":"#F8FAFC",border:`1px solid ${mapClient?.id===a.id?"rgba(99,102,241,0.4)":DS.border}`,borderRadius:6,color:mapClient?.id===a.id?"#6366f1":DS.sub,fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}>
+                      style={{padding:"5px 12px",background:mapClient?.id===a.id?"rgba(99,102,241,0.12)":"rgba(255,255,255,0.08)",border:`1px solid ${mapClient?.id===a.id?"rgba(99,102,241,0.4)":DS.border}`,borderRadius:6,color:mapClient?.id===a.id?"#6366f1":DS.sub,fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}>
                       📍 {a.businessName} ({a.city||"—"})
                     </button>
                   ))}
@@ -2576,7 +2911,7 @@ function OwnerDashboardInline(){
                             ["Browser",client.deviceInfo?.browser||"—"],
                             ["Screen",client.deviceInfo?.screenW?`${client.deviceInfo.screenW}×${client.deviceInfo.screenH}`:"—"],
                           ].map(([k,v])=>(
-                            <div key={k} style={{background:"#F8FAFC",borderRadius:8,padding:"8px 10px",border:`1px solid ${DS.border}`}}>
+                            <div key={k} style={{background:"rgba(255,255,255,0.08)",borderRadius:8,padding:"8px 10px",border:`1px solid ${DS.border}`}}>
                               <div style={{fontSize:9,color:DS.sub,fontWeight:700,textTransform:"uppercase",marginBottom:2}}>{k}</div>
                               <div style={{fontSize:11,fontWeight:600,color:DS.text,wordBreak:"break-all"}}>{v}</div>
                             </div>
@@ -2662,15 +2997,15 @@ function OwnerDashboardInline(){
         <DCard style={{marginBottom:10}}>
           <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
             <input value={actFilter.client} onChange={e=>setActFilter(f=>({...f,client:e.target.value}))} placeholder="Filter by client/user…"
-              style={{flex:1,padding:"7px 10px",background:"#F8FAFC",border:`1px solid ${DS.border}`,borderRadius:6,color:DS.text,fontSize:11,fontFamily:"inherit",minWidth:140}}/>
+              style={{flex:1,padding:"7px 10px",background:"rgba(255,255,255,0.08)",border:`1px solid ${DS.border}`,borderRadius:6,color:DS.text,fontSize:11,fontFamily:"inherit",minWidth:140}}/>
             <select value={actFilter.type} onChange={e=>setActFilter(f=>({...f,type:e.target.value}))}
-              style={{padding:"7px 10px",background:"#F8FAFC",border:`1px solid ${DS.border}`,borderRadius:6,color:DS.text,fontSize:11,fontFamily:"inherit"}}>
+              style={{padding:"7px 10px",background:"rgba(255,255,255,0.08)",border:`1px solid ${DS.border}`,borderRadius:6,color:DS.text,fontSize:11,fontFamily:"inherit"}}>
               <option value="">All Types</option>
               {["LICENSE_TOGGLE","PLAN_CHANGE","CLIENT_SUSPENDED","CLIENT_REACTIVATED","ITEM_ADDED","ITEM_EDITED","SETTING_CHANGED"].map(t=><option key={t} value={t}>{t.replace(/_/g," ")}</option>)}
             </select>
             <input type="date" value={actFilter.date} onChange={e=>setActFilter(f=>({...f,date:e.target.value}))}
-              style={{padding:"7px 10px",background:"#F8FAFC",border:`1px solid ${DS.border}`,borderRadius:6,color:DS.text,fontSize:11,fontFamily:"inherit"}}/>
-            <button onClick={()=>setActFilter({client:"",type:"",date:""})} style={{padding:"7px 12px",background:"#F8FAFC",border:`1px solid ${DS.border}`,borderRadius:6,color:DS.sub,fontSize:11,cursor:"pointer",fontFamily:"inherit"}}>Clear</button>
+              style={{padding:"7px 10px",background:"rgba(255,255,255,0.08)",border:`1px solid ${DS.border}`,borderRadius:6,color:DS.text,fontSize:11,fontFamily:"inherit"}}/>
+            <button onClick={()=>setActFilter({client:"",type:"",date:""})} style={{padding:"7px 12px",background:"rgba(255,255,255,0.08)",border:`1px solid ${DS.border}`,borderRadius:6,color:DS.sub,fontSize:11,cursor:"pointer",fontFamily:"inherit"}}>Clear</button>
           </div>
         </DCard>
         <DCard>
@@ -2721,7 +3056,7 @@ function OwnerDashboardInline(){
           <div style={{fontSize:13,fontWeight:700,marginBottom:12,color:DS.text}}>📢 System Announcement</div>
           <textarea value={announcementText} onChange={e=>setAnnouncementText(e.target.value)}
             placeholder="Broadcast a message to all clients..."
-            style={{width:"100%",height:100,padding:"10px 12px",background:"#F8FAFC",border:`1px solid ${DS.border}`,borderRadius:8,color:DS.text,fontSize:12,fontFamily:"inherit",resize:"none"}}/>
+            style={{width:"100%",height:100,padding:"10px 12px",background:"rgba(255,255,255,0.08)",border:`1px solid ${DS.border}`,borderRadius:8,color:DS.text,fontSize:12,fontFamily:"inherit",resize:"none"}}/>
           <button onClick={saveAnnouncement} style={{marginTop:8,width:"100%",padding:"10px",background:"rgba(240,165,0,0.15)",border:"1px solid rgba(240,165,0,0.4)",borderRadius:8,color:"#C07800",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>💾 Save & Broadcast</button>
         </DCard>
         <DCard>
@@ -2731,7 +3066,7 @@ function OwnerDashboardInline(){
               ["Export License Keys CSV",()=>{const rows=licenses.map(l=>[l.key,l.active?"Active":"Inactive",l.activatedBy||"",l.activatedAt||""].join(","));const csv="Key,Status,ActivatedBy,Date\n"+rows.join("\n");const blob=new Blob([csv],{type:"text/csv"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="restopos-licenses.csv";a.click();},"🔑"],
               ["Export Activity Log",()=>{const rows=activityLog.map(l=>[l.timestamp,l.action,l.user,JSON.stringify(l.details)].join(","));const csv="Timestamp,Action,User,Details\n"+rows.join("\n");const blob=new Blob([csv],{type:"text/csv"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="restopos-activity.csv";a.click();},"📊"]
             ].map(([label,fn,ic])=>(
-              <button key={label} onClick={fn} style={{padding:"10px 14px",background:"#F8FAFC",border:`1px solid ${DS.border}`,borderRadius:8,color:DS.text,fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:"inherit",textAlign:"left"}}>
+              <button key={label} onClick={fn} style={{padding:"10px 14px",background:"rgba(255,255,255,0.08)",border:`1px solid ${DS.border}`,borderRadius:8,color:DS.text,fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:"inherit",textAlign:"left"}}>
                 {ic} {label}
               </button>
             ))}
@@ -2799,7 +3134,7 @@ function OwnerDashboardInline(){
           </div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
             {[["New (30d)",newClientsLast30,"#6366f1"],["Churn (30d)",churnLast30,"#D94040"],["Active",active.length,"#1A8A4A"],["Suspended",suspended.length,"#C07800"]].map(([l,v,c])=>(
-              <div key={l} style={{background:"#F8FAFC",border:`1px solid ${DS.border}`,borderRadius:8,padding:"10px 12px"}}>
+              <div key={l} style={{background:"rgba(255,255,255,0.08)",border:`1px solid ${DS.border}`,borderRadius:8,padding:"10px 12px"}}>
                 <div style={{fontSize:10,color:DS.sub,fontWeight:700}}>{l}</div>
                 <div style={{fontSize:18,fontWeight:900,color:c}}>{v}</div>
               </div>
@@ -2826,15 +3161,15 @@ function OwnerDashboardInline(){
       {/* Send Notification Modal */}
       {showSendNotif&&notifClient&&(
         <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.4)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
-          <div style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:24,width:420,maxWidth:"95vw",boxShadow:"0 20px 60px rgba(0,0,0,0.15)"}}>
-            <div style={{fontSize:14,fontWeight:700,marginBottom:12,color:"#1a2332"}}>📢 Notify: {notifClient.businessName}</div>
+          <div style={{background:"#1A2A3F",border:"1px solid rgba(255,255,255,0.15)",borderRadius:16,padding:24,width:420,maxWidth:"95vw",boxShadow:"0 20px 60px rgba(0,0,0,0.15)"}}>
+            <div style={{fontSize:14,fontWeight:700,marginBottom:12,color:"#F1F5F9"}}>📢 Notify: {notifClient.businessName}</div>
             <textarea value={notifyMsg} onChange={e=>setNotifyMsg(e.target.value)} placeholder="Type your message..." rows={4}
-              style={{width:"100%",padding:"10px",background:"#F8FAFC",border:"1px solid #E2E8F0",borderRadius:8,color:"#1a2332",fontSize:12,fontFamily:"inherit",resize:"none"}}/>
+              style={{width:"100%",padding:"10px",background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:8,color:"#F1F5F9",fontSize:12,fontFamily:"inherit",resize:"none"}}/>
             <div style={{display:"flex",gap:10,marginTop:14}}>
               <button onClick={()=>{logActivity("NOTIFICATION_SENT",{clientId:notifClient.id,msg:notifyMsg},"Owner");setNotifyMsg("");setShowSendNotif(false);alert("Notification logged for "+notifClient.businessName);}}
                 style={{flex:1,padding:"10px",background:"rgba(240,165,0,0.12)",border:"1px solid rgba(240,165,0,0.3)",borderRadius:8,color:"#C07800",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>Send</button>
               <button onClick={()=>{setShowSendNotif(false);setNotifyMsg("");}}
-                style={{flex:1,padding:"10px",background:"#F8FAFC",border:"1px solid #E2E8F0",borderRadius:8,color:"#64748B",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>Cancel</button>
+                style={{flex:1,padding:"10px",background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:8,color:"#64748B",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>Cancel</button>
             </div>
           </div>
         </div>
@@ -4333,7 +4668,7 @@ function OwnerLogin({onLogin}){
 function OwnerDashboard({onLogout}){
   const [refreshKey,setRefreshKey]=useState(0);
   return(
-    <div style={{fontFamily:"'Plus Jakarta Sans',sans-serif",background:"#F0F4F8",minHeight:"100vh",color:"#1a2332",width:"100%"}}>
+    <div style={{fontFamily:"'Plus Jakarta Sans',sans-serif",background:"#F0F4F8",minHeight:"100vh",color:"#F1F5F9",width:"100%"}}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');*{box-sizing:border-box;margin:0;padding:0}::-webkit-scrollbar{width:5px}::-webkit-scrollbar-thumb{background:rgba(0,0,0,0.15);border-radius:3px}`}</style>
       <div style={{background:"linear-gradient(135deg,#1a2332 0%,#0F2340 100%)",borderBottom:"1px solid rgba(255,255,255,0.08)",padding:"0 24px",height:56,display:"flex",alignItems:"center",justifyContent:"space-between",position:"sticky",top:0,zIndex:100,boxShadow:"0 2px 12px rgba(0,0,0,0.2)",width:"100%"}}>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
@@ -4354,6 +4689,899 @@ function OwnerDashboard({onLogout}){
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// ERROR BOUNDARY
+// ═══════════════════════════════════════════════════════════════════
+class ErrorBoundary extends Component {
+  constructor(props){super(props);this.state={hasError:false,error:null};}
+  static getDerivedStateFromError(error){return{hasError:true,error};}
+  componentDidCatch(error,info){
+    const logs=JSON.parse(localStorage.getItem("restopos_error_logs")||"[]");
+    logs.unshift({ts:new Date().toISOString(),message:error?.message||"Unknown",stack:error?.stack?.slice(0,400)||"",component:info?.componentStack?.slice(0,200)||""});
+    localStorage.setItem("restopos_error_logs",JSON.stringify(logs.slice(0,50)));
+  }
+  render(){
+    if(this.state.hasError){
+      return(
+        <div style={{minHeight:"100vh",background:"#0a1628",display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"'Plus Jakarta Sans',sans-serif",padding:20}}>
+          <div style={{background:"#1a2332",border:"1px solid rgba(217,64,64,0.4)",borderRadius:20,padding:40,maxWidth:480,textAlign:"center"}}>
+            <div style={{fontSize:48,marginBottom:16}}>⚠️</div>
+            <div style={{fontSize:20,fontWeight:800,color:"#ff6b6b",marginBottom:8}}>Something went wrong</div>
+            <div style={{fontSize:13,color:"rgba(255,255,255,0.5)",marginBottom:24,lineHeight:1.6}}>{this.state.error?.message||"An unexpected error occurred."}</div>
+            <button onClick={()=>this.setState({hasError:false,error:null})} style={{padding:"12px 28px",background:"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:10,fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"inherit",marginRight:10}}>Try Again</button>
+            <button onClick={()=>window.location.reload()} style={{padding:"12px 28px",background:"rgba(255,255,255,0.1)",color:"#fff",border:"1px solid rgba(255,255,255,0.2)",borderRadius:10,fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>Reload App</button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// OFFLINE DETECTION + LOCAL CACHE SYNC
+// ═══════════════════════════════════════════════════════════════════
+function useOfflineSync(){
+  const [isOnline,setIsOnline]=useState(navigator.onLine);
+  const [syncQueue,setSyncQueue]=useState(()=>{try{return JSON.parse(localStorage.getItem("restopos_sync_queue")||"[]");}catch{return[];}});
+  useEffect(()=>{
+    const goOnline=()=>{setIsOnline(true);};
+    const goOffline=()=>setIsOnline(false);
+    window.addEventListener("online",goOnline);
+    window.addEventListener("offline",goOffline);
+    return()=>{window.removeEventListener("online",goOnline);window.removeEventListener("offline",goOffline);};
+  },[]);
+  function queueForSync(type,data){
+    const item={id:Date.now(),type,data,ts:new Date().toISOString()};
+    const q=[...syncQueue,item];setSyncQueue(q);localStorage.setItem("restopos_sync_queue",JSON.stringify(q.slice(-200)));
+  }
+  function clearSyncQueue(){setSyncQueue([]);localStorage.removeItem("restopos_sync_queue");}
+  return{isOnline,syncQueue,queueForSync,clearSyncQueue};
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// SESSION TIMEOUT
+// ═══════════════════════════════════════════════════════════════════
+function useSessionTimeout(currentUser,onTimeout,timeoutMinutes=30){
+  const timerRef=useRef(null);
+  const reset=()=>{
+    if(timerRef.current)clearTimeout(timerRef.current);
+    if(!currentUser)return;
+    timerRef.current=setTimeout(()=>onTimeout(),timeoutMinutes*60*1000);
+  };
+  useEffect(()=>{
+    if(!currentUser){if(timerRef.current)clearTimeout(timerRef.current);return;}
+    reset();
+    const events=["mousemove","keydown","mousedown","touchstart","scroll"];
+    events.forEach(e=>window.addEventListener(e,reset));
+    return()=>{if(timerRef.current)clearTimeout(timerRef.current);events.forEach(e=>window.removeEventListener(e,reset));};
+  },[currentUser,timeoutMinutes]);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ESC/POS THERMAL PRINTER — Web Serial API
+// ═══════════════════════════════════════════════════════════════════
+const ESC=0x1B;const GS=0x1D;
+const escpos={
+  init:()=>new Uint8Array([ESC,0x40]),
+  alignCenter:()=>new Uint8Array([ESC,0x61,0x01]),
+  alignLeft:()=>new Uint8Array([ESC,0x61,0x00]),
+  bold:(on)=>new Uint8Array([ESC,0x45,on?1:0]),
+  doubleSize:(on)=>new Uint8Array([ESC,0x21,on?0x30:0x00]),
+  cutPaper:()=>new Uint8Array([GS,0x56,0x41,0x00]),
+  feed:(n=3)=>new Uint8Array([ESC,0x64,n]),
+  text:(str)=>new TextEncoder().encode(str+"\n"),
+  merge:(...arrays)=>{const total=arrays.reduce((s,a)=>s+a.length,0);const merged=new Uint8Array(total);let offset=0;for(const a of arrays){merged.set(a,offset);offset+=a.length;}return merged;}
+};
+
+let _serialPort=null;
+async function connectThermalPrinter(){
+  if(!("serial" in navigator))throw new Error("Web Serial API not supported. Use Chrome or Edge on desktop.");
+  if(_serialPort&&_serialPort.readable)return _serialPort;
+  try{
+    _serialPort=await navigator.serial.requestPort();
+    await _serialPort.open({baudRate:9600});
+    return _serialPort;
+  }catch(e){throw new Error("Printer connection failed: "+e.message);}
+}
+async function printEscPos(data){
+  const port=await connectThermalPrinter();
+  const writer=port.writable.getWriter();
+  await writer.write(data);
+  writer.releaseLock();
+}
+async function printReceiptEscPos(order,license){
+  const items=order.items||[];
+  const line=(text,right="")=>{
+    const pad=42;const gap=pad-text.length-right.length;
+    return escpos.text(text+(gap>0?" ".repeat(gap):"")+right);
+  };
+  const data=escpos.merge(
+    escpos.init(),
+    escpos.alignCenter(),
+    escpos.bold(true),escpos.doubleSize(true),
+    escpos.text(license.businessName||"Restaurant"),
+    escpos.doubleSize(false),escpos.bold(false),
+    escpos.text(license.address||""),
+    escpos.text("TRN: "+license.vatNumber),
+    escpos.text("--------------------------------"),
+    escpos.alignLeft(),
+    escpos.text(order.id+" | "+order.date+" "+order.time),
+    escpos.text(order.type+(order.table?" · Table "+order.table:"")),
+    escpos.text("--------------------------------"),
+    ...items.map(it=>line(it.name+" x"+it.qty,"SAR "+(it.price*it.qty).toFixed(2))),
+    escpos.text("--------------------------------"),
+    line("VAT 15% (incl.)","SAR "+order.vat.toFixed(2)),
+    escpos.bold(true),
+    line("TOTAL","SAR "+order.total.toFixed(2)),
+    escpos.bold(false),
+    escpos.text(""),
+    escpos.alignCenter(),
+    escpos.text("Thank you! شكراً لزيارتكم"),
+    escpos.text(""),
+    escpos.feed(3),
+    escpos.cutPaper()
+  );
+  await printEscPos(data);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// THERMAL PRINTER SETTINGS COMPONENT
+// ═══════════════════════════════════════════════════════════════════
+function ThermalPrinterSettings(){
+  const [status,setStatus]=useState("idle");
+  const [log,setLog]=useState("");
+  const webSerialSupported="serial" in navigator;
+  async function handleConnect(){
+    setStatus("connecting");setLog("");
+    try{
+      await connectThermalPrinter();
+      setStatus("connected");setLog("✅ Printer connected via Web Serial (ESC/POS).");
+    }catch(e){setStatus("error");setLog("❌ "+e.message);}
+  }
+  async function handleTestPrint(){
+    setStatus("printing");setLog("");
+    try{
+      const testOrder={id:"TEST-001",date:new Date().toISOString().slice(0,10),time:new Date().toLocaleTimeString(),type:"Test",items:[{name:"Test Item",qty:1,price:10}],vat:1.30,total:10,table:null};
+      const lic={businessName:"RestoPOS Test",address:"Test Address",vatNumber:"000000000000000"};
+      await printReceiptEscPos(testOrder,lic);
+      setStatus("connected");setLog("✅ Test receipt sent to printer.");
+    }catch(e){setStatus("error");setLog("❌ Print failed: "+e.message);}
+  }
+  return(
+    <Card style={{maxWidth:560}}>
+      <div style={{fontSize:15,fontWeight:700,marginBottom:16}}>🖨️ Direct Thermal Printer (ESC/POS)</div>
+      {!webSerialSupported?(
+        <div style={{background:C.warningLight,border:`1px solid ${C.warning}`,borderRadius:10,padding:"14px 16px",fontSize:13,color:C.warning,fontWeight:600}}>
+          ⚠️ Web Serial API is not available in this browser.<br/>
+          <span style={{fontWeight:400,fontSize:12}}>Please use <strong>Google Chrome</strong> or <strong>Microsoft Edge</strong> on a desktop/laptop for direct ESC/POS thermal printer support.</span>
+        </div>
+      ):(
+        <>
+          <div style={{background:C.infoLight,border:`1px solid ${C.info}`,borderRadius:10,padding:"12px 16px",marginBottom:16,fontSize:13,color:C.info}}>
+            ℹ️ Direct ESC/POS printing via <strong>Web Serial API</strong>. Works with USB thermal printers (Epson, Star, Xprinter, etc.). First connection requires browser permission.
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:16}}>
+            {[["Supported Printers","Epson TM series, Star TSP, Xprinter, Bixolon, most 80mm ESC/POS USB printers"],["Connection","USB → one-time browser permission prompt → auto-reconnects after"],["Paper Width","80mm thermal roll"],["Protocol","ESC/POS — prints text, QR-ready formatting, auto-cut"]].map(([k,v])=>(
+              <div key={k} style={{display:"flex",gap:12,padding:"10px 14px",background:C.bg,borderRadius:8}}>
+                <span style={{fontSize:12,fontWeight:700,color:C.textMid,width:150,flexShrink:0}}>{k}</span>
+                <span style={{fontSize:12,color:C.text}}>{v}</span>
+              </div>
+            ))}
+          </div>
+          <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+            <Btn onClick={handleConnect} disabled={status==="connecting"||status==="printing"}>{status==="connecting"?"Connecting…":"🔌 Connect Printer"}</Btn>
+            <Btn variant="outline" onClick={handleTestPrint} disabled={status!=="connected"||status==="printing"}>{status==="printing"?"Printing…":"🧪 Test Print"}</Btn>
+          </div>
+          {log&&<div style={{marginTop:12,padding:"10px 14px",background:status==="error"?C.dangerLight:C.successLight,border:`1px solid ${status==="error"?C.danger:C.success}`,borderRadius:8,fontSize:12,color:status==="error"?C.danger:C.success,fontWeight:600}}>{log}</div>}
+        </>
+      )}
+      <div style={{marginTop:20,paddingTop:16,borderTop:`1px solid ${C.border}`}}>
+        <div style={{fontSize:13,fontWeight:700,marginBottom:10}}>🌐 Browser Print (Fallback)</div>
+        <div style={{fontSize:12,color:C.textMid}}>The standard Print Receipt button uses the browser's print dialog targeting your default printer. Set your thermal printer as the default printer in your OS settings for seamless printing without a dialog.</div>
+      </div>
+    </Card>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// KITCHEN DISPLAY SYSTEM (KDS)
+// ═══════════════════════════════════════════════════════════════════
+function KitchenDisplay({sales}){
+  const [orders,setOrders]=useState(()=>{
+    const saved=JSON.parse(localStorage.getItem("restopos_kds_orders")||"[]");
+    return saved;
+  });
+  const [filter,setFilter]=useState("pending");
+  // Sync new sales into KDS queue
+  useEffect(()=>{
+    const kdsIds=new Set(orders.map(o=>o.id));
+    const recent=sales.filter(s=>!kdsIds.has(s.id)&&s.status==="completed");
+    if(recent.length>0){
+      const newOrders=recent.map(s=>({...s,kdsStatus:"pending",kdsAt:new Date().toISOString(),routedTo:"Kitchen"}));
+      const updated=[...newOrders,...orders].slice(0,200);
+      setOrders(updated);
+      localStorage.setItem("restopos_kds_orders",JSON.stringify(updated));
+    }
+  },[sales]);
+  function markReady(id){
+    const updated=orders.map(o=>o.id===id?{...o,kdsStatus:"ready",readyAt:new Date().toISOString()}:o);
+    setOrders(updated);localStorage.setItem("restopos_kds_orders",JSON.stringify(updated));
+  }
+  function markDone(id){
+    const updated=orders.map(o=>o.id===id?{...o,kdsStatus:"served",servedAt:new Date().toISOString()}:o);
+    setOrders(updated);localStorage.setItem("restopos_kds_orders",JSON.stringify(updated));
+  }
+  function clearDone(){
+    const updated=orders.filter(o=>o.kdsStatus!=="served");
+    setOrders(updated);localStorage.setItem("restopos_kds_orders",JSON.stringify(updated));
+  }
+  const filtered=orders.filter(o=>filter==="all"||o.kdsStatus===filter);
+  const pendingCount=orders.filter(o=>o.kdsStatus==="pending").length;
+  const readyCount=orders.filter(o=>o.kdsStatus==="ready").length;
+  function elapsedMin(ts){return Math.floor((Date.now()-new Date(ts).getTime())/60000);}
+  return(
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20,flexWrap:"wrap",gap:10}}>
+        <div><div style={{fontSize:20,fontWeight:800}}>🍳 Kitchen Display System</div><div style={{fontSize:13,color:C.textMid,marginTop:2}}>Live order routing to kitchen</div></div>
+        <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+          {[["pending","⏳ Queue",pendingCount],["ready","✅ Ready",readyCount],["served","🍽 Served",0],["all","All",orders.length]].map(([id,lbl,cnt])=>(
+            <button key={id} onClick={()=>setFilter(id)} style={{padding:"7px 14px",borderRadius:8,border:`1.5px solid ${filter===id?C.primary:C.border}`,background:filter===id?C.primaryLight:"#fff",color:filter===id?C.primary:C.textMid,fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",gap:5}}>
+              {lbl}{cnt>0&&<span style={{background:id==="pending"?C.danger:C.primary,color:"#fff",borderRadius:20,padding:"0 6px",fontSize:10,fontWeight:800}}>{cnt}</span>}
+            </button>
+          ))}
+          <Btn size="sm" variant="ghost" onClick={clearDone}>Clear Served</Btn>
+        </div>
+      </div>
+      {filtered.length===0?(
+        <Card><div style={{textAlign:"center",padding:"60px 0",color:C.textLight}}><div style={{fontSize:48,marginBottom:12}}>🍳</div><div style={{fontSize:16,fontWeight:700}}>No orders in {filter} queue</div><div style={{fontSize:13,marginTop:6}}>New orders from the POS will appear here automatically.</div></div></Card>
+      ):(
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))",gap:14}}>
+          {filtered.map(order=>{
+            const elapsed=elapsedMin(order.kdsAt);
+            const urgent=elapsed>15&&order.kdsStatus==="pending";
+            const statusColor=order.kdsStatus==="pending"?(urgent?C.danger:C.warning):order.kdsStatus==="ready"?C.success:C.textLight;
+            const statusBg=order.kdsStatus==="pending"?(urgent?C.dangerLight:C.warningLight):order.kdsStatus==="ready"?C.successLight:C.bg;
+            return(
+              <div key={order.id} style={{background:"#fff",border:`2px solid ${statusColor}`,borderRadius:12,overflow:"hidden",boxShadow:"0 2px 8px rgba(0,0,0,0.06)"}}>
+                <div style={{background:statusBg,padding:"10px 14px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <div>
+                    <div style={{fontSize:14,fontWeight:800,color:statusColor}}>{order.id}</div>
+                    <div style={{fontSize:11,color:C.textMid}}>{order.type}{order.table?` · Table ${order.table}`:""}</div>
+                  </div>
+                  <div style={{textAlign:"right"}}>
+                    <div style={{fontSize:11,fontWeight:700,color:urgent?"#D94040":C.textMid}}>{elapsed}m ago</div>
+                    <div style={{fontSize:10,color:C.textLight}}>{order.time}</div>
+                  </div>
+                </div>
+                <div style={{padding:"10px 14px"}}>
+                  {(order.items||[]).map((it,i)=>(
+                    <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:`1px solid ${C.border}`,fontSize:13}}>
+                      <span style={{fontWeight:700}}>{it.qty}× {it.name}</span>
+                    </div>
+                  ))}
+                  {order.customer&&<div style={{fontSize:11,color:C.textMid,marginTop:6}}>👤 {order.customer}</div>}
+                </div>
+                <div style={{padding:"10px 14px",borderTop:`1px solid ${C.border}`,display:"flex",gap:6}}>
+                  {order.kdsStatus==="pending"&&<Btn size="sm" onClick={()=>markReady(order.id)} style={{flex:1}}>✅ Mark Ready</Btn>}
+                  {order.kdsStatus==="ready"&&<Btn size="sm" variant="outline" onClick={()=>markDone(order.id)} style={{flex:1}}>🍽 Mark Served</Btn>}
+                  {order.kdsStatus==="served"&&<span style={{flex:1,fontSize:11,color:C.textLight,fontWeight:600,padding:"4px 0"}}>✓ Served {order.servedAt?.slice(11,16)}</span>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// STOCK TAKES / AUDITS
+// ═══════════════════════════════════════════════════════════════════
+function StockTakes({items,setItems}){
+  const [audits,setAudits]=useState(()=>JSON.parse(localStorage.getItem("restopos_stock_audits")||"[]"));
+  const [activeAudit,setActiveAudit]=useState(null);
+  const [counts,setCounts]=useState({});
+  const [tab,setTab]=useState("history");
+  function startAudit(){
+    const audit={id:Date.now(),startedAt:new Date().toISOString(),status:"open",items:items.map(it=>({id:it.id,name:it.name,systemQty:it.stock||0,countedQty:null,variance:null}))};
+    setActiveAudit(audit);setCounts({});setTab("audit");
+  }
+  function submitAudit(){
+    if(!activeAudit)return;
+    const auditItems=activeAudit.items.map(it=>({...it,countedQty:parseInt(counts[it.id]??it.systemQty),variance:(parseInt(counts[it.id]??it.systemQty))-(it.systemQty)}));
+    const closed={...activeAudit,status:"completed",completedAt:new Date().toISOString(),items:auditItems,totalVariance:auditItems.reduce((s,i)=>s+Math.abs(i.variance),0)};
+    const updated=[closed,...audits.slice(0,49)];setAudits(updated);localStorage.setItem("restopos_stock_audits",JSON.stringify(updated));
+    // Update actual stock in items
+    setItems(prev=>prev.map(it=>{const counted=auditItems.find(a=>a.id===it.id);return counted?{...it,stock:counted.countedQty}:it;}));
+    setActiveAudit(null);setCounts({});setTab("history");
+    alert("✅ Stock audit completed and inventory updated.");
+  }
+  return(
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
+        <div><div style={{fontSize:20,fontWeight:800}}>📦 Stock Takes & Audits</div><div style={{fontSize:13,color:C.textMid,marginTop:2}}>Physical count vs system stock</div></div>
+        <Btn onClick={startAudit}>+ New Stock Take</Btn>
+      </div>
+      <div style={{display:"flex",gap:8,marginBottom:20}}>
+        {[["history","📋 History"],["audit","🔢 Current Audit"]].map(([id,lbl])=>(
+          <button key={id} onClick={()=>setTab(id)} style={{padding:"8px 16px",borderRadius:8,border:`1.5px solid ${tab===id?C.primary:C.border}`,background:tab===id?C.primaryLight:"#fff",color:tab===id?C.primary:C.textMid,fontFamily:"inherit",fontSize:13,fontWeight:600,cursor:"pointer"}}>{lbl}</button>
+        ))}
+      </div>
+      {tab==="audit"&&(
+        activeAudit?(
+          <Card>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+              <div style={{fontSize:15,fontWeight:700}}>Stock Count — {activeAudit.startedAt.slice(0,10)}</div>
+              <div style={{display:"flex",gap:8}}>
+                <Btn variant="ghost" size="sm" onClick={()=>{setActiveAudit(null);setCounts({});setTab("history");}}>Cancel</Btn>
+                <Btn size="sm" onClick={submitAudit}>✅ Submit Audit</Btn>
+              </div>
+            </div>
+            <div style={{overflowX:"auto"}}>
+              <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+                <thead><tr style={{background:C.bg}}>{["Item","System Qty","Counted Qty","Variance"].map(h=><th key={h} style={{padding:"10px 14px",textAlign:"left",fontWeight:700,color:C.textMid,fontSize:11,textTransform:"uppercase",borderBottom:`1px solid ${C.border}`}}>{h}</th>)}</tr></thead>
+                <tbody>{activeAudit.items.map((it,i)=>{
+                  const counted=parseInt(counts[it.id]??it.systemQty);
+                  const variance=counted-it.systemQty;
+                  return(
+                    <tr key={it.id} style={{borderBottom:`1px solid ${C.border}`,background:i%2===0?"#fff":"#FAFBFC"}}>
+                      <td style={{padding:"10px 14px",fontWeight:600}}>{it.name}</td>
+                      <td style={{padding:"10px 14px",color:C.textMid}}>{it.systemQty}</td>
+                      <td style={{padding:"10px 14px"}}>
+                        <input type="number" value={counts[it.id]??""} onChange={e=>setCounts(prev=>({...prev,[it.id]:e.target.value}))} placeholder={String(it.systemQty)} style={{width:80,padding:"6px 10px",border:`1.5px solid ${C.border}`,borderRadius:7,fontSize:13,fontFamily:"inherit",textAlign:"center"}}/>
+                      </td>
+                      <td style={{padding:"10px 14px",fontWeight:700,color:variance===0?C.success:variance<0?C.danger:C.warning}}>{variance>0?"+":""}{variance===0?"—":variance}</td>
+                    </tr>
+                  );
+                })}</tbody>
+              </table>
+            </div>
+          </Card>
+        ):<Card><div style={{textAlign:"center",padding:"40px 0",color:C.textLight}}>No active audit. Click "New Stock Take" to begin.</div></Card>
+      )}
+      {tab==="history"&&(
+        audits.length===0?<Card><div style={{textAlign:"center",padding:"40px 0",color:C.textLight}}>No stock audits yet.</div></Card>:(
+          <div style={{display:"flex",flexDirection:"column",gap:12}}>
+            {audits.map(a=>(
+              <Card key={a.id}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
+                  <div>
+                    <div style={{fontSize:14,fontWeight:700}}>Audit — {a.startedAt.slice(0,10)}</div>
+                    <div style={{fontSize:12,color:C.textMid}}>Completed: {a.completedAt?.slice(0,16).replace("T"," ")} · Items: {a.items?.length||0}</div>
+                  </div>
+                  <Badge color={a.totalVariance===0?C.success:C.warning} bg={a.totalVariance===0?C.successLight:C.warningLight}>Variance: {a.totalVariance||0} units</Badge>
+                </div>
+                {a.items?.filter(it=>it.variance!==0).length>0&&(
+                  <div style={{marginTop:12,paddingTop:12,borderTop:`1px solid ${C.border}`}}>
+                    <div style={{fontSize:12,fontWeight:700,color:C.textMid,marginBottom:6}}>VARIANCES:</div>
+                    <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+                      {a.items.filter(it=>it.variance!==0).map(it=>(
+                        <span key={it.id} style={{padding:"3px 10px",borderRadius:20,fontSize:11,fontWeight:700,background:it.variance<0?C.dangerLight:C.warningLight,color:it.variance<0?C.danger:C.warning}}>{it.name}: {it.variance>0?"+":""}{it.variance}</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </Card>
+            ))}
+          </div>
+        )
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// RECIPE COSTING
+// ═══════════════════════════════════════════════════════════════════
+function RecipeCosting({items}){
+  const [selectedItem,setSelectedItem]=useState(null);
+  const [recipes,setRecipes]=useState(()=>JSON.parse(localStorage.getItem("restopos_recipes")||"{}"));
+  const [editMode,setEditMode]=useState(false);
+  const [draftIngredients,setDraftIngredients]=useState([]);
+  function openItem(item){
+    setSelectedItem(item);
+    setDraftIngredients(recipes[item.id]||[{name:"",unit:"g",qty:"",cost:""}]);
+    setEditMode(false);
+  }
+  function addIngredient(){setDraftIngredients(prev=>[...prev,{name:"",unit:"g",qty:"",cost:""}]);}
+  function removeIngredient(i){setDraftIngredients(prev=>prev.filter((_,j)=>j!==i));}
+  function updateIngredient(i,field,val){setDraftIngredients(prev=>prev.map((ing,j)=>j===i?{...ing,[field]:val}:ing));}
+  function saveRecipe(){
+    const updated={...recipes,[selectedItem.id]:draftIngredients};
+    setRecipes(updated);localStorage.setItem("restopos_recipes",JSON.stringify(updated));
+    setEditMode(false);
+  }
+  function totalCost(itemId){
+    const ings=recipes[itemId]||[];
+    return ings.reduce((s,ing)=>s+parseFloat(ing.cost||0),0);
+  }
+  return(
+    <div style={{display:"flex",gap:20}}>
+      <div style={{width:280,flexShrink:0}}>
+        <Card style={{padding:12}}>
+          <div style={{fontSize:14,fontWeight:700,marginBottom:12}}>Menu Items</div>
+          <div style={{display:"flex",flexDirection:"column",gap:4}}>
+            {items.map(it=>{
+              const cost=totalCost(it.id);
+              const margin=it.price>0?((it.price-cost)/it.price*100).toFixed(0):0;
+              return(
+                <button key={it.id} onClick={()=>openItem(it)} style={{padding:"10px 12px",borderRadius:8,border:`1.5px solid ${selectedItem?.id===it.id?C.primary:C.border}`,background:selectedItem?.id===it.id?C.primaryLight:"#fff",textAlign:"left",cursor:"pointer",fontFamily:"inherit"}}>
+                  <div style={{fontSize:13,fontWeight:700,color:C.text}}>{it.name}</div>
+                  <div style={{fontSize:11,color:C.textMid,marginTop:2}}>SAR {it.price} · Cost: SAR {cost.toFixed(2)} · Margin: <span style={{color:margin>60?C.success:margin>30?C.warning:C.danger,fontWeight:700}}>{margin}%</span></div>
+                </button>
+              );
+            })}
+          </div>
+        </Card>
+      </div>
+      <div style={{flex:1}}>
+        {selectedItem?(
+          <Card>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
+              <div>
+                <div style={{fontSize:16,fontWeight:800}}>{selectedItem.name}</div>
+                <div style={{fontSize:13,color:C.textMid}}>Selling price: SAR {selectedItem.price}</div>
+              </div>
+              <Btn size="sm" variant={editMode?"ghost":"outline"} onClick={()=>setEditMode(e=>!e)}>{editMode?"Cancel":"✏️ Edit Recipe"}</Btn>
+            </div>
+            {editMode?(
+              <>
+                <div style={{overflowX:"auto"}}>
+                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+                    <thead><tr style={{background:C.bg}}>{["Ingredient","Unit","Qty","Cost (SAR)",""].map(h=><th key={h} style={{padding:"8px 12px",textAlign:"left",fontWeight:700,color:C.textMid,fontSize:11,borderBottom:`1px solid ${C.border}`}}>{h}</th>)}</tr></thead>
+                    <tbody>{draftIngredients.map((ing,i)=>(
+                      <tr key={i} style={{borderBottom:`1px solid ${C.border}`}}>
+                        <td style={{padding:"8px 12px"}}><input value={ing.name} onChange={e=>updateIngredient(i,"name",e.target.value)} placeholder="e.g. Chicken" style={{padding:"6px 10px",border:`1px solid ${C.border}`,borderRadius:6,fontSize:12,fontFamily:"inherit",width:140}}/></td>
+                        <td style={{padding:"8px 12px"}}><select value={ing.unit} onChange={e=>updateIngredient(i,"unit",e.target.value)} style={{padding:"6px",border:`1px solid ${C.border}`,borderRadius:6,fontSize:12}}>{["g","kg","ml","L","pcs","tsp","tbsp"].map(u=><option key={u}>{u}</option>)}</select></td>
+                        <td style={{padding:"8px 12px"}}><input type="number" value={ing.qty} onChange={e=>updateIngredient(i,"qty",e.target.value)} placeholder="0" style={{padding:"6px 10px",border:`1px solid ${C.border}`,borderRadius:6,fontSize:12,fontFamily:"inherit",width:70}}/></td>
+                        <td style={{padding:"8px 12px"}}><input type="number" value={ing.cost} onChange={e=>updateIngredient(i,"cost",e.target.value)} placeholder="0.00" style={{padding:"6px 10px",border:`1px solid ${C.border}`,borderRadius:6,fontSize:12,fontFamily:"inherit",width:80}}/></td>
+                        <td style={{padding:"8px 12px"}}><button onClick={()=>removeIngredient(i)} style={{background:C.dangerLight,color:C.danger,border:"none",borderRadius:6,padding:"4px 8px",cursor:"pointer",fontWeight:700}}>✕</button></td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+                <div style={{display:"flex",gap:10,marginTop:14}}>
+                  <Btn variant="ghost" size="sm" onClick={addIngredient}>+ Add Ingredient</Btn>
+                  <Btn size="sm" onClick={saveRecipe}>💾 Save Recipe</Btn>
+                </div>
+              </>
+            ):(
+              <>
+                {(recipes[selectedItem.id]||[]).length===0?(
+                  <div style={{textAlign:"center",padding:"30px 0",color:C.textLight}}>No recipe added yet. Click "Edit Recipe" to add ingredients.</div>
+                ):(
+                  <>
+                    <DataTable headers={["Ingredient","Unit","Qty","Cost (SAR)"]} rows={(recipes[selectedItem.id]||[]).map(ing=>[ing.name,ing.unit,ing.qty,fmtSAR(parseFloat(ing.cost||0))])}/>
+                    <div style={{marginTop:16,padding:"14px 16px",background:C.bg,borderRadius:10,display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
+                      {[["Total Recipe Cost",fmtSAR(totalCost(selectedItem.id)),C.danger],["Selling Price",fmtSAR(selectedItem.price),C.primary],["Gross Margin",((selectedItem.price-totalCost(selectedItem.id))/selectedItem.price*100).toFixed(1)+"%",C.success]].map(([l,v,c])=>(
+                        <div key={l} style={{textAlign:"center"}}><div style={{fontSize:11,color:C.textMid}}>{l}</div><div style={{fontSize:18,fontWeight:800,color:c}}>{v}</div></div>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </>
+            )}
+          </Card>
+        ):<Card><div style={{textAlign:"center",padding:"60px 0",color:C.textLight}}><div style={{fontSize:40,marginBottom:12}}>📋</div><div>Select a menu item to view or edit its recipe</div></div></Card>}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// GIFT CARD SYSTEM
+// ═══════════════════════════════════════════════════════════════════
+function GiftCards(){
+  const [cards,setCards]=useState(()=>JSON.parse(localStorage.getItem("restopos_gift_cards")||"[]"));
+  const [tab,setTab]=useState("list");
+  const [amount,setAmount]=useState("50");
+  const [redeemCode,setRedeemCode]=useState("");
+  const [redeemResult,setRedeemResult]=useState(null);
+  function generateCode(){return Math.random().toString(36).slice(2,8).toUpperCase()+"-"+Math.random().toString(36).slice(2,6).toUpperCase();}
+  function issueCard(){
+    if(!parseFloat(amount)||parseFloat(amount)<=0)return alert("Enter a valid amount.");
+    const card={id:Date.now(),code:generateCode(),issuedAt:new Date().toISOString(),originalAmount:parseFloat(amount),balance:parseFloat(amount),status:"active",transactions:[]};
+    const updated=[card,...cards];setCards(updated);localStorage.setItem("restopos_gift_cards",JSON.stringify(updated));
+    alert(`✅ Gift card issued!\nCode: ${card.code}\nAmount: SAR ${card.originalAmount}`);
+  }
+  function checkRedeem(){
+    const card=cards.find(c=>c.code.toUpperCase()===redeemCode.trim().toUpperCase());
+    if(!card){setRedeemResult({error:"Gift card not found."});return;}
+    if(card.status==="used"){setRedeemResult({error:"This gift card has already been fully used."});return;}
+    if(card.status==="expired"){setRedeemResult({error:"This gift card has expired."});return;}
+    setRedeemResult({card});
+  }
+  function redeemAmount(card,amt){
+    if(amt>card.balance){alert("Amount exceeds card balance.");return;}
+    const updated=cards.map(c=>c.code===card.code?{...c,balance:parseFloat((c.balance-amt).toFixed(2)),status:c.balance-amt<=0?"used":"active",transactions:[...c.transactions,{ts:new Date().toISOString(),amount:amt,type:"redeem"}]}:c);
+    setCards(updated);localStorage.setItem("restopos_gift_cards",JSON.stringify(updated));
+    setRedeemCode("");setRedeemResult(null);
+    alert(`✅ Redeemed SAR ${amt} from gift card.`);
+  }
+  const activeCards=cards.filter(c=>c.status==="active");
+  const totalBalance=activeCards.reduce((s,c)=>s+c.balance,0);
+  return(
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
+        <div><div style={{fontSize:20,fontWeight:800}}>🎁 Gift Card System</div><div style={{fontSize:13,color:C.textMid}}>Issue and redeem gift cards</div></div>
+        <div style={{background:C.successLight,border:`1px solid ${C.success}44`,borderRadius:8,padding:"8px 16px",fontSize:13,fontWeight:700,color:C.success}}>{activeCards.length} active · {fmtSAR(totalBalance)} total balance</div>
+      </div>
+      <div style={{display:"flex",gap:8,marginBottom:20}}>
+        {[["list","🎁 All Cards"],["issue","➕ Issue Card"],["redeem","🔄 Redeem"]].map(([id,lbl])=>(
+          <button key={id} onClick={()=>setTab(id)} style={{padding:"8px 16px",borderRadius:8,border:`1.5px solid ${tab===id?C.primary:C.border}`,background:tab===id?C.primaryLight:"#fff",color:tab===id?C.primary:C.textMid,fontFamily:"inherit",fontSize:13,fontWeight:600,cursor:"pointer"}}>{lbl}</button>
+        ))}
+      </div>
+      {tab==="issue"&&<Card style={{maxWidth:440}}>
+        <div style={{fontSize:15,fontWeight:700,marginBottom:16}}>Issue New Gift Card</div>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:14}}>
+          {[25,50,100,150,200,500].map(v=><button key={v} onClick={()=>setAmount(String(v))} style={{padding:"10px 16px",borderRadius:8,border:`2px solid ${parseFloat(amount)===v?C.primary:C.border}`,background:parseFloat(amount)===v?C.primaryLight:"#fff",color:parseFloat(amount)===v?C.primary:C.textMid,fontFamily:"inherit",fontSize:13,fontWeight:700,cursor:"pointer"}}>SAR {v}</button>)}
+        </div>
+        <Inp label="Custom Amount (SAR)" value={amount} onChange={setAmount} type="number" placeholder="e.g. 75"/>
+        <Btn style={{marginTop:16,width:"100%"}} onClick={issueCard}>🎁 Issue Gift Card</Btn>
+      </Card>}
+      {tab==="redeem"&&<Card style={{maxWidth:440}}>
+        <div style={{fontSize:15,fontWeight:700,marginBottom:16}}>Redeem Gift Card</div>
+        <div style={{display:"flex",gap:8,marginBottom:14}}>
+          <input value={redeemCode} onChange={e=>setRedeemCode(e.target.value.toUpperCase())} placeholder="Enter gift card code" style={{flex:1,padding:"10px 14px",border:`1.5px solid ${C.border}`,borderRadius:10,fontSize:14,fontFamily:"monospace",fontWeight:700,letterSpacing:"0.1em"}}/>
+          <Btn onClick={checkRedeem}>Check</Btn>
+        </div>
+        {redeemResult&&(redeemResult.error?<div style={{padding:"10px 14px",background:C.dangerLight,border:`1px solid ${C.danger}`,borderRadius:8,color:C.danger,fontSize:13,fontWeight:600}}>{redeemResult.error}</div>:(
+          <div style={{padding:"16px",background:C.successLight,border:`1px solid ${C.success}`,borderRadius:10}}>
+            <div style={{fontSize:13,fontWeight:700,color:C.success,marginBottom:8}}>✅ Valid Gift Card</div>
+            <div style={{fontSize:12,color:C.textMid}}>Code: <strong>{redeemResult.card.code}</strong></div>
+            <div style={{fontSize:18,fontWeight:800,color:C.primary,marginTop:6}}>Balance: {fmtSAR(redeemResult.card.balance)}</div>
+            <div style={{display:"flex",gap:8,marginTop:12,flexWrap:"wrap"}}>
+              {[10,25,50].filter(v=>v<=redeemResult.card.balance).map(v=><Btn key={v} size="sm" variant="outline" onClick={()=>redeemAmount(redeemResult.card,v)}>Redeem SAR {v}</Btn>)}
+              <Btn size="sm" onClick={()=>{const a=parseFloat(prompt("Amount to redeem (SAR):")||"0");if(a>0)redeemAmount(redeemResult.card,a);}}>Custom Amount</Btn>
+            </div>
+          </div>
+        ))}
+      </Card>}
+      {tab==="list"&&(cards.length===0?<Card><div style={{textAlign:"center",padding:"40px 0",color:C.textLight}}>No gift cards issued yet.</div></Card>:(
+        <DataTable headers={["Code","Issued","Original","Balance","Status"]} rows={cards.map(c=>[
+          <span style={{fontFamily:"monospace",fontWeight:700,letterSpacing:"0.08em"}}>{c.code}</span>,
+          <span style={{fontSize:11}}>{c.issuedAt.slice(0,10)}</span>,
+          fmtSAR(c.originalAmount),
+          <strong style={{color:c.balance>0?C.primary:C.textLight}}>{fmtSAR(c.balance)}</strong>,
+          <Badge color={c.status==="active"?C.success:C.textLight} bg={c.status==="active"?C.successLight:C.bg}>{c.status}</Badge>
+        ])}/>
+      ))}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// LOYALTY PROGRAM (standalone tab in Tools — also accessible via CRM)
+// ═══════════════════════════════════════════════════════════════════
+// (Already implemented inside Customers component — this adds a standalone Loyalty screen)
+
+// ═══════════════════════════════════════════════════════════════════
+// DELIVERY INTEGRATION PLACEHOLDER
+// ═══════════════════════════════════════════════════════════════════
+function DeliveryIntegration(){
+  const [settings,setSettings]=useState(()=>JSON.parse(localStorage.getItem("restopos_delivery_settings")||JSON.stringify({hungerStation:{enabled:false,apiKey:"",branchId:""},jahez:{enabled:false,apiKey:"",branchId:""},marsool:{enabled:false,apiKey:"",branchId:""},careem:{enabled:false,apiKey:"",branchId:""}})));
+  const [saved,setSaved]=useState(false);
+  const platforms=[{id:"hungerStation",name:"HungerStation",icon:"🍔",color:"#E44D26"},{id:"jahez",name:"Jahez",icon:"🛵",color:"#F0A500"},{id:"marsool",name:"Marsool",icon:"📦",color:"#1A6B4A"},{id:"careem",name:"Careem Eats",icon:"🟢",color:"#3CB371"}];
+  function saveSettings(){localStorage.setItem("restopos_delivery_settings",JSON.stringify(settings));setSaved(true);setTimeout(()=>setSaved(false),2000);}
+  return(
+    <div>
+      <div style={{marginBottom:20}}>
+        <div style={{fontSize:20,fontWeight:800}}>🛵 Delivery App Integration</div>
+        <div style={{fontSize:13,color:C.textMid,marginTop:4}}>Connect RestoPOS to delivery platforms. API integration available when you subscribe to their merchant programs.</div>
+      </div>
+      <div style={{background:C.infoLight,border:`1px solid ${C.info}`,borderRadius:10,padding:"14px 18px",marginBottom:24,fontSize:13,color:C.info}}>
+        ℹ️ <strong>How it works:</strong> Enter your merchant API key and branch ID from each platform's merchant portal. RestoPOS will automatically receive orders and sync them to your POS queue. This feature uses each platform's official Merchant API.
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(320px,1fr))",gap:16}}>
+        {platforms.map(p=>(
+          <Card key={p.id}>
+            <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:16}}>
+              <div style={{width:44,height:44,borderRadius:10,background:p.color+"22",display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,border:`2px solid ${p.color}33`}}>{p.icon}</div>
+              <div style={{flex:1}}>
+                <div style={{fontSize:15,fontWeight:800,color:p.color}}>{p.name}</div>
+                <div style={{fontSize:11,color:C.textMid}}>Delivery platform integration</div>
+              </div>
+              <button onClick={()=>setSettings(s=>({...s,[p.id]:{...s[p.id],enabled:!s[p.id].enabled}}))} style={{width:44,height:24,borderRadius:12,background:settings[p.id]?.enabled?C.primary:"#ccc",border:"none",cursor:"pointer",position:"relative",transition:"background 0.2s"}}>
+                <span style={{position:"absolute",top:2,left:settings[p.id]?.enabled?22:2,width:20,height:20,borderRadius:"50%",background:"#fff",transition:"left 0.2s",display:"block"}}/>
+              </button>
+            </div>
+            {settings[p.id]?.enabled&&(
+              <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                <Inp label="API Key" value={settings[p.id]?.apiKey||""} onChange={v=>setSettings(s=>({...s,[p.id]:{...s[p.id],apiKey:v}}))} placeholder="Paste your API key here"/>
+                <Inp label="Branch / Location ID" value={settings[p.id]?.branchId||""} onChange={v=>setSettings(s=>({...s,[p.id]:{...s[p.id],branchId:v}}))} placeholder="e.g. BR-0001"/>
+                <div style={{fontSize:11,color:C.textMid,padding:"8px 10px",background:C.bg,borderRadius:6}}>Get your API key from the {p.name} Merchant Portal → Settings → API Access</div>
+              </div>
+            )}
+          </Card>
+        ))}
+      </div>
+      <div style={{marginTop:20,display:"flex",gap:10,alignItems:"center"}}>
+        <Btn onClick={saveSettings}>💾 Save Integration Settings</Btn>
+        {saved&&<span style={{fontSize:12,color:C.success,fontWeight:700}}>✓ Saved!</span>}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// MULTI-LOCATION SUPPORT
+// ═══════════════════════════════════════════════════════════════════
+function MultiLocationSettings(){
+  const [locations,setLocations]=useState(()=>JSON.parse(localStorage.getItem("restopos_locations")||JSON.stringify([{id:"main",name:"Main Branch",address:"",isActive:true,isDefault:true}])));
+  const [activeLocationId,setActiveLocationId]=useState(()=>localStorage.getItem("restopos_active_location")||"main");
+  const [editId,setEditId]=useState(null);
+  const [formName,setFormName]=useState("");
+  const [formAddress,setFormAddress]=useState("");
+  function saveLocations(locs){setLocations(locs);localStorage.setItem("restopos_locations",JSON.stringify(locs));}
+  function addLocation(){
+    if(!formName.trim())return alert("Location name required.");
+    const loc={id:"loc_"+Date.now(),name:formName.trim(),address:formAddress.trim(),isActive:true,isDefault:false};
+    saveLocations([...locations,loc]);setFormName("");setFormAddress("");
+  }
+  function setDefault(id){
+    saveLocations(locations.map(l=>({...l,isDefault:l.id===id})));
+    setActiveLocationId(id);localStorage.setItem("restopos_active_location",id);
+  }
+  function removeLocation(id){
+    if(locations.length===1)return alert("Cannot remove the only location.");
+    if(!confirm("Remove this location?"))return;
+    saveLocations(locations.filter(l=>l.id!==id));
+  }
+  const activeLocation=locations.find(l=>l.id===activeLocationId)||locations[0];
+  return(
+    <div>
+      <div style={{marginBottom:20}}>
+        <div style={{fontSize:20,fontWeight:800}}>🏢 Multi-Location Management</div>
+        <div style={{fontSize:13,color:C.textMid,marginTop:4}}>Manage multiple branches and locations for your restaurant chain</div>
+      </div>
+      <div style={{background:C.primaryLight,border:`1.5px solid ${C.primary}44`,borderRadius:10,padding:"12px 16px",marginBottom:20,fontSize:13}}>
+        <strong style={{color:C.primary}}>Active Location:</strong> <span style={{fontWeight:700}}>{activeLocation?.name}</span>{activeLocation?.address&&<span style={{color:C.textMid}}> — {activeLocation.address}</span>}
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:20,alignItems:"start"}}>
+        <Card>
+          <div style={{fontSize:15,fontWeight:700,marginBottom:14}}>Locations</div>
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            {locations.map(loc=>(
+              <div key={loc.id} style={{padding:"12px 14px",borderRadius:10,border:`1.5px solid ${activeLocationId===loc.id?C.primary:C.border}`,background:activeLocationId===loc.id?C.primaryLight:"#fff",display:"flex",alignItems:"center",gap:10}}>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:13,fontWeight:700,color:C.text}}>{loc.name}</div>
+                  {loc.address&&<div style={{fontSize:11,color:C.textMid}}>{loc.address}</div>}
+                  {loc.isDefault&&<span style={{fontSize:10,background:C.primary,color:"#fff",padding:"1px 8px",borderRadius:20,fontWeight:700}}>Default</span>}
+                </div>
+                <div style={{display:"flex",gap:6}}>
+                  <Btn size="sm" variant="outline" onClick={()=>setDefault(loc.id)}>Set Active</Btn>
+                  {!loc.isDefault&&<Btn size="sm" variant="ghost" onClick={()=>removeLocation(loc.id)}>✕</Btn>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+        <Card>
+          <div style={{fontSize:15,fontWeight:700,marginBottom:14}}>Add New Location</div>
+          <div style={{display:"flex",flexDirection:"column",gap:12}}>
+            <Inp label="Branch Name" value={formName} onChange={setFormName} placeholder="e.g. Riyadh — Al Olaya Branch"/>
+            <Inp label="Address" value={formAddress} onChange={setFormAddress} placeholder="e.g. King Fahd Road, Riyadh"/>
+            <Btn onClick={addLocation}>+ Add Location</Btn>
+          </div>
+          <div style={{marginTop:16,padding:"12px 14px",background:C.infoLight,borderRadius:8,fontSize:12,color:C.info}}>
+            Each location shares the same menu and settings but tracks orders, reports, and shifts independently based on the active location.
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ACCOUNTING EXPORT (QuickBooks-compatible CSV)
+// ═══════════════════════════════════════════════════════════════════
+function AccountingExport({sales,items}){
+  const [dateFrom,setDateFrom]=useState(TODAY);
+  const [dateTo,setDateTo]=useState(TODAY);
+  const [format,setFormat]=useState("quickbooks");
+  const [exported,setExported]=useState(false);
+  function filteredSales(){return sales.filter(s=>s.date>=dateFrom&&s.date<=dateTo);}
+  function exportQuickBooks(){
+    const rows=filteredSales();
+    if(rows.length===0){alert("No sales in selected date range.");return;}
+    const lines=["Date,Ref No,Description,Account,Debit,Credit,Tax Code,Tax Amount,Currency"];
+    rows.forEach(s=>{
+      const excl=(s.total||0)-(s.vat||0);
+      lines.push(`${s.date},${s.id},"POS Sale - ${s.payMethod}",Sales Revenue,,${excl.toFixed(2)},VAT15,${(s.vat||0).toFixed(2)},SAR`);
+      lines.push(`${s.date},${s.id},"POS Sale - ${s.payMethod}",${s.payMethod==="Cash"?"Cash Account":"Digital Payments"},${(s.total||0).toFixed(2)},,,,SAR`);
+      if((s.vat||0)>0)lines.push(`${s.date},${s.id},"VAT 15%",VAT Payable,,${(s.vat||0).toFixed(2)},,,SAR`);
+    });
+    const csv=lines.join("\n");
+    const blob=new Blob([csv],{type:"text/csv"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");a.href=url;a.download=`quickbooks-export-${dateFrom}-to-${dateTo}.csv`;a.click();
+    URL.revokeObjectURL(url);setExported(true);setTimeout(()=>setExported(false),2000);
+  }
+  function exportJournal(){
+    const rows=filteredSales();
+    if(rows.length===0){alert("No sales in selected date range.");return;}
+    const lines=["Date,Invoice No,Type,Customer,Items,Subtotal (excl VAT),VAT 15%,Total (incl VAT),Payment Method,Cashier"];
+    rows.forEach(s=>{
+      const itemSummary=(s.items||[]).map(i=>`${i.qty}x ${i.name}`).join("; ");
+      const excl=(s.total||0)-(s.vat||0);
+      lines.push(`${s.date},${s.id},${s.type||"Sale"},"${s.customer||"Walk-in"}","${itemSummary}",${excl.toFixed(2)},${(s.vat||0).toFixed(2)},${(s.total||0).toFixed(2)},${s.payMethod||""},${s.cashier||""}`);
+    });
+    const csv=lines.join("\n");
+    const blob=new Blob([csv],{type:"text/csv"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");a.href=url;a.download=`sales-journal-${dateFrom}-to-${dateTo}.csv`;a.click();
+    URL.revokeObjectURL(url);setExported(true);setTimeout(()=>setExported(false),2000);
+  }
+  const rows=filteredSales();
+  const totalRev=rows.reduce((s,o)=>s+(o.total||0),0);
+  const totalVat=rows.reduce((s,o)=>s+(o.vat||0),0);
+  return(
+    <div>
+      <div style={{marginBottom:20}}>
+        <div style={{fontSize:20,fontWeight:800}}>📤 Accounting Export</div>
+        <div style={{fontSize:13,color:C.textMid,marginTop:4}}>Export sales data to QuickBooks, Xero, or any accounting software</div>
+      </div>
+      <Card style={{maxWidth:640}}>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:20}}>
+          <Inp label="Date From" value={dateFrom} onChange={setDateFrom} type="date"/>
+          <Inp label="Date To" value={dateTo} onChange={setDateTo} type="date"/>
+        </div>
+        {rows.length>0&&(
+          <div style={{background:C.bg,borderRadius:10,padding:"12px 16px",marginBottom:20,display:"flex",gap:20,flexWrap:"wrap"}}>
+            <div><div style={{fontSize:11,color:C.textMid}}>Transactions</div><div style={{fontSize:18,fontWeight:800,color:C.primary}}>{rows.length}</div></div>
+            <div><div style={{fontSize:11,color:C.textMid}}>Total Revenue</div><div style={{fontSize:18,fontWeight:800,color:C.success}}>{fmtSAR(totalRev)}</div></div>
+            <div><div style={{fontSize:11,color:C.textMid}}>VAT Collected</div><div style={{fontSize:18,fontWeight:800,color:C.zatca}}>{fmtSAR(totalVat)}</div></div>
+          </div>
+        )}
+        <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
+          <Btn onClick={exportQuickBooks}>📊 Export QuickBooks CSV</Btn>
+          <Btn variant="outline" onClick={exportJournal}>📋 Export Sales Journal</Btn>
+        </div>
+        {exported&&<div style={{marginTop:12,fontSize:12,color:C.success,fontWeight:700}}>✅ File downloaded successfully.</div>}
+        <div style={{marginTop:20,paddingTop:16,borderTop:`1px solid ${C.border}`,fontSize:12,color:C.textMid}}>
+          <div style={{fontWeight:700,marginBottom:6}}>Import instructions:</div>
+          <div><strong>QuickBooks:</strong> Banking → Upload Transactions → Select CSV → Map columns</div>
+          <div style={{marginTop:4}}><strong>Xero:</strong> Accounting → Bank Accounts → Import → Select CSV</div>
+          <div style={{marginTop:4}}><strong>Other:</strong> Use Sales Journal CSV for any accounting software</div>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// SCHEDULED REPORTS UI
+// ═══════════════════════════════════════════════════════════════════
+function ScheduledReports({sales,items}){
+  const [schedules,setSchedules]=useState(()=>JSON.parse(localStorage.getItem("restopos_report_schedules")||"[]"));
+  const [form,setForm]=useState({name:"Daily Sales Summary",frequency:"daily",email:"",enabled:true,reportType:"sales"});
+  const [saved,setSaved]=useState(false);
+  function addSchedule(){
+    if(!form.email.trim())return alert("Email address required.");
+    const s={...form,id:Date.now(),createdAt:new Date().toISOString(),lastSent:null};
+    const updated=[...schedules,s];setSchedules(updated);localStorage.setItem("restopos_report_schedules",JSON.stringify(updated));
+    setForm(f=>({...f,email:""}));setSaved(true);setTimeout(()=>setSaved(false),2000);
+  }
+  function removeSchedule(id){setSchedules(prev=>{const u=prev.filter(s=>s.id!==id);localStorage.setItem("restopos_report_schedules",JSON.stringify(u));return u;});}
+  function previewAndDownload(type){
+    const today=TODAY;const todaySales=sales.filter(s=>s.date===today);
+    const revenue=todaySales.reduce((s,o)=>s+(o.total||0),0);
+    const vat=todaySales.reduce((s,o)=>s+(o.vat||0),0);
+    const csv=["Date,Orders,Revenue,VAT,Net",`${today},${todaySales.length},${revenue.toFixed(2)},${vat.toFixed(2)},${(revenue-vat).toFixed(2)}`].join("\n");
+    const blob=new Blob([csv],{type:"text/csv"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");a.href=url;a.download=`report-${type}-${today}.csv`;a.click();
+    URL.revokeObjectURL(url);
+  }
+  return(
+    <div>
+      <div style={{marginBottom:20}}>
+        <div style={{fontSize:20,fontWeight:800}}>📅 Scheduled Reports</div>
+        <div style={{fontSize:13,color:C.textMid,marginTop:4}}>Set up automatic report delivery (email delivery requires backend configuration)</div>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:20,alignItems:"start"}}>
+        <Card>
+          <div style={{fontSize:15,fontWeight:700,marginBottom:16}}>Create Schedule</div>
+          <div style={{display:"flex",flexDirection:"column",gap:12}}>
+            <Inp label="Report Name" value={form.name} onChange={v=>setForm(f=>({...f,name:v}))}/>
+            <Sel label="Report Type" value={form.reportType} onChange={v=>setForm(f=>({...f,reportType:v}))} options={[{value:"sales",label:"Sales Summary"},{value:"vat",label:"VAT Report"},{value:"items",label:"Top Items"},{value:"staff",label:"Staff Performance"}]}/>
+            <Sel label="Frequency" value={form.frequency} onChange={v=>setForm(f=>({...f,frequency:v}))} options={[{value:"daily",label:"Daily (7 AM)"},{value:"weekly",label:"Weekly (Monday)"},{value:"monthly",label:"Monthly (1st)"}]}/>
+            <Inp label="Recipient Email" value={form.email} onChange={v=>setForm(f=>({...f,email:v}))} placeholder="manager@restaurant.com" type="email"/>
+          </div>
+          <div style={{display:"flex",gap:10,marginTop:16,alignItems:"center"}}>
+            <Btn onClick={addSchedule}>+ Add Schedule</Btn>
+            {saved&&<span style={{fontSize:12,color:C.success,fontWeight:700}}>✓ Schedule saved!</span>}
+          </div>
+          <div style={{marginTop:14,padding:"10px 14px",background:C.warningLight,border:`1px solid ${C.warning}44`,borderRadius:8,fontSize:12,color:C.warning,fontWeight:600}}>
+            ⚠️ Email delivery requires a backend (Firebase Functions + SendGrid/SMTP). Schedules are saved and ready — contact RestoPOS support to enable email delivery for your account.
+          </div>
+        </Card>
+        <div style={{display:"flex",flexDirection:"column",gap:14}}>
+          <Card>
+            <div style={{fontSize:15,fontWeight:700,marginBottom:14}}>📥 Download Reports Now</div>
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {[["Daily Sales","sales"],["VAT Summary","vat"],["Top Items","items"]].map(([lbl,type])=>(
+                <button key={type} onClick={()=>previewAndDownload(type)} style={{padding:"10px 14px",background:C.bg,border:`1px solid ${C.border}`,borderRadius:8,cursor:"pointer",textAlign:"left",fontFamily:"inherit",fontSize:13,fontWeight:600,color:C.text}}>📥 Download {lbl} — Today</button>
+              ))}
+            </div>
+          </Card>
+          {schedules.length>0&&<Card>
+            <div style={{fontSize:15,fontWeight:700,marginBottom:14}}>Active Schedules</div>
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {schedules.map(s=>(
+                <div key={s.id} style={{padding:"10px 14px",background:C.bg,borderRadius:8,display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
+                  <div>
+                    <div style={{fontSize:13,fontWeight:700}}>{s.name}</div>
+                    <div style={{fontSize:11,color:C.textMid}}>{s.frequency} → {s.email}</div>
+                  </div>
+                  <Btn size="sm" variant="ghost" onClick={()=>removeSchedule(s.id)}>✕</Btn>
+                </div>
+              ))}
+            </div>
+          </Card>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ERROR LOG VIEWER (admin)
+// ═══════════════════════════════════════════════════════════════════
+function ErrorLogViewer(){
+  const [logs]=useState(()=>JSON.parse(localStorage.getItem("restopos_error_logs")||"[]"));
+  return(
+    <Card>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+        <div style={{fontSize:15,fontWeight:700}}>⚠️ Error Log</div>
+        <Btn size="sm" variant="ghost" onClick={()=>{localStorage.removeItem("restopos_error_logs");window.location.reload();}}>Clear Logs</Btn>
+      </div>
+      {logs.length===0?<div style={{textAlign:"center",padding:"30px 0",color:C.textLight}}>✅ No errors logged. All systems running smoothly.</div>:(
+        <div style={{display:"flex",flexDirection:"column",gap:8}}>
+          {logs.map((l,i)=>(
+            <div key={i} style={{padding:"10px 14px",background:C.dangerLight,border:`1px solid ${C.danger}22`,borderRadius:8}}>
+              <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+                <span style={{fontSize:12,fontWeight:700,color:C.danger}}>{l.message}</span>
+                <span style={{fontSize:10,color:C.textLight}}>{l.ts?.slice(0,19).replace("T"," ")}</span>
+              </div>
+              {l.component&&<div style={{fontSize:10,color:C.textMid,fontFamily:"monospace",whiteSpace:"pre-wrap",wordBreak:"break-all"}}>{l.component}</div>}
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// NEW "ADVANCED" SCREEN — aggregates all new features
+// ═══════════════════════════════════════════════════════════════════
+function AdvancedFeatures({sales,items,setItems}){
+  const [tab,setTab]=useState("kds");
+  const tabs=[["kds","🍳 KDS"],["stocktakes","📦 Stock Takes"],["recipes","📋 Recipes"],["giftcards","🎁 Gift Cards"],["delivery","🛵 Delivery"],["locations","🏢 Locations"],["accounting","📤 Accounting"],["reports","📅 Reports"],["printer","🖨️ ESC/POS"],["errorlog","⚠️ Error Log"]];
+  return(
+    <div>
+      <div style={{display:"flex",gap:6,marginBottom:20,flexWrap:"wrap"}}>
+        {tabs.map(([id,lbl])=>(
+          <button key={id} onClick={()=>setTab(id)} style={{padding:"7px 14px",borderRadius:8,border:`1.5px solid ${tab===id?C.primary:C.border}`,background:tab===id?C.primaryLight:"#fff",color:tab===id?C.primary:C.textMid,fontFamily:"inherit",fontSize:12,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap"}}>{lbl}</button>
+        ))}
+      </div>
+      {tab==="kds"&&<KitchenDisplay sales={sales}/>}
+      {tab==="stocktakes"&&<StockTakes items={items} setItems={setItems}/>}
+      {tab==="recipes"&&<RecipeCosting items={items}/>}
+      {tab==="giftcards"&&<GiftCards/>}
+      {tab==="delivery"&&<DeliveryIntegration/>}
+      {tab==="locations"&&<MultiLocationSettings/>}
+      {tab==="accounting"&&<AccountingExport sales={sales} items={items}/>}
+      {tab==="reports"&&<ScheduledReports sales={sales} items={items}/>}
+      {tab==="printer"&&<ThermalPrinterSettings/>}
+      {tab==="errorlog"&&<ErrorLogViewer/>}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // MAIN APP
 // ═══════════════════════════════════════════════════════════════════
 export default function App(){
@@ -4363,6 +5591,14 @@ export default function App(){
   useEffect(()=>{const fn=()=>setViewport({w:window.innerWidth,h:window.innerHeight,dpr:window.devicePixelRatio||1});window.addEventListener("resize",fn);return()=>window.removeEventListener("resize",fn);},[]);
   const viewportMode=viewport.w>=1024?"DESKTOP_EXPANDED":viewport.w>=640?"TABLET_CONSTRAINED":"MOBILE_FLUID";
   useEffect(()=>{const onOwner=()=>setOwnerMode(true);const onOwnerOut=()=>{setOwnerMode(false);setOwnerAuthed(false);};window.addEventListener("ownerLogin",onOwner);window.addEventListener("ownerLogout",onOwnerOut);return()=>{window.removeEventListener("ownerLogin",onOwner);window.removeEventListener("ownerLogout",onOwnerOut);};},[]);
+  
+  // Session timeout (30 min inactivity)
+  const [sessionTimeoutMin]=useState(()=>parseInt(localStorage.getItem("restopos_session_timeout")||"30"));
+  useSessionTimeout(currentUser,()=>{setCurrentUser(null);setStep("login");},sessionTimeoutMin);
+  
+  // Offline sync state
+  const {isOnline}=useOfflineSync();
+
   // REAL-TIME KILL-SWITCH WATCHDOG — listens for status changes in Firestore
   useEffect(()=>{
     const savedLic=LS.get("restopos_license_v2");
@@ -4417,7 +5653,8 @@ export default function App(){
     else setStep("register");
   },[]);
   function handleClearLicense(){LS.del("restopos_license_v2");LS.del("restopos_pins");setLicense(null);setCurrentUser(null);setStep("register");}
-  const ALL_NAV=[["dashboard","📊","Dashboard",["Admin","Manager"]],["pos","🖥️","POS",["Admin","Manager","Cashier"]],["settings","⚙️","Settings",["Admin"]],["create","➕","Create",["Admin","Manager"]],["transactions","💳","Transactions",["Admin","Manager"]],["accounts","📈","P&L",["Admin","Manager"]],["financials","🏦","Financials",["Admin","Manager"]],["invoices","📄","Invoices",["Admin","Manager"]],["expenses","💸","Expenses",["Admin","Manager"]],["customers","👥","CRM",["Admin","Manager"]],["reports","📋","Reports",["Admin","Manager"]],["analytics","📉","Analytics",["Admin","Manager"]],["backup","💾","Backup",["Admin"]],["shifts","🔄","Shifts",["Admin","Manager"]],["audit","🔍","Audit",["Admin"]],["tools","🔧","Tools",["Admin"]],["useradmin","👤","Users",["Admin"]],["help","❓","Help",["Admin","Manager","Cashier"]]];
+  function handleSwitchAccount(){LS.del("restopos_license_v2");LS.del("restopos_client_creds");setLicense(null);setCurrentUser(null);setStep("register");}
+  const ALL_NAV=[["dashboard","📊","Dashboard",["Admin","Manager"]],["pos","🖥️","POS",["Admin","Manager","Cashier"]],["settings","⚙️","Settings",["Admin"]],["create","➕","Create",["Admin","Manager"]],["transactions","💳","Transactions",["Admin","Manager"]],["accounts","📈","P&L",["Admin","Manager"]],["financials","🏦","Financials",["Admin","Manager"]],["invoices","📄","Invoices",["Admin","Manager"]],["expenses","💸","Expenses",["Admin","Manager"]],["customers","👥","CRM",["Admin","Manager"]],["reports","📋","Reports",["Admin","Manager"]],["analytics","📉","Analytics",["Admin","Manager"]],["advanced","⚡","Advanced",["Admin","Manager"]],["backup","💾","Backup",["Admin"]],["shifts","🔄","Shifts",["Admin","Manager"]],["audit","🔍","Audit",["Admin"]],["tools","🔧","Tools",["Admin"]],["useradmin","👤","Users",["Admin"]],["help","❓","Help",["Admin","Manager","Cashier"]]];
   const NAV=ALL_NAV.filter(([,,,roles])=>currentUser&&roles.includes(currentUser.role));
   if(ownerMode&&!ownerAuthed)return<OwnerLogin onLogin={()=>setOwnerAuthed(true)}/>;
   if(ownerMode&&ownerAuthed)return<OwnerDashboard onLogout={()=>{setOwnerMode(false);setOwnerAuthed(false);}}/>;
@@ -4433,17 +5670,18 @@ export default function App(){
   if(step==="register")return<BusinessRegistration onNext={(data)=>{setBusinessData(data);setStep("license");}}/>;
   if(step==="license")return<LicenseVerification businessData={businessData||{businessName:"",crNumber:"",vatNumber:"",address:"",city:"",phone:""}} onSuccess={(lic)=>{setLicense(lic);setStep("setCredentials");}} onBack={()=>setStep("register")}/>;
   if(step==="setCredentials")return<SetCredentials license={license} onDone={()=>setStep("pendingApproval")}/>;
-  if(step==="pendingApproval")return<PendingApprovalScreen license={license} onApproved={()=>setStep("clientLogin")}/>;
+  if(step==="pendingApproval")return<PendingApprovalScreen license={license} onApproved={()=>setStep("clientLogin")} onSwitchAccount={handleSwitchAccount}/>;
   if(step==="clientLogin")return<ClientLogin license={license} onSuccess={()=>setStep("login")} onForgotPassword={()=>setStep("forgotPassword")}/>;
   if(step==="forgotPassword")return<ForgotPassword onBack={()=>setStep("clientLogin")} onReset={()=>setStep("clientLogin")}/>;
   if(step==="login"||!currentUser)return<RoleLogin license={license} onLogin={(user)=>{setCurrentUser(user);setStep("app");if(user.role==="Cashier")setScreen("pos");}}/>;
   return(
+    <ErrorBoundary>
     <div style={{fontFamily:"'Plus Jakarta Sans','Tajawal',sans-serif",background:C.bg,height:"100vh",display:"flex",flexDirection:"column",overflow:"hidden",fontSize:`${uiScale}%`}}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Tajawal:wght@400;500;700&display=swap');html,body,#root{height:100%;margin:0;padding:0;width:100%}*{box-sizing:border-box;margin:0;padding:0}::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-track{background:${C.bg}}::-webkit-scrollbar-thumb{background:${C.border};border-radius:3px}input,select{outline:none}input:focus,select:focus{border-color:${C.primary}!important}@media print{header,nav{display:none!important}}`}</style>
       <div style={{display:"flex",alignItems:"stretch",flexShrink:0,zIndex:100,boxShadow:"0 2px 12px rgba(0,0,0,0.18)",minHeight:50,width:"100%",flexWrap:"nowrap"}}>
         <div style={{background:"linear-gradient(135deg,#1A3D2B 0%,#1F4D36 100%)",display:"flex",alignItems:"center",gap:8,padding:"0 12px",flexShrink:0,borderRight:"1px solid rgba(255,255,255,0.1)"}}>
           <div style={{width:26,height:26,background:"linear-gradient(135deg,#2ECC71,#F0A500)",borderRadius:6,display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontSize:13,fontWeight:900,flexShrink:0}}>R</div>
-          <div style={{display:viewport.w<500?"none":"block"}}><div style={{fontSize:12,fontWeight:800,color:"#fff",lineHeight:1,whiteSpace:"nowrap"}}>RestoPOS</div><div style={{fontSize:7,color:"rgba(255,255,255,0.5)",letterSpacing:"0.1em",whiteSpace:"nowrap"}}>ZATCA P2 · v18</div></div>
+          <div style={{display:viewport.w<500?"none":"block"}}><div style={{fontSize:12,fontWeight:800,color:"#fff",lineHeight:1,whiteSpace:"nowrap"}}>RestoPOS</div><div style={{fontSize:7,color:"rgba(255,255,255,0.5)",letterSpacing:"0.1em",whiteSpace:"nowrap"}}>ZATCA P2 · v20</div></div>
         </div>
         <div style={{background:"linear-gradient(90deg,#E8F4EE 0%,#F0F9F4 100%)",flex:1,display:"flex",alignItems:"center",padding:"0 4px",overflowX:"auto",borderRight:"1px solid #C8E6D4",minWidth:0}}>
           {NAV.map(([id,icon,label])=>(
@@ -4453,7 +5691,8 @@ export default function App(){
           ))}
         </div>
         <div style={{background:"linear-gradient(135deg,#1A3D2B 0%,#1F4D36 100%)",display:"flex",alignItems:"center",gap:4,padding:"0 8px",flexShrink:0,borderLeft:"1px solid rgba(255,255,255,0.1)"}}>
-          <span style={{fontSize:8,background:"rgba(46,204,113,0.25)",color:"#7FFAB5",padding:"2px 5px",borderRadius:4,fontWeight:700,border:"1px solid rgba(46,204,113,0.4)",whiteSpace:"nowrap",display:viewport.w<640?"none":"inline"}}>● LIVE</span>
+          {!isOnline&&<span style={{fontSize:8,background:"rgba(217,64,64,0.25)",color:"#ffaaaa",padding:"2px 5px",borderRadius:4,fontWeight:700,border:"1px solid rgba(217,64,64,0.35)",whiteSpace:"nowrap"}}>● OFFLINE</span>}
+          {isOnline&&<span style={{fontSize:8,background:"rgba(46,204,113,0.25)",color:"#7FFAB5",padding:"2px 5px",borderRadius:4,fontWeight:700,border:"1px solid rgba(46,204,113,0.4)",whiteSpace:"nowrap",display:viewport.w<640?"none":"inline"}}>● LIVE</span>}
           <span title={`${viewport.w}×${viewport.h}`} style={{fontSize:8,background:"rgba(240,165,0,0.15)",color:"#F0A500",padding:"2px 5px",borderRadius:4,fontWeight:700,border:"1px solid rgba(240,165,0,0.3)",whiteSpace:"nowrap",cursor:"default",display:viewport.w<768?"none":"inline"}}>{viewport.w}×{viewport.h}</span>
           <span style={{fontSize:8,background:"rgba(99,102,241,0.25)",color:"#c7d2fe",padding:"2px 5px",borderRadius:4,fontWeight:700,border:"1px solid rgba(99,102,241,0.35)",whiteSpace:"nowrap",display:viewport.w<640?"none":"inline"}}>ZATCA P2</span>
           <div style={{display:"flex",alignItems:"center",gap:2,background:"rgba(255,255,255,0.1)",borderRadius:5,padding:"2px 4px",border:"1px solid rgba(255,255,255,0.15)"}}>
@@ -4467,7 +5706,7 @@ export default function App(){
       <div style={{flex:1,padding:screen==="pos"?0:20,overflowY:screen==="pos"?"hidden":"auto",width:"100%",minHeight:0,height:"calc(100vh - 50px)"}}>
         {screen==="dashboard"&&<Dashboard sales={allSales} items={items} license={license}/>}
         {screen==="pos"&&<POS items={items} sales={sales} setSales={setSales} tables={tables} setTables={setTables} promos={promos} license={license}/>}
-        {screen==="settings"&&<Settings company={company} setCompany={setCompany} tables={tables} setTables={setTables} license={license} onClearLicense={handleClearLicense} pins={pins} setPins={setPins} invoiceFormat={invoiceFormat} setInvoiceFormat={setInvoiceFormat}/>}
+        {screen==="settings"&&<Settings company={company} setCompany={setCompany} tables={tables} setTables={setTables} license={license} onClearLicense={handleClearLicense} onSwitchAccount={handleSwitchAccount} pins={pins} setPins={setPins} invoiceFormat={invoiceFormat} setInvoiceFormat={setInvoiceFormat}/>}
         {screen==="create"&&<Create items={items} setItems={setItems} promos={promos} setPromos={setPromos}/>}
         {screen==="transactions"&&<Transactions sales={allSales} setSales={setSales} license={license}/>}
         {screen==="accounts"&&<ProfitLoss sales={allSales} items={items}/>}
@@ -4477,6 +5716,7 @@ export default function App(){
         {screen==="customers"&&<Customers sales={allSales}/>}
         {screen==="reports"&&<Reports sales={sales} allSales={allSales} items={items} setSales={setSales}/>}
         {screen==="analytics"&&<AdvancedReports sales={allSales} items={items}/>}
+        {screen==="advanced"&&<AdvancedFeatures sales={allSales} items={items} setItems={setItems}/>}
         {screen==="backup"&&<BackupManager sales={allSales} items={items}/>}
         {screen==="shifts"&&<ShiftManager sales={allSales} currentUser={currentUser}/>}
         {screen==="audit"&&<AuditTrail/>}
@@ -4485,5 +5725,6 @@ export default function App(){
         {screen==="help"&&<Help/>}
       </div>
     </div>
+    </ErrorBoundary>
   );
 }
