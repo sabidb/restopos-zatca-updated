@@ -2376,7 +2376,7 @@ function UserAdmin({users,setUsers}){
 function SupportTicketsTab(){
   const [tickets,setTickets]=useState([]);
   const [tickLoading,setTickLoading]=useState(true);
-  const DS={card:"#1A2A3F",border:"rgba(255,255,255,0.08)",text:"#F1F5F9",sub:"#94A3B8",success:"#10b981",warning:"#F0A500",danger:"#ef4444"};
+  const DS={card:"#FFFFFF",border:"#E2E8F0",text:"#1A1D23",sub:"#5A6070",success:"#10b981",warning:"#F0A500",danger:"#ef4444"};
   useEffect(()=>{
     getDocs(collection(db,"support_tickets"))
       .then(snap=>{setTickets(snap.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>(b.submittedAt||"").localeCompare(a.submittedAt||"")));setTickLoading(false);})
@@ -2551,7 +2551,7 @@ function OwnerDashboardInline(){
 
   if(loading)return<div style={{textAlign:"center",padding:40,color:"#64748B",fontSize:13}}>Loading client data from Firestore…</div>;
 
-  const DS={bg:"#0F1929",card:"#1A2A3F",border:"rgba(255,255,255,0.08)",text:"#F1F5F9",sub:"#94A3B8",accent:"#F0A500",indigo:"#6366f1",success:"#10b981",danger:"#ef4444",warning:"#F0A500"};
+  const DS={bg:"#F0F4F8",card:"#FFFFFF",border:"#E2E8F0",text:"#1A1D23",sub:"#5A6070",accent:"#F0A500",indigo:"#6366f1",success:"#10b981",danger:"#ef4444",warning:"#F0A500"};
 
   const DCard=({children,style={}})=>(
     <div style={{background:DS.card,border:`1px solid ${DS.border}`,borderRadius:14,padding:18,boxShadow:"0 2px 12px rgba(0,0,0,0.2)",...style}}>{children}</div>
@@ -2575,7 +2575,7 @@ function OwnerDashboardInline(){
   const maxBar=Math.max(...monthlyActivations.map(m=>m.count),1);
 
   return(
-    <div style={{fontFamily:"'Plus Jakarta Sans',sans-serif",color:DS.text,width:"100%",minHeight:"100vh",background:"linear-gradient(135deg,#0a1020 0%,#0F1929 100%)",padding:0}}>
+    <div style={{fontFamily:"'Plus Jakarta Sans',sans-serif",color:"#1A1D23",width:"100%",background:"transparent",padding:0}}>
       {/* KPI Row */}
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))",gap:10,marginBottom:20}}>
         {[
@@ -4824,9 +4824,9 @@ function OwnerLogin({onLogin}){
 function OwnerDashboard({onLogout}){
   const [refreshKey,setRefreshKey]=useState(0);
   return(
-    <div style={{fontFamily:"'Plus Jakarta Sans',sans-serif",background:"#0d1b2a",height:"100vh",width:"100vw",display:"flex",flexDirection:"column",overflow:"hidden",color:"#F1F5F9",position:"fixed",inset:0,zIndex:9999}}>
+    <div style={{fontFamily:"'Plus Jakarta Sans',sans-serif",background:"#F0F4F8",height:"100vh",width:"100vw",display:"flex",flexDirection:"column",overflow:"hidden",color:"#1A1D23",position:"fixed",inset:0,zIndex:9999}}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');*{box-sizing:border-box;margin:0;padding:0}::-webkit-scrollbar{width:5px}::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.12);border-radius:3px}`}</style>
-      <div style={{background:"linear-gradient(135deg,#1a2332 0%,#0F2340 100%)",borderBottom:"1px solid rgba(255,255,255,0.08)",padding:"0 24px",height:52,display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0,boxShadow:"0 2px 12px rgba(0,0,0,0.3)"}}>
+      <div style={{background:"linear-gradient(135deg,#1A3D2B 0%,#1F4D36 100%)",borderBottom:"1px solid rgba(255,255,255,0.08)",padding:"0 24px",height:52,display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0,boxShadow:"0 2px 12px rgba(0,0,0,0.15)"}}>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
           <div style={{width:32,height:32,background:"linear-gradient(135deg,#F0A500,#e09000)",borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16}}>👑</div>
           <div style={{fontSize:15,fontWeight:800,color:"#fff"}}>Owner Dashboard</div>
