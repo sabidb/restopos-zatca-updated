@@ -247,17 +247,25 @@ function SetCredentials({license,onDone}){
     try{
       const hashed=await hashPassword(password);
       // Save credentials locally (pending approval)
-      LS.set("restopos_client_creds",{username:username.trim().toLowerCase(),passwordHash:hashed,approved:false,crNumber:license.crNumber});
+      LS.set("restopos_client_creds",{username:username.trim().toLowerCase(),passwordHash:hashed,approved:false,crNumber:license.crNumber,email:license.email||""});
       // Save to Firestore so admin can see and approve
       const q=query(collection(db,"pending_activations"),where("licenseKey","==",license.licenseKey));
       const snap=await getDocs(q);
       if(!snap.empty){
         await updateDoc(doc(db,"pending_activations",snap.docs[0].id),{
           clientUsername:username.trim().toLowerCase(),
+          passwordHash:hashed,
+          email:license.email||"",
           credentialsSet:true,
           credentialsApproved:false,
           credentialsSetAt:new Date().toISOString()
         });
+      }
+      // Send welcome verification email
+      if(license.email){
+        try{
+          await sendEmailJS(EMAILJS_VERIFY_TEMPLATE,{to_email:license.email,to_name:license.ownerName||license.businessName||"",code:"Account created! Awaiting admin approval."});
+        }catch(mailErr){console.warn("Welcome email failed:",mailErr);}
       }
       onDone();
     }catch(e){setError("Failed to save: "+e.message);}
@@ -324,7 +332,7 @@ function PendingApprovalScreen({license,onApproved,onSwitchAccount}){
         const snap=await getDocs(q);
         if(!snap.empty){
           const data=snap.docs[0].data();
-          if(data.credentialsApproved===true){
+          if(data.status==="approved"&&data.credentialsApproved===true){
             // Update local creds
             const localCreds=LS.get("restopos_client_creds");
             if(localCreds)LS.set("restopos_client_creds",{...localCreds,approved:true});
@@ -345,7 +353,7 @@ function PendingApprovalScreen({license,onApproved,onSwitchAccount}){
       const snap=await getDocs(q);
       if(!snap.empty){
         const data=snap.docs[0].data();
-        if(data.credentialsApproved===true){
+        if(data.status==="approved"&&data.credentialsApproved===true){
           const localCreds=LS.get("restopos_client_creds");
           if(localCreds)LS.set("restopos_client_creds",{...localCreds,approved:true});
           onApproved();return;
@@ -541,131 +549,101 @@ function PasswordStrengthBar({password}){
 // ═══════════════════════════════════════════════════════════════════
 // FORGOT PASSWORD — enhanced with email flow, strength meter, 4 screens
 // ═══════════════════════════════════════════════════════════════════
+// ── EmailJS helper ──────────────────────────────────────────────────
+const EMAILJS_SERVICE="service_mxln2w4";
+const EMAILJS_VERIFY_TEMPLATE="template_v28ss1y";
+const EMAILJS_RESET_TEMPLATE="template_444v50v";
+const EMAILJS_PUBLIC_KEY="jlfUG0WjJ3UVXUgCb";
+async function sendEmailJS(templateId,params){
+  const res=await fetch("https://api.emailjs.com/api/v1.0/email/send",{
+    method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({service_id:EMAILJS_SERVICE,template_id:templateId,user_id:EMAILJS_PUBLIC_KEY,template_params:params})
+  });
+  if(!res.ok)throw new Error("Email send failed: "+res.status);
+}
+function generateCode(){return String(Math.floor(100000+Math.random()*900000));}
+
 function ForgotPassword({onBack,onReset}){
-  // step: "email" | "emailSent" | "verify" | "reset" | "success"
   const [step,setStep]=useState("email");
-  // email step
   const [email,setEmail]=useState("");
   const [emailError,setEmailError]=useState("");
   const [emailLoading,setEmailLoading]=useState(false);
+  const [code,setCode]=useState("");
+  const [sentCode,setSentCode]=useState("");
+  const [codeExpiry,setCodeExpiry]=useState(null);
+  const [codeError,setCodeError]=useState("");
   const [resendCooldown,setResendCooldown]=useState(0);
   const resendTimerRef=useRef(null);
-  // verify step (license + CR)
-  const [licenseKey,setLicenseKey]=useState("");
-  const [crNumber,setCrNumber]=useState("");
-  const [verifyError,setVerifyError]=useState("");
-  const [verifyLoading,setVerifyLoading]=useState(false);
-  const [verifiedCr,setVerifiedCr]=useState("");
-  // reset step
+  const [foundDocId,setFoundDocId]=useState("");
+  const [foundName,setFoundName]=useState("");
   const [newPassword,setNewPassword]=useState("");
   const [confirmPw,setConfirmPw]=useState("");
   const [showPw,setShowPw]=useState(false);
-  const [showConfirmPw,setShowConfirmPw]=useState(false);
   const [resetError,setResetError]=useState("");
   const [resetLoading,setResetLoading]=useState(false);
-  // success auto-redirect
   const [redirectCount,setRedirectCount]=useState(5);
   useEffect(()=>{
     if(step!=="success")return;
     const t=setInterval(()=>setRedirectCount(c=>{if(c<=1){clearInterval(t);onReset();return 0;}return c-1;}),1000);
     return()=>clearInterval(t);
   },[step]);
-
-  // Rate limiting — track send attempts
-  const [sendAttempts,setSendAttempts]=useState(0);
-
   function startResendCooldown(secs=60){
     setResendCooldown(secs);
     if(resendTimerRef.current)clearInterval(resendTimerRef.current);
     resendTimerRef.current=setInterval(()=>setResendCooldown(c=>{if(c<=1){clearInterval(resendTimerRef.current);return 0;}return c-1;}),1000);
   }
-
-  async function handleSendEmail(){
+  async function handleSendCode(){
     setEmailError("");
     const trimmed=email.trim().toLowerCase();
-    if(!trimmed){setEmailError("Please enter your email address.");return;}
-    if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)){setEmailError("Please enter a valid email address.");return;}
-    if(sendAttempts>=3){setEmailError("Too many attempts. Please wait a few minutes before trying again.");return;}
+    if(!trimmed||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)){setEmailError("Please enter a valid email address.");return;}
     setEmailLoading(true);
     try{
-      // Try Firebase Auth sendPasswordResetEmail if available, else fall through to local verify
-      const {getAuth,sendPasswordResetEmail}=await import("https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js").catch(()=>({getAuth:null,sendPasswordResetEmail:null}));
-      if(getAuth&&sendPasswordResetEmail){
-        try{
-          const auth=getAuth();
-          await sendPasswordResetEmail(auth,trimmed,{
-            url:window.location.origin,
-            handleCodeInApp:false
-          });
-          setSendAttempts(a=>a+1);
-          startResendCooldown(60);
-          setStep("emailSent");
-          setEmailLoading(false);
-          return;
-        }catch(fbErr){
-          // If Firebase Auth not configured or user not found, fall through to local flow
-          if(fbErr.code==="auth/user-not-found"){setEmailError("No account found with this email address.");setEmailLoading(false);return;}
-          if(fbErr.code==="auth/invalid-email"){setEmailError("Invalid email address.");setEmailLoading(false);return;}
-          if(fbErr.code==="auth/too-many-requests"){setEmailError("Too many requests. Please wait and try again.");setEmailLoading(false);return;}
-          // For other errors (e.g. Firebase Auth not set up), fall through to local verify flow
-        }
-      }
-      // Fallback: go to local license+CR verification
-      setSendAttempts(a=>a+1);
+      const q=query(collection(db,"pending_activations"),where("email","==",trimmed));
+      const snap=await getDocs(q);
+      if(snap.empty){setEmailError("No account found with this email address.");setEmailLoading(false);return;}
+      const docData=snap.docs[0].data();
+      setFoundDocId(snap.docs[0].id);
+      setFoundName(docData.ownerName||docData.businessName||"");
+      const newCode=generateCode();
+      const expiry=Date.now()+(10*60*1000);
+      setSentCode(newCode);setCodeExpiry(expiry);
+      await sendEmailJS(EMAILJS_RESET_TEMPLATE,{to_email:trimmed,to_name:docData.ownerName||docData.businessName||"User",code:newCode});
       startResendCooldown(60);
-      setStep("emailSent");
-    }catch(e){setEmailError("Failed to send reset email. Please try again.");}
+      setStep("code");
+    }catch(e){setEmailError("Failed to send code: "+e.message);}
     setEmailLoading(false);
   }
-
   async function handleResend(){
     if(resendCooldown>0)return;
-    await handleSendEmail();
-  }
-
-  async function handleVerify(){
-    setVerifyError("");setVerifyLoading(true);
-    const cleanKey=licenseKey.trim().toUpperCase();
-    const cleanCr=crNumber.trim();
-    if(!/^[A-Z0-9]{12}$/.test(cleanKey)){setVerifyError("License key must be 12 alphanumeric characters.");setVerifyLoading(false);return;}
-    if(!/^\d{12}$/.test(cleanCr)){setVerifyError("CR Number must be 12 digits.");setVerifyLoading(false);return;}
+    const newCode=generateCode();
+    const expiry=Date.now()+(10*60*1000);
+    setSentCode(newCode);setCodeExpiry(expiry);setCodeError("");
     try{
-      const q=query(collection(db,"licenses"),where("key","==",cleanKey),where("activatedBy","==",cleanCr));
-      const snap=await getDocs(q);
-      if(snap.empty){setVerifyError("No account found with this license key and CR number combination.");setVerifyLoading(false);return;}
-      setVerifiedCr(cleanCr);
-      setStep("reset");
-    }catch(e){setVerifyError("Verification failed: "+e.message);}
-    setVerifyLoading(false);
+      await sendEmailJS(EMAILJS_RESET_TEMPLATE,{to_email:email.trim().toLowerCase(),to_name:foundName||"User",code:newCode});
+      startResendCooldown(60);
+    }catch(e){setCodeError("Failed to resend: "+e.message);}
   }
-
+  function handleVerifyCode(){
+    setCodeError("");
+    if(!code.trim()){setCodeError("Please enter the code.");return;}
+    if(Date.now()>codeExpiry){setCodeError("Code has expired. Please request a new one.");setSentCode("");return;}
+    if(code.trim()!==sentCode){setCodeError("Incorrect code. Please check your email.");return;}
+    setStep("reset");
+  }
   async function handleReset(){
     setResetError("");
-    const s=getPasswordStrength(newPassword);
-    if(newPassword.length<8){setResetError("Password must be at least 8 characters.");return;}
-    if(!/\d/.test(newPassword)){setResetError("Password must contain at least one number.");return;}
-    if(!/[a-zA-Z]/.test(newPassword)){setResetError("Password must contain at least one letter.");return;}
+    if(newPassword.length<6){setResetError("Password must be at least 6 characters.");return;}
     if(newPassword!==confirmPw){setResetError("Passwords do not match.");return;}
     setResetLoading(true);
     try{
       const hashed=await hashPassword(newPassword);
+      if(foundDocId){await updateDoc(doc(db,"pending_activations",foundDocId),{passwordHash:hashed,passwordResetAt:new Date().toISOString()});}
       const localCreds=LS.get("restopos_client_creds");
-      if(localCreds&&localCreds.crNumber===verifiedCr){
-        LS.set("restopos_client_creds",{...localCreds,passwordHash:hashed});
-        setStep("success");
-      }else{
-        // Still save if creds exist at all (user might be resetting from email flow)
-        if(localCreds){
-          LS.set("restopos_client_creds",{...localCreds,passwordHash:hashed});
-          setStep("success");
-        }else{
-          setResetError("Local credentials not found. Please contact support.");
-        }
-      }
+      if(localCreds){LS.set("restopos_client_creds",{...localCreds,passwordHash:hashed});}
+      setStep("success");
     }catch(e){setResetError("Reset failed: "+e.message);}
     setResetLoading(false);
   }
-
   const bg="linear-gradient(135deg,#0a1628 0%,#1A3A5C 50%,#0a2818 100%)";
   const inp={width:"100%",padding:"12px 14px",background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:10,fontSize:14,color:"#fff",fontFamily:"inherit",outline:"none"};
   const card={background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:20,padding:28};
@@ -673,179 +651,97 @@ function ForgotPassword({onBack,onReset}){
   const ghostBtn={width:"100%",marginTop:10,padding:10,background:"transparent",color:"rgba(255,255,255,0.35)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:10,fontSize:12,cursor:"pointer",fontFamily:"inherit"};
 
   return(
-    <div style={{minHeight:"100vh",background:bg,display:"flex",alignItems:"center",justifyContent:"center",padding:20,fontFamily:"'Plus Jakarta Sans',sans-serif"}}>
+    <div style={{minHeight:"100vh",background:"linear-gradient(135deg,#0a1628 0%,#1A3A5C 50%,#0a2818 100%)",display:"flex",alignItems:"center",justifyContent:"center",padding:20,fontFamily:"'Plus Jakarta Sans',sans-serif"}}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');*{box-sizing:border-box;margin:0;padding:0}input:focus{border-color:rgba(46,204,113,0.6)!important;box-shadow:0 0 0 3px rgba(46,204,113,0.1)}`}</style>
       <div style={{width:"100%",maxWidth:440}}>
 
-        {/* ── STEP 1: EMAIL INPUT ── */}
+        {/* STEP 1: EMAIL */}
         {step==="email"&&(
           <>
             <div style={{textAlign:"center",marginBottom:24}}>
               <div style={{width:64,height:64,background:"rgba(240,165,0,0.12)",border:"2px solid rgba(240,165,0,0.35)",borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:28,margin:"0 auto 14px"}}>✉️</div>
               <div style={{fontSize:22,fontWeight:900,color:"#fff",marginBottom:6}}>Forgot Password?</div>
-              <div style={{fontSize:13,color:"rgba(255,255,255,0.45)",lineHeight:1.6}}>Enter your email address and we'll send you a reset link. You can also verify with your license key below.</div>
+              <div style={{fontSize:13,color:"rgba(255,255,255,0.45)",lineHeight:1.6}}>Enter your registered email and we'll send you a 6-digit reset code.</div>
             </div>
-            <div style={card}>
-              <div style={{marginBottom:16}}>
-                <label style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.6)",display:"block",marginBottom:6}}>Email Address</label>
-                <input
-                  value={email}
-                  onChange={e=>{setEmail(e.target.value);setEmailError("");}}
-                  onKeyDown={e=>e.key==="Enter"&&handleSendEmail()}
-                  placeholder="your@email.com"
-                  type="email"
-                  autoFocus
-                  style={inp}
-                />
-                {emailError&&<div style={{marginTop:8,padding:"8px 12px",background:"rgba(217,64,64,0.18)",border:"1px solid rgba(217,64,64,0.4)",borderRadius:8,fontSize:12,color:"#ff8080"}}>{emailError}</div>}
-              </div>
-              <button onClick={handleSendEmail} disabled={emailLoading} style={{...primaryBtn,opacity:emailLoading?0.6:1,cursor:emailLoading?"not-allowed":"pointer"}}>
-                {emailLoading?<span>⏳ Sending…</span>:"📧 Send Reset Link"}
+            <div style={{background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:20,padding:28}}>
+              <label style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.6)",display:"block",marginBottom:6}}>Email Address</label>
+              <input value={email} onChange={e=>{setEmail(e.target.value);setEmailError("");}} onKeyDown={e=>e.key==="Enter"&&handleSendCode()} placeholder="your@email.com" type="email" autoFocus style={{width:"100%",padding:"12px 14px",background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:10,fontSize:14,color:"#fff",fontFamily:"inherit",outline:"none"}}/>
+              {emailError&&<div style={{marginTop:8,padding:"8px 12px",background:"rgba(217,64,64,0.18)",border:"1px solid rgba(217,64,64,0.4)",borderRadius:8,fontSize:12,color:"#ff8080",marginBottom:4}}>{emailError}</div>}
+              <button onClick={handleSendCode} disabled={emailLoading} style={{width:"100%",marginTop:14,padding:13,background:emailLoading?"#444":"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:12,fontSize:14,fontWeight:800,cursor:emailLoading?"not-allowed":"pointer",fontFamily:"inherit",opacity:emailLoading?0.7:1}}>
+                {emailLoading?"⏳ Sending Code…":"📧 Send Reset Code"}
               </button>
-              <div style={{margin:"16px 0",display:"flex",alignItems:"center",gap:10}}>
-                <div style={{flex:1,height:1,background:"rgba(255,255,255,0.1)"}}/>
-                <span style={{fontSize:11,color:"rgba(255,255,255,0.3)"}}>OR</span>
-                <div style={{flex:1,height:1,background:"rgba(255,255,255,0.1)"}}/>
-              </div>
-              <button onClick={()=>setStep("verify")} style={{...ghostBtn,marginTop:0}}>🔑 Verify with License Key instead</button>
-              <button onClick={onBack} style={ghostBtn}>← Back to Login</button>
+              <button onClick={onBack} style={{width:"100%",marginTop:10,padding:10,background:"transparent",color:"rgba(255,255,255,0.35)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:10,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>← Back to Login</button>
               <button onClick={()=>window.dispatchEvent(new Event("ownerLogin"))} style={{width:"100%",marginTop:8,background:"none",border:"none",color:"rgba(255,255,255,0.15)",fontSize:11,cursor:"pointer",fontFamily:"inherit",padding:"4px 0"}}>⚙ Owner</button>
             </div>
           </>
         )}
 
-        {/* ── STEP 2: EMAIL SENT CONFIRMATION ── */}
-        {step==="emailSent"&&(
+        {/* STEP 2: ENTER CODE */}
+        {step==="code"&&(
           <>
             <div style={{textAlign:"center",marginBottom:24}}>
-              <div style={{width:80,height:80,background:"rgba(16,185,129,0.12)",border:"2px solid rgba(16,185,129,0.4)",borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:36,margin:"0 auto 16px"}}>📬</div>
-              <div style={{fontSize:22,fontWeight:900,color:"#fff",marginBottom:8}}>Check Your Email</div>
-              <div style={{fontSize:13,color:"rgba(255,255,255,0.5)",lineHeight:1.7}}>
-                {email?<>We sent a reset link to<br/><strong style={{color:"#7FFAB5"}}>{email}</strong></>:"A reset link has been sent to your email."}<br/>
-                <span style={{fontSize:12,color:"rgba(255,255,255,0.35)"}}>Check your inbox and spam folder.</span>
-              </div>
+              <div style={{width:64,height:64,background:"rgba(16,185,129,0.12)",border:"2px solid rgba(16,185,129,0.4)",borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:28,margin:"0 auto 14px"}}>📬</div>
+              <div style={{fontSize:22,fontWeight:900,color:"#fff",marginBottom:6}}>Check Your Email</div>
+              <div style={{fontSize:13,color:"rgba(255,255,255,0.45)",lineHeight:1.6}}>We sent a 6-digit code to<br/><strong style={{color:"#7FFAB5"}}>{email}</strong></div>
             </div>
-            <div style={card}>
-              <div style={{background:"rgba(16,185,129,0.08)",border:"1px solid rgba(16,185,129,0.25)",borderRadius:12,padding:"14px 16px",marginBottom:20}}>
-                <div style={{fontSize:12,color:"#7FFAB5",fontWeight:700,marginBottom:8}}>📋 What to do next:</div>
-                {["Open the email from RestoPOS","Click the Reset Password button in the email","The link expires in 1 hour","If you don't see it, check your spam folder"].map((t,i)=>(
-                  <div key={i} style={{display:"flex",gap:8,fontSize:12,color:"rgba(255,255,255,0.5)",marginBottom:5}}>
-                    <span style={{color:"#7FFAB5",fontWeight:700,minWidth:16}}>{i+1}.</span>{t}
-                  </div>
-                ))}
-              </div>
-              <div style={{display:"flex",gap:10,flexDirection:"column"}}>
-                <button
-                  onClick={handleResend}
-                  disabled={resendCooldown>0}
-                  style={{...primaryBtn,background:resendCooldown>0?"rgba(255,255,255,0.08)":"linear-gradient(135deg,#1A3A5C,#0F2340)",border:"1px solid rgba(255,255,255,0.15)",opacity:1,cursor:resendCooldown>0?"not-allowed":"pointer"}}
-                >
-                  {resendCooldown>0?`⏱ Resend in ${resendCooldown}s`:"🔁 Resend Email"}
-                </button>
-                <button onClick={()=>setStep("verify")} style={{...primaryBtn}}>🔑 Verify with License Key instead</button>
-                <button onClick={()=>{setEmail("");setStep("email");}} style={ghostBtn}>✉️ Wrong email? Go back</button>
-                <button onClick={onBack} style={ghostBtn}>← Back to Login</button>
-              </div>
-            </div>
-          </>
-        )}
-
-        {/* ── STEP 3: LICENSE KEY VERIFY ── */}
-        {step==="verify"&&(
-          <>
-            <div style={{textAlign:"center",marginBottom:24}}>
-              <div style={{width:64,height:64,background:"rgba(240,165,0,0.12)",border:"2px solid rgba(240,165,0,0.35)",borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:28,margin:"0 auto 14px"}}>🔑</div>
-              <div style={{fontSize:22,fontWeight:900,color:"#fff",marginBottom:6}}>Verify Identity</div>
-              <div style={{fontSize:13,color:"rgba(255,255,255,0.45)"}}>Enter your license key and CR number to continue</div>
-            </div>
-            <div style={card}>
-              <div style={{display:"flex",flexDirection:"column",gap:14}}>
-                <div>
-                  <label style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.6)",display:"block",marginBottom:6}}>License Key</label>
-                  <input value={licenseKey} onChange={e=>{setLicenseKey(e.target.value.toUpperCase());setVerifyError("");}} onKeyDown={e=>e.key==="Enter"&&handleVerify()} placeholder="XXXXXXXXXXXX" style={{...inp,textAlign:"center",letterSpacing:"0.15em",fontFamily:"monospace",fontSize:16,fontWeight:700}}/>
-                </div>
-                <div>
-                  <label style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.6)",display:"block",marginBottom:6}}>CR Registration Number</label>
-                  <input value={crNumber} onChange={e=>{setCrNumber(e.target.value);setVerifyError("");}} onKeyDown={e=>e.key==="Enter"&&handleVerify()} placeholder="12-digit CR number" style={inp}/>
-                </div>
-              </div>
-              {verifyError&&<div style={{marginTop:10,padding:"8px 12px",background:"rgba(217,64,64,0.18)",border:"1px solid rgba(217,64,64,0.4)",borderRadius:8,fontSize:12,color:"#ff8080"}}>{verifyError}</div>}
-              <button onClick={handleVerify} disabled={verifyLoading} style={{...primaryBtn,marginTop:16,opacity:verifyLoading?0.6:1,cursor:verifyLoading?"not-allowed":"pointer"}}>
-                {verifyLoading?"⏳ Verifying…":"→ Verify Identity"}
+            <div style={{background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:20,padding:28}}>
+              <label style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.6)",display:"block",marginBottom:6}}>Enter 6-Digit Code</label>
+              <input value={code} onChange={e=>{setCode(e.target.value.replace(/\D/g,"").slice(0,6));setCodeError("");}} onKeyDown={e=>e.key==="Enter"&&handleVerifyCode()} placeholder="000000" maxLength={6} style={{width:"100%",padding:"14px 16px",background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:10,fontSize:28,color:"#fff",fontFamily:"monospace",fontWeight:700,textAlign:"center",letterSpacing:"0.3em",outline:"none"}}/>
+              {codeError&&<div style={{marginTop:8,padding:"8px 12px",background:"rgba(217,64,64,0.18)",border:"1px solid rgba(217,64,64,0.4)",borderRadius:8,fontSize:12,color:"#ff8080"}}>{codeError}</div>}
+              <button onClick={handleVerifyCode} disabled={code.length<6} style={{width:"100%",marginTop:14,padding:13,background:code.length<6?"#444":"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:12,fontSize:14,fontWeight:800,cursor:code.length<6?"not-allowed":"pointer",fontFamily:"inherit"}}>
+                → Verify Code
               </button>
-              <button onClick={()=>setStep("email")} style={ghostBtn}>← Back to Email</button>
-              <button onClick={onBack} style={{...ghostBtn,marginTop:6}}>← Back to Login</button>
+              <button onClick={handleResend} disabled={resendCooldown>0} style={{width:"100%",marginTop:10,padding:10,background:"transparent",color:resendCooldown>0?"rgba(255,255,255,0.2)":"rgba(255,255,255,0.5)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:10,fontSize:12,cursor:resendCooldown>0?"not-allowed":"pointer",fontFamily:"inherit"}}>
+                {resendCooldown>0?`⏱ Resend in ${resendCooldown}s`:"🔁 Resend Code"}
+              </button>
+              <button onClick={()=>{setStep("email");setCode("");setCodeError("");}} style={{width:"100%",marginTop:8,padding:10,background:"transparent",color:"rgba(255,255,255,0.3)",border:"none",borderRadius:10,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>← Wrong email? Go back</button>
             </div>
           </>
         )}
 
-        {/* ── STEP 4: RESET PASSWORD ── */}
+        {/* STEP 3: NEW PASSWORD */}
         {step==="reset"&&(
           <>
             <div style={{textAlign:"center",marginBottom:24}}>
               <div style={{width:64,height:64,background:"rgba(26,107,74,0.15)",border:"2px solid rgba(26,107,74,0.4)",borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:28,margin:"0 auto 14px"}}>🔒</div>
               <div style={{fontSize:22,fontWeight:900,color:"#fff",marginBottom:6}}>Set New Password</div>
-              <div style={{fontSize:13,color:"rgba(255,255,255,0.45)"}}>Create a strong password for your account</div>
+              <div style={{fontSize:13,color:"rgba(255,255,255,0.45)"}}>Code verified ✓ — create your new password</div>
             </div>
-            <div style={card}>
-              <div style={{background:"rgba(46,204,113,0.08)",border:"1px solid rgba(46,204,113,0.25)",borderRadius:8,padding:"10px 14px",marginBottom:16,fontSize:12,color:"#7FFAB5",fontWeight:600}}>✓ Identity verified. Set your new password below.</div>
+            <div style={{background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:20,padding:28}}>
               <div style={{display:"flex",flexDirection:"column",gap:14}}>
                 <div>
                   <label style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.6)",display:"block",marginBottom:6}}>New Password</label>
                   <div style={{position:"relative"}}>
-                    <input
-                      type={showPw?"text":"password"}
-                      value={newPassword}
-                      onChange={e=>{setNewPassword(e.target.value);setResetError("");}}
-                      onKeyDown={e=>e.key==="Enter"&&handleReset()}
-                      placeholder="Min 8 characters"
-                      style={{...inp,paddingRight:46}}
-                    />
-                    <button onClick={()=>setShowPw(x=>!x)} style={{position:"absolute",right:12,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",color:"rgba(255,255,255,0.4)",cursor:"pointer",fontSize:18,padding:0}}>{showPw?"🙈":"👁"}</button>
+                    <input type={showPw?"text":"password"} value={newPassword} onChange={e=>{setNewPassword(e.target.value);setResetError("");}} placeholder="Min 6 characters" style={{width:"100%",padding:"12px 44px 12px 14px",background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:10,fontSize:14,color:"#fff",fontFamily:"inherit",outline:"none"}}/>
+                    <button onClick={()=>setShowPw(x=>!x)} style={{position:"absolute",right:12,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",color:"rgba(255,255,255,0.4)",cursor:"pointer",fontSize:18}}>{showPw?"🙈":"👁"}</button>
                   </div>
-                  {newPassword.length>0&&<PasswordStrengthBar password={newPassword}/>}
                 </div>
                 <div>
-                  <label style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.6)",display:"block",marginBottom:6}}>Confirm New Password</label>
-                  <div style={{position:"relative"}}>
-                    <input
-                      type={showConfirmPw?"text":"password"}
-                      value={confirmPw}
-                      onChange={e=>{setConfirmPw(e.target.value);setResetError("");}}
-                      onKeyDown={e=>e.key==="Enter"&&handleReset()}
-                      placeholder="Re-enter password"
-                      style={{...inp,paddingRight:46,borderColor:confirmPw&&confirmPw!==newPassword?"rgba(217,64,64,0.6)":confirmPw&&confirmPw===newPassword?"rgba(46,204,113,0.6)":"rgba(255,255,255,0.2)"}}
-                    />
-                    <button onClick={()=>setShowConfirmPw(x=>!x)} style={{position:"absolute",right:12,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",color:"rgba(255,255,255,0.4)",cursor:"pointer",fontSize:18,padding:0}}>{showConfirmPw?"🙈":"👁"}</button>
-                  </div>
-                  {confirmPw&&confirmPw!==newPassword&&<div style={{fontSize:11,color:"#ff8080",marginTop:5}}>⚠ Passwords don't match</div>}
-                  {confirmPw&&confirmPw===newPassword&&<div style={{fontSize:11,color:"#7FFAB5",marginTop:5}}>✓ Passwords match</div>}
+                  <label style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.6)",display:"block",marginBottom:6}}>Confirm Password</label>
+                  <input type={showPw?"text":"password"} value={confirmPw} onChange={e=>{setConfirmPw(e.target.value);setResetError("");}} placeholder="Re-enter password" style={{width:"100%",padding:"12px 14px",background:"rgba(255,255,255,0.08)",border:`1px solid ${confirmPw&&confirmPw!==newPassword?"rgba(217,64,64,0.6)":confirmPw&&confirmPw===newPassword?"rgba(46,204,113,0.6)":"rgba(255,255,255,0.2)"}`,borderRadius:10,fontSize:14,color:"#fff",fontFamily:"inherit",outline:"none"}}/>
+                  {confirmPw&&confirmPw===newPassword&&<div style={{fontSize:11,color:"#7FFAB5",marginTop:4}}>✓ Passwords match</div>}
+                  {confirmPw&&confirmPw!==newPassword&&<div style={{fontSize:11,color:"#ff8080",marginTop:4}}>⚠ Passwords don't match</div>}
                 </div>
               </div>
               {resetError&&<div style={{marginTop:10,padding:"8px 12px",background:"rgba(217,64,64,0.18)",border:"1px solid rgba(217,64,64,0.4)",borderRadius:8,fontSize:12,color:"#ff8080"}}>{resetError}</div>}
-              <button onClick={handleReset} disabled={resetLoading||newPassword!==confirmPw||newPassword.length<8} style={{...primaryBtn,marginTop:16,opacity:(resetLoading||newPassword!==confirmPw||newPassword.length<8)?0.5:1,cursor:(resetLoading||newPassword!==confirmPw||newPassword.length<8)?"not-allowed":"pointer"}}>
-                {resetLoading?"⏳ Resetting…":"✓ Reset Password"}
+              <button onClick={handleReset} disabled={resetLoading||newPassword!==confirmPw||newPassword.length<6} style={{width:"100%",marginTop:16,padding:13,background:resetLoading||newPassword!==confirmPw||newPassword.length<6?"#444":"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:12,fontSize:14,fontWeight:800,cursor:"pointer",fontFamily:"inherit"}}>
+                {resetLoading?"⏳ Saving…":"✓ Reset Password"}
               </button>
-              <button onClick={onBack} style={ghostBtn}>← Back to Login</button>
             </div>
           </>
         )}
 
-        {/* ── STEP 5: SUCCESS ── */}
+        {/* STEP 4: SUCCESS */}
         {step==="success"&&(
           <>
             <div style={{textAlign:"center",marginBottom:24}}>
-              <div style={{width:80,height:80,background:"rgba(16,185,129,0.12)",border:"2px solid rgba(16,185,129,0.5)",borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:40,margin:"0 auto 16px",animation:"pulse 1.5s ease-in-out"}}>✅</div>
+              <div style={{width:80,height:80,background:"rgba(16,185,129,0.12)",border:"2px solid rgba(16,185,129,0.5)",borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:40,margin:"0 auto 16px"}}>✅</div>
               <div style={{fontSize:24,fontWeight:900,color:"#fff",marginBottom:8}}>Password Changed!</div>
-              <div style={{fontSize:14,color:"rgba(255,255,255,0.5)",lineHeight:1.6}}>Your password has been reset successfully.<br/>You can now log in with your new password.</div>
+              <div style={{fontSize:14,color:"rgba(255,255,255,0.5)"}}>You can now log in with your new password.</div>
             </div>
-            <div style={card}>
-              <div style={{background:"rgba(16,185,129,0.08)",border:"1px solid rgba(16,185,129,0.25)",borderRadius:12,padding:"16px",marginBottom:20,textAlign:"center"}}>
-                <div style={{fontSize:32,marginBottom:6}}>🎉</div>
-                <div style={{fontSize:14,fontWeight:700,color:"#7FFAB5",marginBottom:4}}>Password Changed Successfully</div>
-                <div style={{fontSize:12,color:"rgba(255,255,255,0.4)"}}>Redirecting to login in <strong style={{color:"#7FFAB5"}}>{redirectCount}s</strong>…</div>
-              </div>
-              <button onClick={onReset} style={primaryBtn}>→ Go to Login Now</button>
+            <div style={{background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:20,padding:28,textAlign:"center"}}>
+              <div style={{fontSize:12,color:"rgba(255,255,255,0.4)",marginBottom:16}}>Redirecting in <strong style={{color:"#7FFAB5"}}>{redirectCount}s</strong>…</div>
+              <button onClick={onReset} style={{width:"100%",padding:13,background:"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:12,fontSize:14,fontWeight:800,cursor:"pointer",fontFamily:"inherit"}}>→ Go to Login Now</button>
             </div>
           </>
         )}
@@ -943,7 +839,7 @@ const DataTable=({headers,rows,emptyMsg="No data"})=>(
 // BUSINESS REGISTRATION
 // ═══════════════════════════════════════════════════════════════════
 function BusinessRegistration({onNext}){
-  const [form,setForm]=useState({businessName:"",ownerName:"",crNumber:"",vatNumber:"",address:"",city:"Riyadh",phone:""});
+  const [form,setForm]=useState({businessName:"",ownerName:"",email:"",crNumber:"",vatNumber:"",address:"",city:"Riyadh",phone:""});
   const [isOwner,setIsOwner]=useState(null);
   const [error,setError]=useState("");
   const set=(k,v)=>setForm(f=>({...f,[k]:v}));
@@ -952,11 +848,12 @@ function BusinessRegistration({onNext}){
     if(isOwner===null)return setError("Please confirm whether you are the owner.");
     if(!form.ownerName.trim())return setError("Owner / contact name is required.");
     if(!form.businessName.trim())return setError("Business name is required.");
+    if(!form.email.trim()||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim()))return setError("A valid email address is required — used for password recovery.");
     if(!/^\d{12}$/.test(form.crNumber.trim()))return setError("CR Number must be exactly 12 digits.");
     if(!/^3\d{14}$/.test(form.vatNumber.trim()))return setError("VAT number must be 15 digits starting with 3.");
     if(!form.address.trim())return setError("Address is required.");
     if(!form.phone.trim())return setError("Phone number is required.");
-    onNext({...form,isOwner});
+    onNext({...form,email:form.email.trim().toLowerCase(),isOwner});
   }
   return(
     <div style={{minHeight:"100vh",background:"linear-gradient(135deg, #0a1628 0%, #1A3A5C 50%, #0a2818 100%)",display:"flex",alignItems:"center",justifyContent:"center",padding:20,fontFamily:"'Plus Jakarta Sans', sans-serif"}}>
@@ -986,7 +883,7 @@ function BusinessRegistration({onNext}){
           </div>
 
           <div style={{display:"flex",flexDirection:"column",gap:14}}>
-            {[["ownerName","Your Full Name (Owner / Contact)","Mohammed Al-Rashid"],["businessName","Business Name (English)","Al Baik Restaurant"],["crNumber","CR Number (12 digits)","100000000001"],["vatNumber","VAT / TRN (15 digits, starts with 3)","300000000000003"],["address","Business Address","King Fahd Road, Riyadh"],["city","City","Riyadh"],["phone","Phone Number","+966 50 000 0000"]].map(([k,label,ph])=>(
+            {[["ownerName","Your Full Name (Owner / Contact)","Mohammed Al-Rashid"],["businessName","Business Name (English)","Al Baik Restaurant"],["email","Email Address (for password recovery)","your@email.com"],["crNumber","CR Number (12 digits)","100000000001"],["vatNumber","VAT / TRN (15 digits, starts with 3)","300000000000003"],["address","Business Address","King Fahd Road, Riyadh"],["city","City","Riyadh"],["phone","Phone Number","+966 50 000 0000"]].map(([k,label,ph])=>(
               <div key={k}>
                 <label style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.6)",display:"block",marginBottom:5}}>{label}</label>
                 <input value={form[k]} onChange={e=>set(k,e.target.value)} placeholder={ph} style={{width:"100%",padding:"11px 14px",background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:10,fontSize:13,color:"#fff",fontFamily:"inherit"}}/>
@@ -1020,7 +917,7 @@ function LicenseVerification({businessData,onSuccess,onBack}){
       const licensePayload={...businessData,licenseKey:cleanKey,activatedAt:new Date().toISOString()};
       const devInfo=getDeviceInfo();
       await updateDoc(doc(db,"licenses",licDoc.id),{activatedBy:businessData.crNumber,activatedAt:new Date().toISOString(),businessName:businessData.businessName,vatNumber:businessData.vatNumber,deviceId:navigator.userAgent.slice(0,100),deviceInfo:devInfo});
-      await addDoc(collection(db,"pending_activations"),{...businessData,licenseKey:cleanKey,submittedAt:new Date().toISOString(),status:"approved",subscriptionPlan:"basic",deviceId:navigator.userAgent.slice(0,100),deviceInfo:devInfo});
+      await addDoc(collection(db,"pending_activations"),{...businessData,licenseKey:cleanKey,submittedAt:new Date().toISOString(),status:"pending",isActive:false,credentialsApproved:false,subscriptionPlan:"basic",deviceId:navigator.userAgent.slice(0,100),deviceInfo:devInfo});
       LS.set("restopos_license_v2",licensePayload);
       localStorage.removeItem("restopos_pending_id");
       onSuccess(licensePayload);
@@ -2923,31 +2820,56 @@ function OwnerDashboardInline(){
                             <a href={`https://maps.google.com/?q=${client.location.lat},${client.location.lng}`} target="_blank" rel="noreferrer" style={{marginLeft:8,color:"#6366f1",fontWeight:700,textDecoration:"none"}}>Open Maps →</a>
                           </div>
                         )}
-                        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-                          <button onClick={()=>toggleLicense(l.id,l.active)}
-                            style={{padding:"7px 16px",background:l.active?"rgba(217,64,64,0.08)":"rgba(26,138,74,0.08)",border:`1px solid ${l.active?"rgba(217,64,64,0.25)":"rgba(26,138,74,0.25)"}`,borderRadius:7,color:l.active?"#D94040":"#1A6B4A",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
-                            {l.active?"🔴 Deactivate Key":"🟢 Activate Key"}
-                          </button>
+                        <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:4}}>
+                          {/* DEACTIVATE — keeps data, shows deactivated screen instantly */}
                           <button onClick={async()=>{
-                            if(!confirm(`Force logout ${client.businessName}? Their session will be invalidated and they will need to re-enter their license key.`))return;
+                            const isDeactivated=client.status==="deactivated";
+                            if(isDeactivated){
+                              if(!confirm(`Restore ${client.businessName}? They will be able to log in again.`))return;
+                              try{
+                                await updateDoc(doc(db,"pending_activations",client.id),{status:"approved",isActive:true,forceLogout:false,statusUpdatedAt:new Date().toISOString()});
+                                await updateDoc(doc(db,"licenses",l.id),{active:true,forceDeactivated:false});
+                                setActivations(prev=>prev.map(a=>a.id===client.id?{...a,status:"approved",isActive:true,forceLogout:false}:a));
+                                setLicenses(prev=>prev.map(x=>x.id===l.id?{...x,active:true}:x));
+                                logActivity("CLIENT_RESTORED",{licenseKey:l.key,business:client.businessName},"Owner");
+                              }catch(e){alert("Error: "+e.message);}
+                            }else{
+                              if(!confirm(`Deactivate ${client.businessName}? Their screen will show a deactivation notice immediately. Their data is preserved.`))return;
+                              try{
+                                await updateDoc(doc(db,"pending_activations",client.id),{status:"deactivated",isActive:false,forceLogout:false,statusUpdatedAt:new Date().toISOString()});
+                                await updateDoc(doc(db,"licenses",l.id),{active:false,forceDeactivated:true,deactivatedAt:new Date().toISOString()});
+                                setActivations(prev=>prev.map(a=>a.id===client.id?{...a,status:"deactivated",isActive:false}:a));
+                                setLicenses(prev=>prev.map(x=>x.id===l.id?{...x,active:false}:x));
+                                logActivity("CLIENT_DEACTIVATED",{licenseKey:l.key,business:client.businessName},"Owner");
+                              }catch(e){alert("Error: "+e.message);}
+                            }
+                          }}
+                            style={{padding:"7px 16px",background:client.status==="deactivated"?"rgba(26,138,74,0.12)":"rgba(217,64,64,0.10)",border:`1.5px solid ${client.status==="deactivated"?"rgba(26,138,74,0.4)":"rgba(217,64,64,0.35)"}`,borderRadius:8,color:client.status==="deactivated"?"#1A8A4A":"#D94040",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
+                            {client.status==="deactivated"?"🟢 Restore Access":"🔴 Deactivate"}
+                          </button>
+                          {/* FORCE LOGOUT — kicks active session, data stays, can log back in */}
+                          <button onClick={async()=>{
+                            if(client.status==="deactivated")return alert("Client is already deactivated.");
+                            if(!confirm(`Force logout ${client.businessName}? They will be kicked out immediately but can log back in with their credentials.`))return;
                             try{
                               await updateDoc(doc(db,"pending_activations",client.id),{forceLogout:true,forceLogoutAt:new Date().toISOString()});
-                              await updateDoc(doc(db,"licenses",l.id),{active:false,forceDeactivated:true,deactivatedAt:new Date().toISOString()});
-                              setLicenses(prev=>prev.map(x=>x.id===l.id?{...x,active:false}:x));
                               setActivations(prev=>prev.map(a=>a.id===client.id?{...a,forceLogout:true}:a));
-                              logActivity("FORCE_LOGOUT",{licenseKey:l.key,clientId:client.id,business:client.businessName},"Owner");
-                              alert(`✅ ${client.businessName} has been logged out. Their license key has been deactivated.`);
+                              logActivity("FORCE_LOGOUT",{licenseKey:l.key,business:client.businessName},"Owner");
+                              // Auto-clear forceLogout flag after 10s so they can re-login
+                              setTimeout(async()=>{
+                                try{await updateDoc(doc(db,"pending_activations",client.id),{forceLogout:false});}catch(e){}
+                              },10000);
                             }catch(e){alert("Error: "+e.message);}
                           }}
-                            style={{padding:"7px 16px",background:"rgba(180,0,0,0.08)",border:"1px solid rgba(180,0,0,0.25)",borderRadius:7,color:"#800000",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
-                            ⛔ Force Logout
+                            style={{padding:"7px 16px",background:"rgba(240,165,0,0.10)",border:"1.5px solid rgba(240,165,0,0.35)",borderRadius:8,color:"#C07800",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
+                            ⚡ Force Logout
                           </button>
                           <button onClick={async()=>{
                             const newPlan=prompt("New plan (basic/professional/premium):",client.subscriptionPlan||"basic");
                             if(!newPlan||!SUBSCRIPTION_PLANS[newPlan])return alert("Invalid plan");
                             await upgradeSubscription(client.id,newPlan);
                           }}
-                            style={{padding:"7px 16px",background:"rgba(240,165,0,0.08)",border:"1px solid rgba(240,165,0,0.25)",borderRadius:7,color:"#C07800",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
+                            style={{padding:"7px 16px",background:"rgba(99,102,241,0.08)",border:"1.5px solid rgba(99,102,241,0.25)",borderRadius:8,color:"#818cf8",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
                             📋 Change Plan
                           </button>
                         </div>
@@ -4668,20 +4590,20 @@ function OwnerLogin({onLogin}){
 function OwnerDashboard({onLogout}){
   const [refreshKey,setRefreshKey]=useState(0);
   return(
-    <div style={{fontFamily:"'Plus Jakarta Sans',sans-serif",background:"#F0F4F8",minHeight:"100vh",color:"#F1F5F9",width:"100%"}}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');*{box-sizing:border-box;margin:0;padding:0}::-webkit-scrollbar{width:5px}::-webkit-scrollbar-thumb{background:rgba(0,0,0,0.15);border-radius:3px}`}</style>
-      <div style={{background:"linear-gradient(135deg,#1a2332 0%,#0F2340 100%)",borderBottom:"1px solid rgba(255,255,255,0.08)",padding:"0 24px",height:56,display:"flex",alignItems:"center",justifyContent:"space-between",position:"sticky",top:0,zIndex:100,boxShadow:"0 2px 12px rgba(0,0,0,0.2)",width:"100%"}}>
+    <div style={{fontFamily:"'Plus Jakarta Sans',sans-serif",background:"#0d1b2a",height:"100vh",width:"100vw",display:"flex",flexDirection:"column",overflow:"hidden",color:"#F1F5F9",position:"fixed",inset:0,zIndex:9999}}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');*{box-sizing:border-box;margin:0;padding:0}::-webkit-scrollbar{width:5px}::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.12);border-radius:3px}`}</style>
+      <div style={{background:"linear-gradient(135deg,#1a2332 0%,#0F2340 100%)",borderBottom:"1px solid rgba(255,255,255,0.08)",padding:"0 24px",height:52,display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0,boxShadow:"0 2px 12px rgba(0,0,0,0.3)"}}>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
           <div style={{width:32,height:32,background:"linear-gradient(135deg,#F0A500,#e09000)",borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16}}>👑</div>
           <div style={{fontSize:15,fontWeight:800,color:"#fff"}}>Owner Dashboard</div>
-          <span style={{fontSize:10,background:"rgba(240,165,0,0.15)",color:"#F0A500",padding:"2px 8px",borderRadius:20,fontWeight:700,border:"1px solid rgba(240,165,0,0.3)"}}>RestoPOS v18</span>
+          <span style={{fontSize:10,background:"rgba(240,165,0,0.15)",color:"#F0A500",padding:"2px 8px",borderRadius:20,fontWeight:700,border:"1px solid rgba(240,165,0,0.3)"}}>RestoPOS</span>
         </div>
         <div style={{display:"flex",gap:8}}>
           <button onClick={()=>setRefreshKey(k=>k+1)} style={{padding:"6px 14px",background:"rgba(99,102,241,0.15)",border:"1px solid rgba(99,102,241,0.3)",borderRadius:8,color:"#a5b4fc",fontSize:12,cursor:"pointer",fontFamily:"inherit",fontWeight:600}}>🔄 Refresh</button>
           <button onClick={onLogout} style={{padding:"6px 14px",background:"rgba(217,64,64,0.15)",border:"1px solid rgba(217,64,64,0.3)",borderRadius:8,color:"#fca5a5",fontSize:12,cursor:"pointer",fontFamily:"inherit",fontWeight:600}}>← Exit</button>
         </div>
       </div>
-      <div style={{padding:"20px 24px",overflowY:"auto",width:"100%",maxWidth:"100%"}}>
+      <div style={{flex:1,overflowY:"auto",padding:"20px 24px",width:"100%"}}>
         <OwnerDashboardInline key={refreshKey}/>
       </div>
     </div>
@@ -5607,8 +5529,10 @@ export default function App(){
     const unsub=onSnapshot(q,(snap)=>{
       if(snap.empty)return;
       const data=snap.docs[0].data();
-      if(data.status==="suspended"||data.status==="deactivated"||data.isActive===false||data.forceLogout===true){
-        setTerminated(true);
+      if(data.forceLogout===true){
+        setTerminated("forceLogout");
+      }else if(data.status==="deactivated"||data.status==="suspended"||data.isActive===false){
+        setTerminated("deactivated");
       }else{
         setTerminated(false);
         // Sync subscriptionPlan, phone, ownerName from Firestore into local license
@@ -5659,12 +5583,23 @@ export default function App(){
   if(ownerMode&&!ownerAuthed)return<OwnerLogin onLogin={()=>setOwnerAuthed(true)}/>;
   if(ownerMode&&ownerAuthed)return<OwnerDashboard onLogout={()=>{setOwnerMode(false);setOwnerAuthed(false);}}/>;
   if(step==="checking")return<div style={{minHeight:"100vh",background:"#0a1628",display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{color:"#fff",fontSize:16}}>Loading…</div></div>;
-  if(terminated)return(
-    <div style={{position:"fixed",inset:0,background:"#0a0a0a",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",zIndex:99999,fontFamily:"'Plus Jakarta Sans',sans-serif"}}>
-      <div style={{width:80,height:80,borderRadius:"50%",background:"rgba(217,64,64,0.15)",border:"2px solid rgba(217,64,64,0.5)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:36,marginBottom:24}}>🚫</div>
-      <div style={{fontSize:22,fontWeight:900,color:"#ff4444",marginBottom:12,textAlign:"center",letterSpacing:"0.05em"}}>ACCESS TERMINATED</div>
-      <div style={{fontSize:15,color:"rgba(255,255,255,0.7)",textAlign:"center",maxWidth:380,lineHeight:1.6,marginBottom:24}}>CONTACT SUPPORT, YOU'VE BEEN TERMINATED.</div>
-      <div style={{fontSize:12,color:"rgba(255,255,255,0.3)",textAlign:"center"}}>License suspended by administrator. Contact RestoPOS support to restore access.</div>
+  if(terminated==="deactivated")return(
+    <div style={{position:"fixed",inset:0,background:"#0a0a0a",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",zIndex:99999,fontFamily:"'Plus Jakarta Sans',sans-serif",padding:20}}>
+      <div style={{width:90,height:90,borderRadius:"50%",background:"rgba(217,64,64,0.12)",border:"2px solid rgba(217,64,64,0.5)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:40,marginBottom:24}}>🔴</div>
+      <div style={{fontSize:24,fontWeight:900,color:"#ff4444",marginBottom:12,textAlign:"center"}}>Account Deactivated</div>
+      <div style={{fontSize:14,color:"rgba(255,255,255,0.55)",textAlign:"center",maxWidth:360,lineHeight:1.7,marginBottom:8}}>Your RestoPOS account has been deactivated by the administrator.</div>
+      <div style={{fontSize:13,color:"rgba(255,255,255,0.35)",textAlign:"center",maxWidth:360,lineHeight:1.6,marginBottom:28}}>Your data is safe and has not been deleted. Please contact your RestoPOS provider to restore access.</div>
+      <div style={{padding:"12px 24px",background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:12,fontSize:12,color:"rgba(255,255,255,0.3)",textAlign:"center"}}>
+        License: <strong style={{color:"rgba(255,255,255,0.5)",fontFamily:"monospace"}}>{license?.licenseKey||"—"}</strong>
+      </div>
+    </div>
+  );
+  if(terminated==="forceLogout")return(
+    <div style={{position:"fixed",inset:0,background:"#0a0a0a",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",zIndex:99999,fontFamily:"'Plus Jakarta Sans',sans-serif",padding:20}}>
+      <div style={{width:90,height:90,borderRadius:"50%",background:"rgba(240,165,0,0.12)",border:"2px solid rgba(240,165,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:40,marginBottom:24}}>⚡</div>
+      <div style={{fontSize:24,fontWeight:900,color:"#F0A500",marginBottom:12,textAlign:"center"}}>Session Ended</div>
+      <div style={{fontSize:14,color:"rgba(255,255,255,0.55)",textAlign:"center",maxWidth:360,lineHeight:1.7,marginBottom:28}}>Your session was ended by the administrator. You can log back in with your credentials.</div>
+      <button onClick={()=>{setTerminated(false);setStep("clientLogin");}} style={{padding:"12px 28px",background:"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:12,fontSize:14,fontWeight:800,cursor:"pointer",fontFamily:"inherit"}}>→ Log Back In</button>
     </div>
   );
   if(step==="register")return<BusinessRegistration onNext={(data)=>{setBusinessData(data);setStep("license");}}/>;
@@ -5691,7 +5626,7 @@ export default function App(){
           ))}
         </div>
         <div style={{background:"linear-gradient(135deg,#1A3D2B 0%,#1F4D36 100%)",display:"flex",alignItems:"center",gap:4,padding:"0 8px",flexShrink:0,borderLeft:"1px solid rgba(255,255,255,0.1)"}}>
-          {!isOnline&&<span style={{fontSize:8,background:"rgba(217,64,64,0.25)",color:"#ffaaaa",padding:"2px 5px",borderRadius:4,fontWeight:700,border:"1px solid rgba(217,64,64,0.35)",whiteSpace:"nowrap"}}>● OFFLINE</span>}
+          {!isOnline&&<span style={{fontSize:9,background:"rgba(217,64,64,0.35)",color:"#ff8080",padding:"3px 8px",borderRadius:4,fontWeight:800,border:"1px solid rgba(217,64,64,0.6)",whiteSpace:"nowrap",animation:"pulse 1s infinite"}}>📡 OFFLINE</span>}
           {isOnline&&<span style={{fontSize:8,background:"rgba(46,204,113,0.25)",color:"#7FFAB5",padding:"2px 5px",borderRadius:4,fontWeight:700,border:"1px solid rgba(46,204,113,0.4)",whiteSpace:"nowrap",display:viewport.w<640?"none":"inline"}}>● LIVE</span>}
           <span title={`${viewport.w}×${viewport.h}`} style={{fontSize:8,background:"rgba(240,165,0,0.15)",color:"#F0A500",padding:"2px 5px",borderRadius:4,fontWeight:700,border:"1px solid rgba(240,165,0,0.3)",whiteSpace:"nowrap",cursor:"default",display:viewport.w<768?"none":"inline"}}>{viewport.w}×{viewport.h}</span>
           <span style={{fontSize:8,background:"rgba(99,102,241,0.25)",color:"#c7d2fe",padding:"2px 5px",borderRadius:4,fontWeight:700,border:"1px solid rgba(99,102,241,0.35)",whiteSpace:"nowrap",display:viewport.w<640?"none":"inline"}}>ZATCA P2</span>
