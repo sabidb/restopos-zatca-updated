@@ -9,9 +9,10 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "firebase": "^10.7.1",
+    "jszip": "^3.10.1",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "firebase": "^10.7.1"
+    "react-dom": "^18.2.0"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.2.1",
