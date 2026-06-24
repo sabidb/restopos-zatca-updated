@@ -1,0 +1,14 @@
+name: Test Login Function
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call verifyLogin
+        run: |
+          curl -X POST https://us-central1-restopos-db.cloudfunctions.net/verifyLogin \
+            -H "Content-Type: application/json" \
+            -d '{"data": {"licenseKey": "RESTODD8HY7E", "password": "Trial1234"}}'
