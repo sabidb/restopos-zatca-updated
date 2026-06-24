@@ -11,4 +11,4 @@ jobs:
         run: |
           curl -X POST https://us-central1-restopos-db.cloudfunctions.net/verifyLogin \
             -H "Content-Type: application/json" \
-            -d '{"data": {"licenseKey": "RESTODD8HY7E", "password": "Trial1234"}}'
+            -d '{"data": {"licenseKey": "RESTODD8HY7E", "username": "demoaccount1", "password": "Trial1234"}}'
