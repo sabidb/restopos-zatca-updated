@@ -38,5 +38,17 @@ export const verifyLogin = onCall({ cors: true, region: "us-central1" }, async (
   }
 
   const token = await getAuth().createCustomToken(key, { licenseKey: key, username: enteredUser });
-  return { token };
+  return {
+    token,
+    businessName: data.businessName || "",
+    crNumber: data.crNumber || "",
+    vatNumber: data.vatNumber || "",
+    email: data.email || "",
+    city: data.city || "",
+    address: data.address || "",
+    phone: data.phone || "",
+    credentialsApproved: data.credentialsApproved || false,
+    clientUsername: data.clientUsername,
+    passwordHash: data.passwordHash
+  };
 });
