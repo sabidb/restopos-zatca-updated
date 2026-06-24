@@ -9,18 +9,25 @@ const db = getFirestore();
 const sha256 = (s) => crypto.createHash("sha256").update(s).digest("hex");
 
 export const verifyLogin = onCall({ cors: true, region: "us-central1" }, async (req) => {
-  const { licenseKey, password } = req.data || {};
-  if (!licenseKey || !password) throw new HttpsError("invalid-argument", "Missing credentials.");
-  const key = String(licenseKey).toUpperCase().trim();
+  const { licenseKey, username, password } = req.data || {};
+  if (!licenseKey || !username || !password) {
+    throw new HttpsError("invalid-argument", "Missing credentials.");
+  }
+  const key = String(licenseKey).trim().toUpperCase();
+  const enteredUser = String(username).trim().toLowerCase();
 
   const snap = await db.collection("pending_activations").doc(key).get();
   if (!snap.exists) throw new HttpsError("unauthenticated", "Invalid license key or password.");
   const data = snap.data();
 
-  if (!data.credentialsSet || !data.passwordHash) {
+  if (!data.clientUsername || !data.passwordHash) {
+    throw new HttpsError("unauthenticated", "This account has no login credentials set yet.");
+  }
+  if (enteredUser !== data.clientUsername) {
     throw new HttpsError("unauthenticated", "Invalid license key or password.");
   }
-  if (sha256(`${key}:${password}`) !== data.passwordHash) {
+  const hashed = sha256(password + "restopos_salt_v1");
+  if (hashed !== data.passwordHash) {
     throw new HttpsError("unauthenticated", "Invalid license key or password.");
   }
   if (!data.credentialsApproved) {
@@ -30,6 +37,6 @@ export const verifyLogin = onCall({ cors: true, region: "us-central1" }, async (
     throw new HttpsError("permission-denied", "This account has been deactivated.");
   }
 
-  const token = await getAuth().createCustomToken(key, { licenseKey: key });
+  const token = await getAuth().createCustomToken(key, { licenseKey: key, username: enteredUser });
   return { token };
 });
