@@ -22,3 +22,4 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+secrets/restopos-db-firebase-adminsdk-fbsvc-cf5a98f188.json
