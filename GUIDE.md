@@ -359,10 +359,12 @@ never stored on the device.
 ## 11. Gaps & what to build next
 
 ### ✅ Recently built
-- **B2B `/zatca/clearance` endpoint** — implemented in the ZATCA service (fixes
-  the client's 404). *Note:* `zatca-xml-js` v0.1.9 only models simplified
-  invoices, so full standard-invoice UBL (buyer party, type code 0100000) still
-  needs an invoice-builder upgrade.
+- **B2B `/zatca/clearance` + standard-invoice UBL** — the service now builds a
+  true standard invoice (type code `0100000` + populated buyer
+  `AccountingCustomerParty`) on top of the library's line-item/signing machinery,
+  and the POS sends the buyer party on clearance. ⚠️ Validate against the ZATCA
+  **sandbox** compliance API before production — ZATCA's standard-invoice
+  business rules (BR-KSA) are strict and can't be verified without a sandbox EGS.
 - **Server-side `verifyLogin` lockout** — 8 failed logins → 15-minute lock,
   enforced in a transaction (mirrors the manager PIN lockout).
 - **Server-side password-reset OTP** — `requestPasswordReset` +
@@ -375,8 +377,8 @@ never stored on the device.
 2. **No `.env.example`** documenting required env vars/secrets per app.
 3. **`restopos-manager-app` has no `.gitignore`** (risk of committing
    `node_modules`).
-4. **Standard (B2B) invoice UBL** — upgrade the invoice builder so clearance
-   handles real standard invoices (buyer party + type code), not simplified.
+4. **Validate standard-invoice clearance in the ZATCA sandbox** — the UBL is
+   built; it needs a real sandbox EGS run to confirm ZATCA accepts it.
 5. **Monolithic 16k-line `App.jsx`** — split into modules for maintainability.
 6. **No error monitoring** (errors only go to localStorage). Add Sentry or similar.
 7. **No documented Firestore/Storage backup & restore runbook.**

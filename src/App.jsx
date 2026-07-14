@@ -326,6 +326,16 @@ async function clearanceB2BInvoice(inv) {
   const payload = buildZatcaReportPayload(inv, licenseKey);
   // Signal clearance (not reporting) via invoice_type flag
   payload.invoice.props.invoice_type = "standard";
+  // Buyer party — required for a standard B2B invoice. The service injects this
+  // into the AccountingCustomerParty and switches the invoice sub-type.
+  payload.invoice.buyer = {
+    name: inv.buyer_name || "",
+    vat_number: inv.buyer_vat || "",
+    id: inv.buyer_vat || "",
+    id_scheme: "TIN",
+    street: inv.buyer_address || inv.customer_address || "",
+    city: inv.buyer_city || inv.seller_city || "",
+  };
   const res = await fetch(`${ZATCA_SERVICE_URL}/zatca/clearance`, {
     method: "POST",
     headers: await zatcaAuthHeaders(),
