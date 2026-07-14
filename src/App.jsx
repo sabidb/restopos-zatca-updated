@@ -4115,6 +4115,8 @@ function POS({items,sales,setSales,tables,setTables,promos,license,lang="en",cur
   // Supermarket mode: barcode-first checkout + weighed items, no dine-in/tables/KOT.
   const superMode=isSupermarket();
   const [weighItem,setWeighItem]=useState(null);const [weighKg,setWeighKg]=useState("");
+  const [scannedItem,setScannedItem]=useState(null);const [scanMiss,setScanMiss]=useState("");
+  function focusScanner(){setTimeout(()=>barcodeRef.current?.focus(),60);}
   useEffect(()=>{ if(superMode) setTimeout(()=>barcodeRef.current?.focus(),200); },[superMode]);
   const total=cart.reduce((s,i)=>s+i.price*i.qty,0);const vat=parseFloat((total*(15/115)).toFixed(2));const subtotal=parseFloat((total-vat).toFixed(2));
   function addToCart(item){
@@ -4133,7 +4135,15 @@ function POS({items,sales,setSales,tables,setTables,promos,license,lang="en",cur
   }
   function updateQty(delta){if(selectedRow===null)return;setCart(prev=>{const next=prev.map((c,i)=>i===selectedRow?{...c,qty:Math.max(0,c.qty+delta)}:c).filter(c=>c.qty>0);if(next.length<=selectedRow){setSelectedRow(null);setDescModalIdx(null);}return next;});}
   function showN(msg){setNotif(msg);setTimeout(()=>setNotif(null),1500);}
-  function handleBarcodeSearch(code){const item=items.find(i=>i.barcode===code.trim());if(item){addToCart(item);setBarcodeInput("");}else{showN("❌ Barcode not found");setBarcodeInput("");}}
+  function handleBarcodeSearch(code){
+    const c=code.trim();
+    // Match by barcode first, then fall back to a name match — barcode-friendly
+    // everywhere. On a hit, surface the full item card; on a miss, show the code.
+    const item=items.find(i=>String(i.barcode||"")===c) || items.find(i=>i.name?.toLowerCase()===c.toLowerCase());
+    setBarcodeInput("");
+    if(item){ setScanMiss(""); setScannedItem(item); }
+    else { setScanMiss(c); setScannedItem(null); showN("❌ No product for “"+c+"”"); focusScanner(); }
+  }
   async function confirmPayment(method,given,change,promo,totalDiscountAmt,finalTotal,finalVat,printAndSave,payInfo,manualDiscountAmt,promoDiscountAmt,isDraft=false,extraData={}){
     // ── Invoice numbering ────────────────────────────────────────────
     const isKotOnly=extraData.billType==="kot-only";
@@ -4782,6 +4792,33 @@ function POS({items,sales,setSales,tables,setTables,promos,license,lang="en",cur
             <div style={{display:"flex",gap:8}}>
               <button onClick={()=>setWeighItem(null)} style={{flex:1,padding:"12px 0",border:`1.5px solid ${C.border}`,background:"#fff",color:C.textMid,borderRadius:10,fontFamily:"inherit",fontSize:14,fontWeight:700,cursor:"pointer"}}>Cancel</button>
               <button onClick={confirmWeigh} disabled={!(parseFloat(weighKg)>0)} style={{flex:2,padding:"12px 0",border:"none",background:parseFloat(weighKg)>0?C.primary:"#ccc",color:"#fff",borderRadius:10,fontFamily:"inherit",fontSize:14,fontWeight:800,cursor:parseFloat(weighKg)>0?"pointer":"not-allowed"}}>Add to cart</button>
+            </div>
+          </div>
+        </div>
+      );})()}
+      {scannedItem&&(()=>{const it=scannedItem;const low=it.stock!=null&&Number(it.stock)<=(LS.get("restopos_low_stock_threshold")||5);const close=()=>{setScannedItem(null);focusScanner();};const addNow=()=>{const item=it;setScannedItem(null);addToCart(item);focusScanner();};return(
+        <div onClick={close} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:2000,padding:20}}>
+          <div onClick={e=>e.stopPropagation()} style={{background:"#fff",borderRadius:16,padding:0,width:400,maxWidth:"100%",fontFamily:"inherit",overflow:"hidden"}}>
+            <div style={{padding:"16px 20px",background:C.zatcaLight,borderBottom:`1px solid ${C.border}`,display:"flex",alignItems:"center",gap:12}}>
+              <div style={{fontSize:30,width:52,height:52,borderRadius:12,background:"#fff",border:`1px solid ${C.border}`,display:"flex",alignItems:"center",justifyContent:"center"}}>{it.image?<img src={it.image} alt="" style={{width:"100%",height:"100%",objectFit:"cover",borderRadius:12}}/>:"📦"}</div>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:16,fontWeight:800,color:C.text}}>{it.name}</div>
+                {it.nameAr&&<div style={{fontSize:13,color:C.textMid,direction:"rtl"}}>{it.nameAr}</div>}
+              </div>
+              {it.weighed&&<span style={{fontSize:10,fontWeight:800,color:C.warning,background:C.warningLight,border:`1px solid ${C.warning}44`,padding:"3px 8px",borderRadius:6}}>PER KG</span>}
+            </div>
+            <div style={{padding:"14px 20px",display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+              {[["Price",fmtSAR(it.price)+(it.weighed?" / kg":"")],["Category",it.category||"—"],["In stock",(it.stock!=null?it.stock:"—")+(it.weighed?" kg":" pcs")],["Barcode",it.barcode||"—"],["Status",it.active===false?"Inactive":"Active"],["VAT","15% incl."]].map(([k,v])=>(
+                <div key={k}>
+                  <div style={{fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",color:C.textLight}}>{k}</div>
+                  <div style={{fontSize:14,fontWeight:700,color:k==="Price"?C.primary:C.text,fontFamily:k==="Barcode"?"monospace":"inherit"}}>{v}</div>
+                </div>
+              ))}
+            </div>
+            {low&&<div style={{margin:"0 20px 6px",fontSize:12,fontWeight:700,color:C.danger,background:C.dangerLight,borderRadius:8,padding:"7px 10px"}}>⚠️ Low stock</div>}
+            <div style={{display:"flex",gap:8,padding:"12px 20px 18px"}}>
+              <button onClick={close} style={{flex:1,padding:"12px 0",border:`1.5px solid ${C.border}`,background:"#fff",color:C.textMid,borderRadius:10,fontFamily:"inherit",fontSize:14,fontWeight:700,cursor:"pointer"}}>Close</button>
+              <button autoFocus onClick={addNow} onKeyDown={e=>{if(e.key==="Enter")addNow();}} style={{flex:2,padding:"12px 0",border:"none",background:C.primary,color:"#fff",borderRadius:10,fontFamily:"inherit",fontSize:14,fontWeight:800,cursor:"pointer"}}>{it.weighed?"⚖️ Weigh & Add":"＋ Add to Cart"}</button>
             </div>
           </div>
         </div>
