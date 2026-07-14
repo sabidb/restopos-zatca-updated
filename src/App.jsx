@@ -51,7 +51,9 @@ function ensureSignedIn() {
 async function zatcaAuthHeaders() {
   const headers = { "Content-Type": "application/json" };
   try {
-    const user = await ensureSignedIn();
+    // Prefer the current signed-in user (after login this is the licenseKey
+    // custom-token user); fall back to ensuring an anonymous device session.
+    const user = auth.currentUser || await ensureSignedIn();
     if (user) headers.Authorization = `Bearer ${await user.getIdToken()}`;
   } catch (e) { console.warn("[ZATCA] could not attach auth token:", e.message); }
   return headers;
@@ -1511,13 +1513,14 @@ function ForgotPassword({onBack,onReset}){
         }catch(e){/* non-critical */}
       }
       if(!docId){setResetError("Couldn't locate your account. Please contact support.");setResetLoading(false);return;}
+      // Sign in first so the doc read + credential-set are authenticated.
+      await ensureSignedIn();
       // Look up the existing username to keep it unchanged.
       const licSnap=await getDoc(doc(db,"pending_activations",docId));
       const existingUser=licSnap.exists()?(licSnap.data().clientUsername||""):"";
       if(!existingUser){setResetError("This account has no username set yet. Please contact support.");setResetLoading(false);return;}
       // Hash server-side with bcrypt. Requires this device to be trusted on the
       // license (its UID on authUids). A brand-new device must be approved first.
-      await ensureSignedIn();
       try{
         await setClientCredentialsFn({licenseKey:docId,username:existingUser,password:newPassword});
       }catch(fnErr){
