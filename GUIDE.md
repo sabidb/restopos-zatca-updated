@@ -41,9 +41,10 @@ RestoPOS is one Firebase project (`restopos-db`) shared by several apps:
 | `restopos-desktop` | Electron desktop wrapper (offline SQLite cache) | Local install |
 
 **Cloud Functions** (`restopos-zatca-updated/functions`):
-`verifyLogin`, `setClientCredentials`, `aiChat`, `qzSign` (+ `getManagerData`
-lives in the manager repo). These use the Admin SDK and **bypass** Firestore
-rules — they are the trusted server layer.
+`verifyLogin`, `setClientCredentials`, `aiChat`, `qzSign`,
+`requestPasswordReset`, `resetPasswordWithOtp` (+ `getManagerData` lives in the
+manager repo). These use the Admin SDK and **bypass** Firestore rules — they are
+the trusted server layer.
 
 **Data model (Firestore collections):** `pending_activations` (accounts),
 `licenses`, `zatca_invoices`, `zatca_egs` (Phase 2 keys — locked),
@@ -85,11 +86,12 @@ From `restopos-zatca-updated`:
 
 ```bash
 # One-time secrets (Google Secret Manager)
-firebase functions:secrets:set QZ_PRIVATE_KEY   # paste the QZ Tray RSA private key (PEM)
-firebase functions:secrets:set AI_API_KEY       # optional: Anthropic key (else config/ai is used)
+firebase functions:secrets:set QZ_PRIVATE_KEY      # QZ Tray RSA private key (PEM)
+firebase functions:secrets:set EMAILJS_PRIVATE_KEY # EmailJS private key (server-side password-reset email)
+firebase functions:secrets:set AI_API_KEY          # optional: Anthropic key (else config/ai is used)
 
 # Deploy the functions
-firebase deploy --only functions:verifyLogin,functions:setClientCredentials,functions:aiChat,functions:qzSign
+firebase deploy --only functions:verifyLogin,functions:setClientCredentials,functions:aiChat,functions:qzSign,functions:requestPasswordReset,functions:resetPasswordWithOtp
 ```
 
 Or run the **Deploy Firebase Functions** GitHub Action (`workflow_dispatch`).
@@ -179,9 +181,11 @@ admin to approve that device (anti-account-sharing). The original activation
 device is trusted automatically. Approve extra devices from the admin panel
 (*Devices*).
 
-**Password reset:** *Forgot password* emails a code (EmailJS), then sets a new
-password via `setClientCredentials`. For security this only works **from a
-device already trusted on the license**.
+**Password reset:** *Forgot password* → the **`requestPasswordReset`** function
+generates a code, stores it hashed, and emails it (server-side EmailJS). The
+**`resetPasswordWithOtp`** function verifies the code (5-attempt / 10-minute cap)
+and sets the new bcrypt hash. Because the emailed code proves ownership, reset
+now works **from any device** (the code is never checked in the browser).
 
 ---
 
@@ -354,32 +358,25 @@ never stored on the device.
 
 ## 11. Gaps & what to build next
 
-Things this project is missing that are worth building (prioritized):
+### ✅ Recently built
+- **B2B `/zatca/clearance` endpoint** — implemented in the ZATCA service (fixes
+  the client's 404). *Note:* `zatca-xml-js` v0.1.9 only models simplified
+  invoices, so full standard-invoice UBL (buyer party, type code 0100000) still
+  needs an invoice-builder upgrade.
+- **Server-side `verifyLogin` lockout** — 8 failed logins → 15-minute lock,
+  enforced in a transaction (mirrors the manager PIN lockout).
+- **Server-side password-reset OTP** — `requestPasswordReset` +
+  `resetPasswordWithOtp`; the code is generated, hashed, emailed and verified
+  server-side and can't be skipped in the browser.
 
-**Correctness / functional**
-1. **B2B clearance endpoint is missing.** The POS calls
-   `${ZATCA_SERVICE_URL}/zatca/clearance` for standard (B2B) invoices, but the
-   service only implements `/zatca/report` — B2B clearance currently 404s.
-   → Implement `/zatca/clearance` (clearance vs reporting) in the service.
-
-**Security**
-2. **No server-side lockout on `verifyLogin`.** POS login only has a
-   client-side attempt counter (bypassable). Mirror the manager PIN lockout.
-3. **Password-reset OTP is verified in the browser** (EmailJS). Move OTP
-   issue+verify server-side so it can't be skipped.
-
-**Reliability / DX**
-4. **No automated tests and no CI on push** (workflows are manual). Add a CI
-   workflow that builds + lints every PR, plus rules unit tests and a few
-   function/auth tests.
-5. **No `.env.example`** documenting the required env vars/secrets for each app.
-6. **`restopos-manager-app` has no `.gitignore`** (risk of committing
+### Still open (prioritized)
+1. **No automated tests / CI on push** (workflows are manual). Add a CI workflow
+   that builds + lints every PR, plus rules unit tests and function/auth tests.
+2. **No `.env.example`** documenting required env vars/secrets per app.
+3. **`restopos-manager-app` has no `.gitignore`** (risk of committing
    `node_modules`).
-7. **Monolithic 16k-line `App.jsx`** — split into modules for maintainability.
-8. **No error monitoring** (errors only go to localStorage). Add Sentry or
-   similar.
-9. **No documented Firestore/Storage backup & restore runbook.**
-
-I can build the safe, high-value ones now — **the `/zatca/clearance` endpoint,
-`verifyLogin` lockout, `.env.example` files, the manager `.gitignore`, and a CI
-workflow** — say the word and I'll open PRs for them.
+4. **Standard (B2B) invoice UBL** — upgrade the invoice builder so clearance
+   handles real standard invoices (buyer party + type code), not simplified.
+5. **Monolithic 16k-line `App.jsx`** — split into modules for maintainability.
+6. **No error monitoring** (errors only go to localStorage). Add Sentry or similar.
+7. **No documented Firestore/Storage backup & restore runbook.**

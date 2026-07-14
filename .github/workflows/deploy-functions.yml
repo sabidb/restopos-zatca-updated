@@ -27,6 +27,6 @@ jobs:
         # defineSecret in functions/index.js). Set them once with:
         #   firebase functions:secrets:set QZ_PRIVATE_KEY
         #   firebase functions:secrets:set AI_API_KEY   # optional; else config/ai is used
-        run: npx firebase-tools@13 deploy --only functions:verifyLogin,functions:setClientCredentials,functions:aiChat,functions:qzSign --project restopos-db
+        run: npx firebase-tools@13 deploy --only functions:verifyLogin,functions:setClientCredentials,functions:aiChat,functions:qzSign,functions:requestPasswordReset,functions:resetPasswordWithOtp --project restopos-db
         env:
           GOOGLE_APPLICATION_CREDENTIALS: /tmp/key.json

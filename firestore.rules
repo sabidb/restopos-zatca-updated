@@ -46,7 +46,9 @@ service cloud.firestore {
     function noPrivilegedChange() {
       return !request.resource.data.diff(resource.data).affectedKeys().hasAny([
         'credentialsApproved', 'isActive', 'status', 'passwordHash',
-        'clientUsername', 'subscriptionPlan', 'customExpiryDate'
+        'clientUsername', 'subscriptionPlan', 'customExpiryDate',
+        // Brute-force lockout counters — only the Admin SDK (verifyLogin) writes these.
+        'loginFailCount', 'loginLockUntil'
       ]);
     }
 
@@ -58,6 +60,8 @@ service cloud.firestore {
     match /manager_logins/{key}    { allow read, write: if isAdmin(); }
     match /orgs/{orgId}            { allow read, write: if false; }
     match /activity_log/{doc}      { allow read, write: if isAdmin(); }
+    // Password-reset OTP hashes — written/verified only by the Admin SDK.
+    match /password_resets/{key}   { allow read, write: if false; }
 
     // ── pending_activations ────────────────────────────────────────────────
     // The core license/account doc. Credential fields (passwordHash,

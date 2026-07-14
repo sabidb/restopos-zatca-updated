@@ -868,6 +868,9 @@ async function hashPassword(pw){
 const setClientCredentialsFn = httpsCallable(functions, "setClientCredentials");
 // AI support proxy — keeps the Anthropic API key server-side.
 const aiChatFn = httpsCallable(functions, "aiChat");
+// Password-reset OTP — generated, emailed and verified server-side.
+const requestPasswordResetFn = httpsCallable(functions, "requestPasswordReset");
+const resetPasswordWithOtpFn = httpsCallable(functions, "resetPasswordWithOtp");
 
 // ── OFFLINE-UNLOCK VERIFIER ──────────────────────────────────────────────
 // This is NOT the account credential (that lives server-side as bcrypt). It's a
@@ -1460,39 +1463,29 @@ function ForgotPassword({onBack,onReset}){
     if(!trimmed||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)){setEmailError("Please enter a valid email address.");return;}
     setEmailLoading(true);
     try{
-      const idxSnap=await getDoc(doc(db,"email_index",trimmed));
-      if(!idxSnap.exists()){setEmailError("No account found with this email address.");setEmailLoading(false);return;}
-      const licKey=idxSnap.data().licenseKey;
-      const snap=await getDoc(doc(db,"pending_activations",licKey));
-      if(!snap.exists()){setEmailError("No account found with this email address.");setEmailLoading(false);return;}
-      const docData=snap.data();
-      setFoundDocId(snap.id);
-      setFoundName(docData.ownerName||docData.businessName||"");
+      // The code is generated, stored (hashed) and emailed server-side. We always
+      // advance to the code step regardless of whether the email exists, so the
+      // screen can't be used to enumerate accounts.
       sessionStorage.setItem("restopos_reset_email",trimmed);
-      const newCode=generateCode();
-      const expiry=Date.now()+(10*60*1000);
-      setSentCode(newCode);setCodeExpiry(expiry);
-      await sendEmailJS(EMAILJS_RESET_TEMPLATE,{to_email:trimmed,to_name:docData.ownerName||docData.businessName||"User",code:newCode});
+      await requestPasswordResetFn({email:trimmed});
       startResendCooldown(60);
       setStep("code");
-    }catch(e){setEmailError("Failed to send code: "+e.message);}
+    }catch(e){setEmailError("Failed to send code: "+(e?.message||"try again"));}
     setEmailLoading(false);
   }
   async function handleResend(){
     if(resendCooldown>0)return;
-    const newCode=generateCode();
-    const expiry=Date.now()+(10*60*1000);
-    setSentCode(newCode);setCodeExpiry(expiry);setCodeError("");
+    setCodeError("");
     try{
-      await sendEmailJS(EMAILJS_RESET_TEMPLATE,{to_email:email.trim().toLowerCase(),to_name:foundName||"User",code:newCode});
+      await requestPasswordResetFn({email:email.trim().toLowerCase()});
       startResendCooldown(60);
-    }catch(e){setCodeError("Failed to resend: "+e.message);}
+    }catch(e){setCodeError("Failed to resend: "+(e?.message||"try again"));}
   }
   function handleVerifyCode(){
+    // The code is verified server-side at the reset step; here we just require a
+    // 6-digit entry before moving on.
     setCodeError("");
-    if(!code.trim()){setCodeError("Please enter the code.");return;}
-    if(Date.now()>codeExpiry){setCodeError("Code has expired. Please request a new one.");setSentCode("");return;}
-    if(code.trim()!==sentCode){setCodeError("Incorrect code. Please check your email.");return;}
+    if(!/^\d{6}$/.test(code.trim())){setCodeError("Enter the 6-digit code from your email.");return;}
     setStep("reset");
   }
   async function handleReset(){
@@ -1501,40 +1494,21 @@ function ForgotPassword({onBack,onReset}){
     if(newPassword!==confirmPw){setResetError("Passwords do not match.");return;}
     setResetLoading(true);
     try{
-      // Resolve the license key — use foundDocId or re-query by email as fallback
-      let docId=foundDocId;
-      if(!docId){
-        try{
-          const emailToFind=email.trim().toLowerCase()||sessionStorage.getItem("restopos_reset_email")||"";
-          if(emailToFind){
-            const idxSnap=await getDoc(doc(db,"email_index",emailToFind));
-            if(idxSnap.exists())docId=idxSnap.data().licenseKey;
-          }
-        }catch(e){/* non-critical */}
-      }
-      if(!docId){setResetError("Couldn't locate your account. Please contact support.");setResetLoading(false);return;}
-      // Sign in first so the doc read + credential-set are authenticated.
-      await ensureSignedIn();
-      // Look up the existing username to keep it unchanged.
-      const licSnap=await getDoc(doc(db,"pending_activations",docId));
-      const existingUser=licSnap.exists()?(licSnap.data().clientUsername||""):"";
-      if(!existingUser){setResetError("This account has no username set yet. Please contact support.");setResetLoading(false);return;}
-      // Hash server-side with bcrypt. Requires this device to be trusted on the
-      // license (its UID on authUids). A brand-new device must be approved first.
+      const emailToUse=email.trim().toLowerCase()||sessionStorage.getItem("restopos_reset_email")||"";
+      if(!emailToUse){setResetError("Session expired. Please start again.");setResetLoading(false);setStep("email");return;}
+      // The server verifies the emailed OTP and sets the new bcrypt hash. Proof of
+      // email ownership (the code) replaces any device-trust requirement, so this
+      // works from any device.
       try{
-        await setClientCredentialsFn({licenseKey:docId,username:existingUser,password:newPassword});
+        await resetPasswordWithOtpFn({email:emailToUse,code:code.trim(),newPassword});
       }catch(fnErr){
-        if(fnErr?.code==="functions/permission-denied"){
-          setResetError("Password can only be reset from a device already trusted on this license. Please use your activated device or contact support.");
-        }else{
-          setResetError("Reset failed: "+(fnErr?.message||"Unknown error"));
-        }
+        const c=fnErr?.code;
+        if(c==="functions/unauthenticated"){setResetError("Incorrect code. Please check your email.");setStep("code");}
+        else if(c==="functions/deadline-exceeded"){setResetError("Your code expired. Please request a new one.");setStep("code");}
+        else if(c==="functions/resource-exhausted"){setResetError("Too many attempts. Please request a new code.");setStep("code");}
+        else{setResetError("Reset failed: "+(fnErr?.message||"Unknown error"));}
         setResetLoading(false);return;
       }
-      // Refresh the device-local offline verifier with the new password.
-      const localCreds=LS.get("restopos_client_creds")||{};
-      const local=await makeLocalCreds(existingUser,newPassword,{approved:localCreds.approved,active:localCreds.active});
-      LS.set("restopos_client_creds",{...localCreds,...local});
       sessionStorage.removeItem("restopos_reset_email");
       setStep("success");
     }catch(e){setResetError("Reset failed: "+e.message);}

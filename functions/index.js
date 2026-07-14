@@ -50,33 +50,61 @@ export const verifyLogin = onCall({ cors: true, region: "us-central1" }, async (
   const enteredUser = String(username).trim().toLowerCase();
 
   const ref = db.collection("pending_activations").doc(key);
-  const snap = await ref.get();
-  if (!snap.exists) throw new HttpsError("unauthenticated", "Invalid license key or password.");
-  const data = snap.data();
 
-  if (!data.clientUsername || !data.passwordHash) {
+  // Server-side brute-force protection: lock the account after too many failed
+  // logins. The transaction COMMITS the counter and returns a verdict — it never
+  // throws (throwing inside runTransaction would roll back the very increment
+  // that records the failed attempt). Password verification (bcrypt) runs inside
+  // so the counter and the check are atomic.
+  const MAX_ATTEMPTS = 8;
+  const LOCK_MS = 15 * 60 * 1000;
+  const verdict = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return { status: "invalid" };
+    const data = snap.data();
+    if (!data.clientUsername || !data.passwordHash) return { status: "no-creds" };
+
+    const now = Date.now();
+    if ((data.loginLockUntil || 0) > now) {
+      return { status: "locked", mins: Math.ceil((data.loginLockUntil - now) / 60000) };
+    }
+
+    const userMatch = enteredUser === data.clientUsername;
+    const pw = userMatch ? await verifyPassword(password, data.passwordHash) : { ok: false, needsUpgrade: false };
+    if (!userMatch || !pw.ok) {
+      const fails = (data.loginFailCount || 0) + 1;
+      tx.update(ref, fails >= MAX_ATTEMPTS
+        ? { loginFailCount: 0, loginLockUntil: now + LOCK_MS }
+        : { loginFailCount: fails });
+      return { status: "invalid" };
+    }
+
+    // Correct credentials — clear counters and upgrade a legacy hash to bcrypt.
+    const update = {};
+    if (data.loginFailCount || data.loginLockUntil) { update.loginFailCount = 0; update.loginLockUntil = 0; }
+    if (pw.needsUpgrade) { update.passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS); update.passwordHashUpgradedAt = new Date().toISOString(); }
+    if (Object.keys(update).length) tx.update(ref, update);
+    return { status: "ok", data };
+  });
+
+  if (verdict.status === "locked") {
+    throw new HttpsError("resource-exhausted", `Too many failed attempts. Try again in ${verdict.mins} minute${verdict.mins > 1 ? "s" : ""}.`);
+  }
+  if (verdict.status === "no-creds") {
     throw new HttpsError("unauthenticated", "This account has no login credentials set yet.");
   }
-  if (enteredUser !== data.clientUsername) {
+  if (verdict.status !== "ok") {
     throw new HttpsError("unauthenticated", "Invalid license key or password.");
   }
+  const data = verdict.data;
 
-  const { ok, needsUpgrade } = await verifyPassword(password, data.passwordHash);
-  if (!ok) {
-    throw new HttpsError("unauthenticated", "Invalid license key or password.");
-  }
+  // Approval / active checks happen only after a correct password (they are not
+  // brute-force failures, so they must not affect the lockout counter).
   if (!data.credentialsApproved) {
     throw new HttpsError("permission-denied", "Account pending admin approval.");
   }
   if (data.isActive === false) {
     throw new HttpsError("permission-denied", "This account has been deactivated.");
-  }
-
-  // Transparently migrate a legacy sha256 hash to bcrypt on successful login.
-  if (needsUpgrade) {
-    try {
-      await ref.update({ passwordHash: await bcrypt.hash(password, BCRYPT_ROUNDS), passwordHashUpgradedAt: new Date().toISOString() });
-    } catch (e) { /* non-fatal: login still succeeds */ }
   }
 
   const token = await getAuth().createCustomToken(key, { licenseKey: key, username: enteredUser });
@@ -198,4 +226,96 @@ export const qzSign = onCall({ cors: true, region: "us-central1", secrets: [QZ_P
   } catch (e) {
     throw new HttpsError("internal", "QZ signing failed.");
   }
+});
+
+// ── Password reset via server-verified OTP ─────────────────────────────────
+// The OTP is generated, stored (hashed) and verified server-side, and the email
+// is sent from the function — so the code can't be read or skipped in the
+// browser (the old flow generated + compared the code client-side).
+const EMAILJS_SERVICE = "service_mxln2w4";
+const EMAILJS_RESET_TEMPLATE = "template_444v50v";
+const EMAILJS_PUBLIC_KEY = "jlfUG0WjJ3UVXUgCb";
+const EMAILJS_PRIVATE_KEY = defineSecret("EMAILJS_PRIVATE_KEY");
+
+// Step 1: request a reset code. Always returns ok (no account enumeration).
+export const requestPasswordReset = onCall({ cors: true, region: "us-central1", secrets: [EMAILJS_PRIVATE_KEY] }, async (req) => {
+  const email = String(req.data?.email || "").trim().toLowerCase();
+  if (!email) throw new HttpsError("invalid-argument", "Email is required.");
+  try {
+    const idx = await db.collection("email_index").doc(email).get();
+    if (!idx.exists) return { ok: true };
+    const licenseKey = idx.data().licenseKey;
+    const acct = await db.collection("pending_activations").doc(licenseKey).get();
+    if (!acct.exists) return { ok: true };
+    const name = acct.data().ownerName || acct.data().businessName || "User";
+
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    await db.collection("password_resets").doc(licenseKey).set({
+      email,
+      codeHash: await bcrypt.hash(code, 10),
+      expiresAt: Date.now() + 10 * 60 * 1000,
+      attempts: 0,
+      createdAt: new Date().toISOString(),
+    });
+
+    const emailResp = await fetch("https://api.emailjs.com/api/v1.0/email/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        service_id: EMAILJS_SERVICE,
+        template_id: EMAILJS_RESET_TEMPLATE,
+        user_id: EMAILJS_PUBLIC_KEY,
+        accessToken: EMAILJS_PRIVATE_KEY.value(),
+        template_params: { to_email: email, to_name: name, code },
+      }),
+    });
+    if (!emailResp.ok) {
+      console.error("EmailJS send failed:", emailResp.status, await emailResp.text().catch(() => ""));
+    }
+  } catch (e) {
+    // Never surface internal errors to the caller (avoids enumeration/leaks).
+    console.error("requestPasswordReset error:", e.message);
+  }
+  return { ok: true };
+});
+
+// Step 2: verify the code and set a new password. Proof of email ownership via
+// the OTP replaces the device-trust requirement, so this works from any device.
+export const resetPasswordWithOtp = onCall({ cors: true, region: "us-central1" }, async (req) => {
+  const email = String(req.data?.email || "").trim().toLowerCase();
+  const code = String(req.data?.code || "").trim();
+  const newPassword = String(req.data?.newPassword || "");
+  if (!email || !code || !newPassword) throw new HttpsError("invalid-argument", "email, code and newPassword are required.");
+  if (newPassword.length < 6) throw new HttpsError("invalid-argument", "Password must be at least 6 characters.");
+
+  const idx = await db.collection("email_index").doc(email).get();
+  if (!idx.exists) throw new HttpsError("unauthenticated", "Invalid or expired code.");
+  const licenseKey = idx.data().licenseKey;
+  const resetRef = db.collection("password_resets").doc(licenseKey);
+
+  const verdict = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(resetRef);
+    if (!snap.exists) return { status: "invalid" };
+    const d = snap.data();
+    if (Date.now() > d.expiresAt) { tx.delete(resetRef); return { status: "expired" }; }
+    if ((d.attempts || 0) >= 5) { tx.delete(resetRef); return { status: "toomany" }; }
+    if (!(await bcrypt.compare(code, d.codeHash))) {
+      tx.update(resetRef, { attempts: (d.attempts || 0) + 1 });
+      return { status: "invalid" };
+    }
+    tx.delete(resetRef);
+    return { status: "ok" };
+  });
+
+  if (verdict.status === "expired") throw new HttpsError("deadline-exceeded", "Code expired. Please request a new one.");
+  if (verdict.status === "toomany") throw new HttpsError("resource-exhausted", "Too many attempts. Please request a new code.");
+  if (verdict.status !== "ok") throw new HttpsError("unauthenticated", "Invalid or expired code.");
+
+  await db.collection("pending_activations").doc(licenseKey).update({
+    passwordHash: await bcrypt.hash(newPassword, BCRYPT_ROUNDS),
+    passwordResetAt: new Date().toISOString(),
+    loginFailCount: 0,
+    loginLockUntil: 0,
+  });
+  return { ok: true };
 });
