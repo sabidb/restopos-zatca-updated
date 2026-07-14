@@ -1,14 +1,30 @@
 name: Test Login Function
 
+# Credentials are provided at run time via workflow inputs — never hardcoded.
 on:
   workflow_dispatch:
+    inputs:
+      licenseKey:
+        description: "License key to test"
+        required: true
+      username:
+        description: "Client username"
+        required: true
+      password:
+        description: "Client password"
+        required: true
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - name: Call verifyLogin
+        env:
+          LICENSE_KEY: ${{ github.event.inputs.licenseKey }}
+          USERNAME: ${{ github.event.inputs.username }}
+          PASSWORD: ${{ github.event.inputs.password }}
         run: |
-          curl -X POST https://us-central1-restopos-db.cloudfunctions.net/verifyLogin \
+          curl -sS -X POST https://us-central1-restopos-db.cloudfunctions.net/verifyLogin \
             -H "Content-Type: application/json" \
-            -d '{"data": {"licenseKey": "RESTODD8HY7E", "username": "demoaccount1", "password": "Trial1234"}}'
+            -d "$(jq -n --arg k "$LICENSE_KEY" --arg u "$USERNAME" --arg p "$PASSWORD" \
+                 '{data: {licenseKey: $k, username: $u, password: $p}}')"

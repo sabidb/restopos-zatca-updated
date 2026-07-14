@@ -44,6 +44,18 @@ function ensureSignedIn() {
   }
   return _authReadyPromise;
 }
+// Auth headers for calls to the ZATCA signing microservice. The service now
+// requires a valid Firebase ID token and checks that this device's UID is on
+// the license's authUids allowlist, so onboarding/signing/reporting cannot be
+// called anonymously for arbitrary license keys.
+async function zatcaAuthHeaders() {
+  const headers = { "Content-Type": "application/json" };
+  try {
+    const user = await ensureSignedIn();
+    if (user) headers.Authorization = `Bearer ${await user.getIdToken()}`;
+  } catch (e) { console.warn("[ZATCA] could not attach auth token:", e.message); }
+  return headers;
+}
 async function registerDeviceUid(licenseKey, vatNumber) {
   if (!licenseKey) return;
   try {
@@ -270,7 +282,7 @@ async function reportToFatoora(inv) {
     const payload = buildZatcaReportPayload(inv, licenseKey);
     const res = await fetch(`${ZATCA_SERVICE_URL}/zatca/report`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: await zatcaAuthHeaders(),
       body: JSON.stringify(payload)
     });
 
@@ -314,7 +326,7 @@ async function clearanceB2BInvoice(inv) {
   payload.invoice.props.invoice_type = "standard";
   const res = await fetch(`${ZATCA_SERVICE_URL}/zatca/clearance`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: await zatcaAuthHeaders(),
     body: JSON.stringify(payload)
   });
   const data = await res.json().catch(() => ({}));
@@ -849,6 +861,39 @@ async function hashPassword(pw){
   return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,"0")).join("");
 }
 
+// Server-side credential setter — password is hashed with bcrypt in the Cloud
+// Function; the browser never writes passwordHash to Firestore directly.
+const setClientCredentialsFn = httpsCallable(functions, "setClientCredentials");
+// AI support proxy — keeps the Anthropic API key server-side.
+const aiChatFn = httpsCallable(functions, "aiChat");
+
+// ── OFFLINE-UNLOCK VERIFIER ──────────────────────────────────────────────
+// This is NOT the account credential (that lives server-side as bcrypt). It's a
+// device-local check so the POS can unlock while offline. It uses PBKDF2 with a
+// random per-device salt, so the stored blob can't be reversed or replayed
+// against the server. Stored in restopos_client_creds as {verifier, salt}.
+async function pbkdf2Hex(pw, saltHex){
+  const enc=new TextEncoder();
+  const keyMat=await crypto.subtle.importKey("raw",enc.encode(pw),"PBKDF2",false,["deriveBits"]);
+  const salt=Uint8Array.from(saltHex.match(/../g).map(h=>parseInt(h,16)));
+  const bits=await crypto.subtle.deriveBits({name:"PBKDF2",salt,iterations:150000,hash:"SHA-256"},keyMat,256);
+  return Array.from(new Uint8Array(bits)).map(b=>b.toString(16).padStart(2,"0")).join("");
+}
+function randomSaltHex(){
+  const a=new Uint8Array(16); crypto.getRandomValues(a);
+  return Array.from(a).map(b=>b.toString(16).padStart(2,"0")).join("");
+}
+async function makeLocalCreds(username, pw, {approved, active}){
+  const salt=randomSaltHex();
+  return { username:String(username).trim().toLowerCase(), salt, verifier:await pbkdf2Hex(pw,salt), approved:!!approved, active:active!==false };
+}
+async function localCredsMatch(creds, username, pw){
+  if(!creds||!creds.salt||!creds.verifier)return false;
+  if(String(username).trim().toLowerCase()!==creds.username)return false;
+  const v=await pbkdf2Hex(pw,creds.salt);
+  return v===creds.verifier;
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // SET CREDENTIALS — shown after first-time license activation
 // ═══════════════════════════════════════════════════════════════════
@@ -867,21 +912,14 @@ function SetCredentials({license,onDone}){
     if(password!==confirm)return setError("Passwords do not match.");
     setLoading(true);
     try{
-      const hashed=await hashPassword(password);
-      // Save credentials locally (pending approval)
-      LS.set("restopos_client_creds",{username:username.trim().toLowerCase(),passwordHash:hashed,approved:false,crNumber:license.crNumber,email:license.email||""});
-      // Save to Firestore so admin can see and approve
-      const snap=await getDoc(doc(db,"pending_activations",(license.licenseKey||"").trim().toUpperCase()));
-      if(snap.exists()){
-        await updateDoc(doc(db,"pending_activations",snap.id),{
-          clientUsername:username.trim().toLowerCase(),
-          passwordHash:hashed,
-          email:license.email||"",
-          credentialsSet:true,
-          credentialsApproved:false,
-          credentialsSetAt:new Date().toISOString()
-        });
-      }
+      // Credentials are hashed with bcrypt server-side; the browser never
+      // writes passwordHash to Firestore. Requires the device to be signed in
+      // (its UID is on the license authUids allowlist from activation).
+      await ensureSignedIn();
+      await setClientCredentialsFn({licenseKey:(license.licenseKey||"").trim().toUpperCase(),username:username.trim().toLowerCase(),password});
+      // Store a device-local verifier for OFFLINE unlock (not the server hash).
+      const local=await makeLocalCreds(username,password,{approved:false,active:true});
+      LS.set("restopos_client_creds",{...local,crNumber:license.crNumber,email:license.email||""});
       // Send welcome verification email
       if(license.email){
         try{
@@ -1144,9 +1182,12 @@ function ClientLogin({license,onSuccess,onForgotPassword,onBack}){
     if(!username.trim()||!password){setError("Please enter username and password.");setLoading(false);return;}
     if(needLicense&&!licenseKeyInput.trim()){setError("Please enter your license key.");setLoading(false);return;}
     try{
-      const hashed=await hashPassword(password);
-      // First try local creds
-      if(creds&&username.trim().toLowerCase()===creds?.username&&hashed===creds?.passwordHash){
+      // Offline unlock path: match against the device-local verifier ONLY if the
+      // account was approved and active at last sync. This prevents an unapproved
+      // or known-deactivated account from being let in while offline, and no
+      // longer relies on any server password hash being stored on the device.
+      const localOk=await localCredsMatch(creds,username,password);
+      if(localOk&&creds?.approved===true&&creds?.active!==false){
         sessionStorage.removeItem("restopos_login_attempts");
         sessionStorage.removeItem("restopos_lock_until");
         try{
@@ -1202,7 +1243,9 @@ function ClientLogin({license,onSuccess,onForgotPassword,onBack}){
           }catch(authErr){
             console.warn("[Login] signInWithCustomToken failed (non-fatal):",authErr.message);
           }
-          LS.set("restopos_client_creds",{username:result.clientUsername,passwordHash:result.passwordHash,approved:result.credentialsApproved||false});
+          // Store a device-local offline verifier (never the server hash).
+          const local=await makeLocalCreds(enteredUser,password,{approved:result.credentialsApproved||false,active:true});
+          LS.set("restopos_client_creds",{...local});
           if(!savedLic?.licenseKey){
             LS.set("restopos_license_v2",{licenseKey:licKey,businessName:result.businessName||"",crNumber:result.crNumber||"",vatNumber:result.vatNumber||"",email:result.email||"",city:result.city||"",address:result.address||"",phone:result.phone||""});
           }
@@ -1456,11 +1499,9 @@ function ForgotPassword({onBack,onReset}){
     if(newPassword!==confirmPw){setResetError("Passwords do not match.");return;}
     setResetLoading(true);
     try{
-      const hashed=await hashPassword(newPassword);
-      // Try Firestore update — use foundDocId or re-query by email as fallback
+      // Resolve the license key — use foundDocId or re-query by email as fallback
       let docId=foundDocId;
       if(!docId){
-        // Re-query by email if foundDocId was lost (e.g. page refresh mid-flow)
         try{
           const emailToFind=email.trim().toLowerCase()||sessionStorage.getItem("restopos_reset_email")||"";
           if(emailToFind){
@@ -1469,10 +1510,28 @@ function ForgotPassword({onBack,onReset}){
           }
         }catch(e){/* non-critical */}
       }
-      if(docId){await updateDoc(doc(db,"pending_activations",docId),{passwordHash:hashed,passwordResetAt:new Date().toISOString()});}
-      // Always update local creds too
-      const localCreds=LS.get("restopos_client_creds");
-      if(localCreds){LS.set("restopos_client_creds",{...localCreds,passwordHash:hashed});}
+      if(!docId){setResetError("Couldn't locate your account. Please contact support.");setResetLoading(false);return;}
+      // Look up the existing username to keep it unchanged.
+      const licSnap=await getDoc(doc(db,"pending_activations",docId));
+      const existingUser=licSnap.exists()?(licSnap.data().clientUsername||""):"";
+      if(!existingUser){setResetError("This account has no username set yet. Please contact support.");setResetLoading(false);return;}
+      // Hash server-side with bcrypt. Requires this device to be trusted on the
+      // license (its UID on authUids). A brand-new device must be approved first.
+      await ensureSignedIn();
+      try{
+        await setClientCredentialsFn({licenseKey:docId,username:existingUser,password:newPassword});
+      }catch(fnErr){
+        if(fnErr?.code==="functions/permission-denied"){
+          setResetError("Password can only be reset from a device already trusted on this license. Please use your activated device or contact support.");
+        }else{
+          setResetError("Reset failed: "+(fnErr?.message||"Unknown error"));
+        }
+        setResetLoading(false);return;
+      }
+      // Refresh the device-local offline verifier with the new password.
+      const localCreds=LS.get("restopos_client_creds")||{};
+      const local=await makeLocalCreds(existingUser,newPassword,{approved:localCreds.approved,active:localCreds.active});
+      LS.set("restopos_client_creds",{...localCreds,...local});
       sessionStorage.removeItem("restopos_reset_email");
       setStep("success");
     }catch(e){setResetError("Reset failed: "+e.message);}
@@ -9481,11 +9540,11 @@ function Help({license: helpLicense, lang="en", onLogout}){
   async function sendMessage(){
     if(!aiInput.trim()||aiLoading)return;const userMsg=aiInput.trim();setAiInput("");setAiMessages(prev=>[...prev,{role:"user",content:userMsg}]);setAiLoading(true);
     try{
-      let apiKey="";try{const cfgSnap=await getDoc(doc(db,"config","ai"));if(cfgSnap.exists())apiKey=cfgSnap.data().apiKey||"";}catch(e){}
-      if(!apiKey)throw new Error("AI not configured. Ask support to enable the AI assistant.");
-      const response=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json","x-api-key":apiKey,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,system:`You are RestoPOS Assistant — a helpful support bot for the RestoPOS restaurant management system used in Saudi Arabia. You help restaurant staff with: POS billing, ZATCA QR codes and compliance (Phase 1 & 2), UBL 2.1 XML invoices, FATOORA reporting queue, ICV sequential counters, SHA-256 hash chains, reports, menu management, settings, user roles, barcode scanning, payment methods (Cash, Card, Cash+Card split), VAT calculations (15%), and general app usage. Keep answers short, clear and practical.`,messages:[...aiMessages,{role:"user",content:userMsg}].map(m=>({role:m.role,content:m.content}))})});
-      if(!response.ok){const err=await response.json().catch(()=>({}));throw new Error(err?.error?.message||`HTTP ${response.status}`);}
-      const data=await response.json();const reply=data.content?.[0]?.text||"Sorry, I couldn't process that.";setAiMessages(prev=>[...prev,{role:"assistant",content:reply}]);
+      // The Anthropic API key stays server-side. The aiChat Cloud Function holds
+      // the key and proxies the request — the browser never sees it.
+      await ensureSignedIn();
+      const res=await aiChatFn({messages:[...aiMessages,{role:"user",content:userMsg}].map(m=>({role:m.role,content:m.content}))});
+      const reply=res?.data?.text||"Sorry, I couldn't process that.";setAiMessages(prev=>[...prev,{role:"assistant",content:reply}]);
     }catch(e){setAiMessages(prev=>[...prev,{role:"assistant",content:`⚠️ ${e.message||"Unknown error."}`}]);}
     setAiLoading(false);setTimeout(()=>chatRef.current?.scrollTo({top:chatRef.current.scrollHeight,behavior:"smooth"}),100);
   }
@@ -10495,7 +10554,7 @@ function ZATCASetup({license,sales=[]}){
     try{
       const res=await fetch(`${ZATCA_SERVICE_URL}/zatca/onboard`,{
         method:"POST",
-        headers:{"Content-Type":"application/json"},
+        headers:await zatcaAuthHeaders(),
         body:JSON.stringify({licenseKey:license.licenseKey,vatNumber,companyName,branchName,otp:otp.trim()})
       });
       clearInterval(stepTimer);
@@ -14288,33 +14347,10 @@ const RESTOPOS_QZ_CERT = "-----BEGIN CERTIFICATE-----\n" +
 "KW2ktNK4R2k8tXP5MhZTRyKpw7PzZpLCZs1luaVJ2EAH+31XcbDW5BzaGkixvpyf\n" +
 "Pt9/igmcDkHmCvQKm9ECRtsPEI+I3hi0LL720qsX/epNJT92niq2MC128AbD\n" +
 "-----END CERTIFICATE-----\n";
-const RESTOPOS_QZ_KEY = "-----BEGIN RSA PRIVATE KEY-----\n" +
-"MIIEogIBAAKCAQEAiixeNWKa7wRuWpO8YmER3lghEoLzIfCNNbzXMJKNhE7GKCJ5\n" +
-"bDo8oSLG3C/65BOjEGwrf/tsU8ZTzQwuPcHriy9zY+kP4tIjEqovN1T7w0pzRq39\n" +
-"rO4Ab99g3oLCheZvxybI/tVmp8YFGCAmPj6M33aed30U1QXV+nJxwxiJY1zOCZBS\n" +
-"yTOXbUAK8p+naKzAwYj3NlCZ+O6/OtzLKB1Mf8g+gwSixGbB/kf7+HW8SaSN6Zsd\n" +
-"omh8ScW85eLMDY0GfKqpg+usPRkob9C6sty0Vfrs8Ma6ne8a3F6WImqC9cWg24hd\n" +
-"rAeyFWpHhy+xvjdhIKux4MLsYCuBF7cE38N1bQIDAQABAoIBAAG8vRJ+wuPuclTB\n" +
-"NsUl40ugYAoTi2sJ0zyxuyLpNM5ND0DB7jTmJo0AGu/5ynXDqXEzaviY+Ku0+qjB\n" +
-"VnOAVK3TUugWrhRz/+zkJuPTNbcm4HwrA92AwJCnhlhF3JxCYXVnj29kz32ch8Pd\n" +
-"4500vCCzJRrrf6+N+zrC5ZtGW7PcGiBLHVlMbI9BvLFD1mGtQSHuA01+5VO2I0ti\n" +
-"GeJPdErLIdKxVrYhsVqTzMe6hkoseCK7pDH+c9KvdKwlPDFUYG80Il/UBudBf9sF\n" +
-"Jvcrs92omcV4+9vXEifwwKXp+l6z4ia6qdhc8pKvOBtB7jdWNTdibY8MxbatMDFN\n" +
-"ipgCZyECgYEAvdI/wgjZZuyjbOr/Fpc3sij8i1REAgB7LdaSieWtatxcCm31b1r4\n" +
-"8QJpkAEvyXkx3+cFlAXr9PxrGqUsqjvb9UCk476ysnwBXtBjOQamwo4Ei/1IUcF1\n" +
-"41yN/WBd5ine3SIzaOpVrMKlwzBsHktbXWkl7UnkcbXpeR6rWc+ZU4cCgYEAulh7\n" +
-"jOUVQz4Iv+SqngSFlRAdb8OKeVXSUsiERNweS9BW4r0WOIwZeKq700INZiuNTVNu\n" +
-"GoBS9E7SImBt8wquCKpypDqI51YYEEvaP7VS04hwV5ulw1LdQb+IVhDEclUkopoC\n" +
-"whuL07qZZb6E+3F8J0LRR9u8sEXwXPJLFDZhFGsCgYB3efiLhspf0B5lFdyNOYzi\n" +
-"5I1gnR9ZKzhc96uwhBINKrn8Do3nExmRiPUsoLKVW2UbCuwl6TxFLQO097YPSDIA\n" +
-"QjoG5ybO1OJ/7SYm5Jrd5knSWw/D9cLf4oe0rY0sq7oM8dPt+2EFplZzbuz+fGv7\n" +
-"dY1bt6DEOb3EcJtlohddzQKBgGfpKVQi9l1dvUFMQLwG53p81v1Yu+H3MmZJPECt\n" +
-"whMipSCgskBsF1QLWNtwDMq5ZH0HFfGfNyLWxSS4QvdxMCTS70SXA3qErrx/n79A\n" +
-"3GPqxEKGH8QwdALSzDK5/OGIivpFCV62P52cgyeSOtN/r+ywvMTmSmy9Q1CBJ86o\n" +
-"mC/rAoGAI+zHE3WY/68Kg2/ZZG9lmGY5LN+ondP35MGl21+vZHfX63i9Ar06AegI\n" +
-"VZtfNCT0onpn4+j8mLZEqoSMSHnoJkmo2usurEmQaKQgqyAHcsGraayHlw9rRFp5\n" +
-"MEZ+HCAfdCw3Ov2l6PIn/2Y9ibtlf/EkjdmwanASFpOjyMMMfww=\n" +
-"-----END RSA PRIVATE KEY-----\n";
+// The QZ Tray private key has been removed from the client bundle. Signing of
+// QZ connection challenges now happens in the qzSign Cloud Function, which holds
+// the key server-side (QZ_PRIVATE_KEY env). The certificate below is public.
+const qzSignFn = httpsCallable(functions, "qzSign");
 
 // Connect to QZ Tray
 async function connectQZ() {
@@ -14329,20 +14365,17 @@ async function connectQZ() {
     qz.security.setCertificatePromise(function(resolve, reject) {
       resolve(RESTOPOS_QZ_CERT);
     });
-    qz.security.setSignatureAlgorithm("SHA512"); // must match the signing below
+    qz.security.setSignatureAlgorithm("SHA512"); // must match the server signing (RSA-SHA512)
     qz.security.setSignaturePromise(function(toSign) {
       return function(resolve, reject) {
-        try {
-          if (!window.KJUR) { resolve(null); return; } // fallback: unsigned (shows popup) if lib missing
-          const sig = new KJUR.crypto.Signature({ alg: "SHA512withRSA" });
-          sig.init(RESTOPOS_QZ_KEY);
-          sig.updateString(toSign);
-          const hex = sig.sign();
-          resolve(stob64(hextorstr(hex)));
-        } catch (err) {
-          console.warn("[QZ] Signing failed, falling back to unsigned:", err && err.message);
-          resolve(null);
-        }
+        // Sign the challenge server-side; the private key never reaches the browser.
+        ensureSignedIn()
+          .then(() => qzSignFn({ toSign }))
+          .then((res) => resolve(res?.data?.signature || null))
+          .catch((err) => {
+            console.warn("[QZ] Server signing failed, falling back to unsigned:", err && err.message);
+            resolve(null); // fallback: unsigned (shows QZ popup)
+          });
       };
     });
 
@@ -14717,6 +14750,13 @@ export default function App(){
     const unsub=onSnapshot(doc(db,"pending_activations",savedLic.licenseKey.trim().toUpperCase()),(snap)=>{
       if(!snap.exists())return;
       const data=snap.data();
+      // Keep the device-local offline-unlock gate in sync with server state, so
+      // a deactivated/unapproved account cannot be unlocked offline next time.
+      const lc=LS.get("restopos_client_creds");
+      if(lc&&lc.salt){
+        const active=data.isActive!==false&&data.status!=="deactivated"&&data.status!=="suspended";
+        LS.set("restopos_client_creds",{...lc,active,approved:data.credentialsApproved===true});
+      }
       if(data.forceLogout===true){
         setTerminated("forceLogout");
       }else if(data.status==="deactivated"||data.status==="suspended"){
