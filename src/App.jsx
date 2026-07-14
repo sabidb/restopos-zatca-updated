@@ -4096,7 +4096,7 @@ function printDraftReceipt(order,license){
 // ═══════════════════════════════════════════════════════════════════
 // POS SCREEN
 // ═══════════════════════════════════════════════════════════════════
-function POS({items,sales,setSales,tables,setTables,promos,license,lang="en",currentUser=null}){
+function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang="en",currentUser=null}){
   const allCats=[...new Set(items.map(i=>i.category))];
   const [activeCat,setActiveCat]=useState("ALL");const [cart,setCart]=useState([]);const [orderType,setOrderType]=useState("takeaway");const [selectedTable,setSelectedTable]=useState(null);const [billType,setBillType]=useState("normal");
   const [showPayment,setShowPayment]=useState(false);const [showReceipt,setShowReceipt]=useState(false);const [lastOrder,setLastOrder]=useState(null);const [lastZatcaInvoice,setLastZatcaInvoice]=useState(null);
@@ -4116,7 +4116,19 @@ function POS({items,sales,setSales,tables,setTables,promos,license,lang="en",cur
   const superMode=isSupermarket();
   const [weighItem,setWeighItem]=useState(null);const [weighKg,setWeighKg]=useState("");
   const [scannedItem,setScannedItem]=useState(null);const [scanMiss,setScanMiss]=useState("");
+  const [priceCheck,setPriceCheck]=useState(false); // scan-to-view-only (customer-facing)
+  const [newProd,setNewProd]=useState(null); // {barcode,name,price,category,weighed} for quick create
+  const posCats=(LS.get("restopos_categories")||[...new Set(items.map(i=>i.category).filter(Boolean))]);
   function focusScanner(){setTimeout(()=>barcodeRef.current?.focus(),60);}
+  function saveNewProduct(){
+    const p=newProd; const price=parseFloat(p.price);
+    if(!p.name.trim()){showN("❌ Enter a name");return;}
+    if(!(price>0)){showN("❌ Enter a price");return;}
+    const item={id:Date.now()+Math.random(),name:p.name.trim(),nameAr:"",category:p.category||posCats[0]||"General",price,cost:0,stock:0,active:true,barcode:(p.barcode||"").trim(),weighed:!!p.weighed};
+    setItems&&setItems(prev=>[...prev,item]);
+    setNewProd(null); showN("✅ Product created"); focusScanner();
+    if(!priceCheck) addToCart(item);
+  }
   useEffect(()=>{ if(superMode) setTimeout(()=>barcodeRef.current?.focus(),200); },[superMode]);
   const total=cart.reduce((s,i)=>s+i.price*i.qty,0);const vat=parseFloat((total*(15/115)).toFixed(2));const subtotal=parseFloat((total-vat).toFixed(2));
   function addToCart(item){
@@ -4142,7 +4154,8 @@ function POS({items,sales,setSales,tables,setTables,promos,license,lang="en",cur
     const item=items.find(i=>String(i.barcode||"")===c) || items.find(i=>i.name?.toLowerCase()===c.toLowerCase());
     setBarcodeInput("");
     if(item){ setScanMiss(""); setScannedItem(item); }
-    else { setScanMiss(c); setScannedItem(null); showN("❌ No product for “"+c+"”"); focusScanner(); }
+    else if(priceCheck){ showN("❌ No product for “"+c+"”"); focusScanner(); }
+    else { setNewProd({barcode:c,name:"",price:"",category:posCats[0]||"General",weighed:false}); } // unknown → offer create
   }
   async function confirmPayment(method,given,change,promo,totalDiscountAmt,finalTotal,finalVat,printAndSave,payInfo,manualDiscountAmt,promoDiscountAmt,isDraft=false,extraData={}){
     // ── Invoice numbering ────────────────────────────────────────────
@@ -4816,9 +4829,39 @@ function POS({items,sales,setSales,tables,setTables,promos,license,lang="en",cur
               ))}
             </div>
             {low&&<div style={{margin:"0 20px 6px",fontSize:12,fontWeight:700,color:C.danger,background:C.dangerLight,borderRadius:8,padding:"7px 10px"}}>⚠️ Low stock</div>}
+            {priceCheck&&<div style={{margin:"0 20px 6px",fontSize:12,fontWeight:800,color:C.warning,background:C.warningLight,borderRadius:8,padding:"7px 10px",textAlign:"center"}}>🔍 Price Check — view only</div>}
             <div style={{display:"flex",gap:8,padding:"12px 20px 18px"}}>
-              <button onClick={close} style={{flex:1,padding:"12px 0",border:`1.5px solid ${C.border}`,background:"#fff",color:C.textMid,borderRadius:10,fontFamily:"inherit",fontSize:14,fontWeight:700,cursor:"pointer"}}>Close</button>
-              <button autoFocus onClick={addNow} onKeyDown={e=>{if(e.key==="Enter")addNow();}} style={{flex:2,padding:"12px 0",border:"none",background:C.primary,color:"#fff",borderRadius:10,fontFamily:"inherit",fontSize:14,fontWeight:800,cursor:"pointer"}}>{it.weighed?"⚖️ Weigh & Add":"＋ Add to Cart"}</button>
+              {priceCheck
+                ? <button autoFocus onClick={close} onKeyDown={e=>{if(e.key==="Enter")close();}} style={{flex:1,padding:"12px 0",border:"none",background:C.primary,color:"#fff",borderRadius:10,fontFamily:"inherit",fontSize:14,fontWeight:800,cursor:"pointer"}}>Done</button>
+                : <>
+                    <button onClick={close} style={{flex:1,padding:"12px 0",border:`1.5px solid ${C.border}`,background:"#fff",color:C.textMid,borderRadius:10,fontFamily:"inherit",fontSize:14,fontWeight:700,cursor:"pointer"}}>Close</button>
+                    <button autoFocus onClick={addNow} onKeyDown={e=>{if(e.key==="Enter")addNow();}} style={{flex:2,padding:"12px 0",border:"none",background:C.primary,color:"#fff",borderRadius:10,fontFamily:"inherit",fontSize:14,fontWeight:800,cursor:"pointer"}}>{it.weighed?"⚖️ Weigh & Add":"＋ Add to Cart"}</button>
+                  </>}
+            </div>
+          </div>
+        </div>
+      );})()}
+      {newProd&&(()=>{const np=newProd;const upd=(k,v)=>setNewProd(p=>({...p,[k]:v}));const inpS={width:"100%",padding:"11px 13px",border:`1px solid ${C.border}`,borderRadius:9,fontSize:14,fontFamily:"inherit",color:C.text,background:"#fff",boxSizing:"border-box"};return(
+        <div onClick={()=>setNewProd(null)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:2000,padding:20}}>
+          <div onClick={e=>e.stopPropagation()} style={{background:"#fff",borderRadius:16,padding:22,width:400,maxWidth:"100%",fontFamily:"inherit"}}>
+            <div style={{fontSize:16,fontWeight:800,color:C.text}}>➕ New product</div>
+            <div style={{fontSize:12.5,color:C.textMid,marginBottom:16}}>Barcode <span style={{fontFamily:"monospace",fontWeight:700,color:C.zatca}}>{np.barcode||"—"}</span> isn’t in your catalogue yet.</div>
+            <div style={{display:"flex",flexDirection:"column",gap:10}}>
+              <input autoFocus value={np.name} onChange={e=>upd("name",e.target.value)} placeholder="Product name" style={inpS}/>
+              <div style={{display:"flex",gap:10}}>
+                <input value={np.price} onChange={e=>upd("price",e.target.value.replace(/[^\d.]/g,""))} inputMode="decimal" placeholder={np.weighed?"Price per kg (incl. VAT)":"Price (incl. VAT)"} style={{...inpS,flex:1}}/>
+                <select value={np.category} onChange={e=>upd("category",e.target.value)} style={{...inpS,flex:1}}>
+                  {(posCats.length?posCats:["General"]).map(c=><option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+              <label style={{display:"flex",alignItems:"center",gap:10,padding:"9px 12px",background:C.zatcaLight,border:`1px solid ${C.zatca}30`,borderRadius:8,cursor:"pointer"}}>
+                <input type="checkbox" checked={np.weighed} onChange={e=>upd("weighed",e.target.checked)} style={{width:17,height:17,cursor:"pointer"}}/>
+                <span style={{fontSize:13,fontWeight:700,color:C.text}}>⚖️ Weighed item — price is per kilogram</span>
+              </label>
+            </div>
+            <div style={{display:"flex",gap:8,marginTop:18}}>
+              <button onClick={()=>setNewProd(null)} style={{flex:1,padding:"12px 0",border:`1.5px solid ${C.border}`,background:"#fff",color:C.textMid,borderRadius:10,fontFamily:"inherit",fontSize:14,fontWeight:700,cursor:"pointer"}}>Cancel</button>
+              <button onClick={saveNewProduct} style={{flex:2,padding:"12px 0",border:"none",background:C.primary,color:"#fff",borderRadius:10,fontFamily:"inherit",fontSize:14,fontWeight:800,cursor:"pointer"}}>{priceCheck?"Create":"Create & Add"}</button>
             </div>
           </div>
         </div>
@@ -4868,7 +4911,8 @@ function POS({items,sales,setSales,tables,setTables,promos,license,lang="en",cur
       {/* LEFT — Menu */}
       <div style={{flex:1,display:"flex",flexDirection:"column",borderRight:`1px solid ${C.border}`,background:C.bg,overflow:"hidden"}}>
         <div style={{padding:"8px 12px",background:C.zatcaLight,borderBottom:`1px solid ${C.border}`,display:"flex",gap:8,alignItems:"center"}}>
-          <input ref={barcodeRef} value={barcodeInput} onChange={e=>setBarcodeInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&barcodeInput.trim())handleBarcodeSearch(barcodeInput);}} placeholder="🔲 Scan barcode or type…" style={{flex:1,minWidth:0,padding:"7px 12px",border:`1.5px solid ${C.zatca}`,borderRadius:8,fontSize:13,fontFamily:"inherit",background:"#fff"}}/>
+          <input ref={barcodeRef} value={barcodeInput} onChange={e=>setBarcodeInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&barcodeInput.trim())handleBarcodeSearch(barcodeInput);}} placeholder={priceCheck?"🔍 Price check — scan to view":"🔲 Scan barcode or type…"} style={{flex:1,minWidth:0,padding:"7px 12px",border:`1.5px solid ${priceCheck?C.warning:C.zatca}`,borderRadius:8,fontSize:13,fontFamily:"inherit",background:"#fff"}}/>
+          <button onClick={()=>setPriceCheck(p=>!p)} title="Price check: scan to view details only, never add to cart" style={{flexShrink:0,height:34,padding:"0 11px",borderRadius:8,border:`1.5px solid ${priceCheck?C.warning:C.border}`,background:priceCheck?C.warningLight:"#fff",color:priceCheck?C.warning:C.textMid,cursor:"pointer",fontSize:12,fontWeight:800,fontFamily:"inherit"}}>🔍 {priceCheck?"Price Check ON":"Price Check"}</button>
           {!editMode
             ? <button onClick={enterEdit} title="Edit layout — reorder items & resize boxes" style={{flexShrink:0,width:38,height:36,borderRadius:8,border:`1.5px solid ${C.border}`,background:"#fff",cursor:"pointer",fontSize:17,display:"flex",alignItems:"center",justifyContent:"center"}}>✏️</button>
             : <div style={{display:"flex",gap:6,flexShrink:0}}>
@@ -15132,7 +15176,7 @@ export default function App(){
         )}
         <TabBoundary key={screen} name={screen}>
         {screen==="dashboard"&&<Dashboard sales={allSales} items={items} license={license} lang={lang}/>}
-        {screen==="pos"&&<POS items={items} sales={sales} setSales={setSales} tables={tables} setTables={setTables} promos={promos} license={license} lang={lang} currentUser={currentUser}/>}
+        {screen==="pos"&&<POS items={items} setItems={setItems} sales={sales} setSales={setSales} tables={tables} setTables={setTables} promos={promos} license={license} lang={lang} currentUser={currentUser}/>}
         {screen==="settings"&&<Settings company={company} setCompany={setCompany} tables={tables} setTables={setTables} license={license} onClearLicense={handleClearLicense} onSwitchAccount={handleSwitchAccount} pins={pins} setPins={setPins} invoiceFormat={invoiceFormat} setInvoiceFormat={setInvoiceFormat} lang={lang} onLangChange={handleLangChange} sales={allSales} items={items}/>}
         {screen==="create"&&<Create items={items} setItems={setItems} promos={promos} setPromos={setPromos} lang={lang}/>}
         {screen==="transactions"&&<Transactions sales={allSales} setSales={setSales} license={license} lang={lang} autoSyncStatus={autoSyncStatus}/>}
