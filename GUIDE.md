@@ -145,7 +145,10 @@ This is the customer onboarding lifecycle.
 
 ### Step 1 — License activation
 1. Open the app. On first run you're on the **License** screen.
-2. Enter the **license key** (issued by the operator, e.g. `RESTODD8HY7E`) and
+2. **Choose your business type — Restaurant or Supermarket** (top of the
+   registration form). This sets the app's mode (see
+   [Business modes](#business-modes)) and is stored on the account.
+3. Enter the **license key** (issued by the operator, e.g. `RESTODD8HY7E`) and
    your business details: **business name, CR number, 15-digit VAT number,
    email, city, address, phone**.
 3. Submitting creates a `pending_activations/{LICENSEKEY}` document with
@@ -243,6 +246,27 @@ formatted receipt (including the ZATCA QR).
 receipts** print on payment (respecting the **Print & Save** toggle).
 
 ---
+
+## Business modes
+
+RestoPOS runs in one of two modes, chosen at registration and stored on the
+account (`businessType`), so it follows the login on any device.
+
+| | 🍽️ Restaurant (default) | 🛒 Supermarket |
+|---|---|---|
+| Order types | Dine-in · Takeaway · Delivery | **Sale** · Delivery (no dine-in) |
+| Tables | Yes | Hidden |
+| Kitchen ticket (KOT) | Yes | Hidden |
+| Checkout focus | Item grid | **Barcode-first** (scan box auto-focused) |
+| Weighed items | — | **Yes** — items priced per kg; cashier enters weight |
+
+**Setting up weighed items (supermarket):** Create → Items → edit an item →
+tick **"⚖️ Weighed item — price is per kilogram"**. Its price is then treated as
+SAR/kg. When added at the POS, the cashier enters the weight and the line total
+is `price × weight`.
+
+To change an existing account's type, an operator updates `businessType` on the
+`pending_activations` document (admin panel / Firestore).
 
 ## 6. Billing / running the POS
 

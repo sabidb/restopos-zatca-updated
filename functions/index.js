@@ -119,6 +119,7 @@ export const verifyLogin = onCall({ cors: true, region: "us-central1" }, async (
     city: data.city || "",
     address: data.address || "",
     phone: data.phone || "",
+    businessType: data.businessType || "restaurant",
     credentialsApproved: data.credentialsApproved || false
   };
 });

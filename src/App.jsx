@@ -44,6 +44,15 @@ function ensureSignedIn() {
   }
   return _authReadyPromise;
 }
+// ── BUSINESS MODE ────────────────────────────────────────────────────────
+// "restaurant" (default) or "supermarket". Supermarket mode hides tables/
+// dine-in/KOT/kitchen and turns on barcode-first checkout + weighed items.
+function getBusinessType(license){
+  const lic = license || (typeof LS!=="undefined" ? LS.get("restopos_license_v2") : null);
+  return (lic && lic.businessType) || "restaurant";
+}
+function isSupermarket(license){ return getBusinessType(license)==="supermarket"; }
+
 // Auth headers for calls to the ZATCA signing microservice. The service now
 // requires a valid Firebase ID token and checks that this device's UID is on
 // the license's authUids allowlist, so onboarding/signing/reporting cannot be
@@ -1262,7 +1271,7 @@ function ClientLogin({license,onSuccess,onForgotPassword,onBack}){
           const local=await makeLocalCreds(enteredUser,password,{approved:result.credentialsApproved||false,active:true});
           LS.set("restopos_client_creds",{...local});
           if(!savedLic?.licenseKey){
-            LS.set("restopos_license_v2",{licenseKey:licKey,businessName:result.businessName||"",crNumber:result.crNumber||"",vatNumber:result.vatNumber||"",email:result.email||"",city:result.city||"",address:result.address||"",phone:result.phone||""});
+            LS.set("restopos_license_v2",{licenseKey:licKey,businessName:result.businessName||"",crNumber:result.crNumber||"",vatNumber:result.vatNumber||"",email:result.email||"",city:result.city||"",address:result.address||"",phone:result.phone||"",businessType:result.businessType||"restaurant"});
           }
           sessionStorage.removeItem("restopos_login_attempts");
           sessionStorage.removeItem("restopos_lock_until");
@@ -2297,7 +2306,7 @@ const DataTable=({headers,rows,emptyMsg="No data"})=>(
 // BUSINESS REGISTRATION
 // ═══════════════════════════════════════════════════════════════════
 function BusinessRegistration({onNext,onLogin}){
-  const [form,setForm]=useState({businessName:"",businessNameAr:"",ownerName:"",email:"",crNumber:"",vatNumber:"",address:"",city:"Riyadh",phone:""});
+  const [form,setForm]=useState({businessName:"",businessNameAr:"",ownerName:"",email:"",crNumber:"",vatNumber:"",address:"",city:"Riyadh",phone:"",businessType:"restaurant"});
   const [isOwner,setIsOwner]=useState(null);
   const [error,setError]=useState("");
   const [crFile,setCrFile]=useState(null);
@@ -2339,6 +2348,21 @@ function BusinessRegistration({onNext,onLogin}){
         <div style={{background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:20,padding:32,backdropFilter:"blur(12px)"}}>
           <div style={{fontSize:18,fontWeight:800,color:"#fff",marginBottom:6}}>Business Registration</div>
           <div style={{fontSize:13,color:"rgba(255,255,255,0.5)",marginBottom:20}}>Step 1 of 2 — Enter your business details</div>
+
+          {/* BUSINESS TYPE — drives Restaurant vs Supermarket mode */}
+          <div style={{marginBottom:20,padding:"14px 16px",background:"rgba(26,107,74,0.12)",border:"1px solid rgba(26,107,74,0.35)",borderRadius:12}}>
+            <div style={{fontSize:13,fontWeight:700,color:"#7FFAB5",marginBottom:10}}>🏬 What type of business is this?</div>
+            <div style={{display:"flex",gap:10}}>
+              {[["restaurant","🍽️","Restaurant","Tables, dine-in, kitchen tickets"],["supermarket","🛒","Supermarket","Barcode checkout, weighed items"]].map(([v,icon,label,desc])=>(
+                <button key={v} onClick={()=>set("businessType",v)} type="button"
+                  style={{flex:1,padding:"12px 12px",borderRadius:10,border:`2px solid ${form.businessType===v?"#1A6B4A":"rgba(255,255,255,0.15)"}`,background:form.businessType===v?"rgba(26,107,74,0.25)":"rgba(255,255,255,0.05)",color:form.businessType===v?"#7FFAB5":"rgba(255,255,255,0.6)",fontFamily:"inherit",cursor:"pointer",textAlign:"left"}}>
+                  <div style={{fontSize:20,marginBottom:4}}>{icon}</div>
+                  <div style={{fontSize:13,fontWeight:800}}>{label}</div>
+                  <div style={{fontSize:10,opacity:0.75,marginTop:2,lineHeight:1.3}}>{desc}</div>
+                </button>
+              ))}
+            </div>
+          </div>
 
           {/* ARE YOU THE OWNER? */}
           <div style={{marginBottom:20,padding:"14px 16px",background:"rgba(240,165,0,0.1)",border:"1px solid rgba(240,165,0,0.3)",borderRadius:12}}>
@@ -4088,8 +4112,24 @@ function POS({items,sales,setSales,tables,setTables,promos,license,lang="en",cur
   // Description popup state
   const [showDescModal,setShowDescModal]=useState(false);
   const [descModalIdx,setDescModalIdx]=useState(null);
+  // Supermarket mode: barcode-first checkout + weighed items, no dine-in/tables/KOT.
+  const superMode=isSupermarket();
+  useEffect(()=>{ if(superMode) setTimeout(()=>barcodeRef.current?.focus(),200); },[superMode]);
   const total=cart.reduce((s,i)=>s+i.price*i.qty,0);const vat=parseFloat((total*(15/115)).toFixed(2));const subtotal=parseFloat((total-vat).toFixed(2));
-  function addToCart(item){setCart(prev=>{const ex=prev.find(c=>c.id===item.id);if(ex)return prev.map(c=>c.id===item.id?{...c,qty:c.qty+1}:c);return[...prev,{...item,qty:1}];});showN("+ "+item.name);}
+  function addToCart(item){
+    // Weighed item (price is per-kg): qty carries the weight in kg, so line total
+    // (price*qty) stays correct. Each weigh-in is its own cart line.
+    if(item.weighed){
+      const raw=prompt(`Weight in kg for ${item.name} (${fmtSAR(item.price)}/kg):`,"1");
+      if(raw===null)return;
+      const w=parseFloat(raw);
+      if(!(w>0)){showN("❌ Invalid weight");return;}
+      const kg=Math.round(w*1000)/1000;
+      setCart(prev=>[...prev,{...item,qty:kg,weighed:true}]);
+      showN("+ "+item.name+" ("+kg+" kg)");return;
+    }
+    setCart(prev=>{const ex=prev.find(c=>c.id===item.id&&!c.weighed);if(ex)return prev.map(c=>c===ex?{...c,qty:c.qty+1}:c);return[...prev,{...item,qty:1}];});showN("+ "+item.name);
+  }
   function updateQty(delta){if(selectedRow===null)return;setCart(prev=>{const next=prev.map((c,i)=>i===selectedRow?{...c,qty:Math.max(0,c.qty+delta)}:c).filter(c=>c.qty>0);if(next.length<=selectedRow){setSelectedRow(null);setDescModalIdx(null);}return next;});}
   function showN(msg){setNotif(msg);setTimeout(()=>setNotif(null),1500);}
   function handleBarcodeSearch(code){const item=items.find(i=>i.barcode===code.trim());if(item){addToCart(item);setBarcodeInput("");}else{showN("❌ Barcode not found");setBarcodeInput("");}}
@@ -4832,7 +4872,7 @@ function POS({items,sales,setSales,tables,setTables,promos,license,lang="en",cur
       <div style={{width:340,display:"flex",flexDirection:"column",background:"#fff",flexShrink:0}}>
         <div style={{padding:"10px 14px",borderBottom:`1px solid ${C.border}`}}>
           <div style={{display:"flex",gap:6,marginBottom:8}}>
-            {[["takeaway","🥡","Takeaway"],["dine-in","🍽","Dine-in"],["delivery","🛵","Delivery"]].map(([id,icon,label])=>(
+            {(superMode?[["takeaway","🛒","Sale"],["delivery","🛵","Delivery"]]:[["takeaway","🥡","Takeaway"],["dine-in","🍽","Dine-in"],["delivery","🛵","Delivery"]]).map(([id,icon,label])=>(
               <button key={id} onClick={()=>{setOrderType(id);if(id!=="dine-in")setSelectedTable(null);}} style={{flex:1,padding:"7px 4px",border:`1.5px solid ${orderType===id?C.primary:C.border}`,background:orderType===id?C.primaryLight:"#fff",color:orderType===id?C.primary:C.textMid,borderRadius:8,fontFamily:"inherit",fontSize:11,fontWeight:700,cursor:"pointer"}}>{icon} {label}</button>
             ))}
           </div>
@@ -4855,7 +4895,7 @@ function POS({items,sales,setSales,tables,setTables,promos,license,lang="en",cur
                 }} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 10px",borderRadius:8,marginBottom:2,background:selectedRow===idx?C.primaryLight:C.bg,border:`1px solid ${selectedRow===idx?C.primary:C.border}`,cursor:"pointer"}}>
                   <div style={{flex:1}}>
                     <div style={{fontSize:13,fontWeight:700}}>{item.name}</div>
-                    <div style={{fontSize:11,color:C.textMid}}>SAR {item.price} × {item.qty}{descEnabled&&selectedRow===idx?<span style={{color:C.primary,marginLeft:6,fontSize:10}}>· tap again for description</span>:""}</div>
+                    <div style={{fontSize:11,color:C.textMid}}>SAR {item.price}{item.weighed?"/kg":""} × {item.qty}{item.weighed?" kg":""}{descEnabled&&selectedRow===idx?<span style={{color:C.primary,marginLeft:6,fontSize:10}}>· tap again for description</span>:""}</div>
                   </div>
                   <div style={{fontSize:13,fontWeight:800,color:C.primary}}>SAR {(item.price*item.qty).toFixed(2)}</div>
                 </div>
@@ -4880,7 +4920,7 @@ function POS({items,sales,setSales,tables,setTables,promos,license,lang="en",cur
           <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}><span style={{fontSize:11,color:C.textLight}}>VAT 15% (incl.)</span><span style={{fontSize:11,fontWeight:600,color:C.zatca}}>{fmtSAR(vat)}</span></div>
           <div style={{display:"flex",justifyContent:"space-between",marginBottom:14,paddingTop:8,borderTop:`1px solid ${C.border}`}}><span style={{fontSize:16,fontWeight:800}}>Amount Due</span><span style={{fontSize:18,fontWeight:900,color:C.primary}}>{fmtSAR(total)}</span></div>
           <div style={{display:"flex",gap:8}}>
-            <button onClick={printKOT} disabled={cart.length===0} style={{flex:1,padding:"12px 0",background:cart.length===0?"#e0e0e0":C.accentLight,color:cart.length===0?"#aaa":C.accent,border:`1.5px solid ${cart.length===0?"#e0e0e0":C.accent}`,borderRadius:10,fontFamily:"inherit",fontSize:13,fontWeight:700,cursor:cart.length===0?"not-allowed":"pointer"}}>🍽 KOT</button>
+            {!superMode&&<button onClick={printKOT} disabled={cart.length===0} style={{flex:1,padding:"12px 0",background:cart.length===0?"#e0e0e0":C.accentLight,color:cart.length===0?"#aaa":C.accent,border:`1.5px solid ${cart.length===0?"#e0e0e0":C.accent}`,borderRadius:10,fontFamily:"inherit",fontSize:13,fontWeight:700,cursor:cart.length===0?"not-allowed":"pointer"}}>🍽 KOT</button>}
             <button onClick={()=>{
                 const printed=(sales||[]).filter(s=>s.status!=="voided");
                 if(!printed.length){alert("No previous bills yet");return;}
@@ -6698,7 +6738,8 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
   function saveCategories(newList){setCategories(newList);LS.set("restopos_categories",newList);const _lic_cat=LS.get("restopos_license_v2")?.licenseKey;if(_lic_cat)debouncedSync(_lic_cat,"restopos_categories",newList);}
   function addCategory(){const trimmed=newCat.trim();if(!trimmed)return alert("Category name cannot be empty");if(categories.includes(trimmed))return alert("Category already exists");saveCategories([...categories,trimmed]);setNewCat("");}
   const [showImport,setShowImport]=useState(false);const [importRows,setImportRows]=useState([]);const [importError,setImportError]=useState("");const [importDone,setImportDone]=useState(false);
-  const blankItem={name:"",nameAr:"",category:categories[0],price:"",cost:"",stock:"",active:true,barcode:""};const [itemForm,setItemForm]=useState(blankItem);
+  const blankItem={name:"",nameAr:"",category:categories[0],price:"",cost:"",stock:"",active:true,barcode:"",weighed:false};const [itemForm,setItemForm]=useState(blankItem);
+  const superMode=isSupermarket();
   const blankPromo={code:"",type:"%",value:"",minOrder:0,active:true};const [promoForm,setPromoForm]=useState(blankPromo);const barcodeRef=useRef();
   function openItemModal(it=null){setEditItem(it);setItemForm(it?{...it}:{...blankItem,category:categories[0]});setShowItemModal(true);setTranslating(false);setTranslateError("");}
   const [translating,setTranslating]=useState(false);
@@ -6783,6 +6824,10 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
           {itemForm.nameAr&&!translating&&<div style={{fontSize:11,color:C.success,marginTop:4,fontFamily:"'Tajawal',sans-serif",direction:"rtl",textAlign:"right"}}>✓ {itemForm.nameAr}</div>}
         </div>
         <Sel label="Category" value={itemForm.category} onChange={v=>setItemForm(f=>({...f,category:v}))} options={[...categories,...(categories.includes(OTHER_CAT)?[]:[OTHER_CAT])]}/><Inp label="Barcode" value={itemForm.barcode} onChange={v=>setItemForm(f=>({...f,barcode:v}))} placeholder="Scan or type barcode"/>
+        {superMode&&<label style={{gridColumn:"1 / -1",display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:C.zatcaLight,border:`1px solid ${C.zatca}30`,borderRadius:8,cursor:"pointer"}}>
+          <input type="checkbox" checked={!!itemForm.weighed} onChange={e=>setItemForm(f=>({...f,weighed:e.target.checked}))} style={{width:18,height:18,cursor:"pointer"}}/>
+          <span style={{fontSize:13,fontWeight:700,color:C.text}}>⚖️ Weighed item — price is per kilogram</span>
+        </label>}
         <Inp label="Price (SAR) *" value={itemForm.price} onChange={v=>setItemForm(f=>({...f,price:v}))} type="number"/><Inp label="Cost (SAR)" value={itemForm.cost} onChange={v=>setItemForm(f=>({...f,cost:v}))} type="number"/>
         <Inp label="Stock" value={itemForm.stock} onChange={v=>setItemForm(f=>({...f,stock:v}))} type="number"/><div style={{display:"flex",alignItems:"center",gap:8,paddingTop:20}}><input type="checkbox" checked={itemForm.active} onChange={e=>setItemForm(f=>({...f,active:e.target.checked}))} id="activeItem"/><label htmlFor="activeItem" style={{fontSize:13}}>Active</label></div>
       </div>
@@ -14751,7 +14796,7 @@ export default function App(){
       }else{
         setTerminated(null);
         // Sync subscriptionPlan, phone, ownerName from Firestore into local license
-        const updatedLic={...LS.get("restopos_license_v2"),subscriptionPlan:data.subscriptionPlan||"basic",ownerName:data.ownerName||"",phone:data.phone||savedLic.phone||""};
+        const updatedLic={...LS.get("restopos_license_v2"),subscriptionPlan:data.subscriptionPlan||"basic",ownerName:data.ownerName||"",phone:data.phone||savedLic.phone||"",businessType:data.businessType||LS.get("restopos_license_v2")?.businessType||"restaurant"};
         LS.set("restopos_license_v2",updatedLic);
         setLicense(updatedLic);
         // ── Subscription expiry enforcement ──────────────────────────
