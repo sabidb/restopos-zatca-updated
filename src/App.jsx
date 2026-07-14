@@ -4114,21 +4114,22 @@ function POS({items,sales,setSales,tables,setTables,promos,license,lang="en",cur
   const [descModalIdx,setDescModalIdx]=useState(null);
   // Supermarket mode: barcode-first checkout + weighed items, no dine-in/tables/KOT.
   const superMode=isSupermarket();
+  const [weighItem,setWeighItem]=useState(null);const [weighKg,setWeighKg]=useState("");
   useEffect(()=>{ if(superMode) setTimeout(()=>barcodeRef.current?.focus(),200); },[superMode]);
   const total=cart.reduce((s,i)=>s+i.price*i.qty,0);const vat=parseFloat((total*(15/115)).toFixed(2));const subtotal=parseFloat((total-vat).toFixed(2));
   function addToCart(item){
-    // Weighed item (price is per-kg): qty carries the weight in kg, so line total
-    // (price*qty) stays correct. Each weigh-in is its own cart line.
-    if(item.weighed){
-      const raw=prompt(`Weight in kg for ${item.name} (${fmtSAR(item.price)}/kg):`,"1");
-      if(raw===null)return;
-      const w=parseFloat(raw);
-      if(!(w>0)){showN("❌ Invalid weight");return;}
-      const kg=Math.round(w*1000)/1000;
-      setCart(prev=>[...prev,{...item,qty:kg,weighed:true}]);
-      showN("+ "+item.name+" ("+kg+" kg)");return;
-    }
+    // Weighed item (price is per-kg): open the weight modal. qty carries the
+    // weight in kg, so line total (price*qty) stays correct; each weigh is a line.
+    if(item.weighed){ setWeighItem(item); setWeighKg(""); return; }
     setCart(prev=>{const ex=prev.find(c=>c.id===item.id&&!c.weighed);if(ex)return prev.map(c=>c===ex?{...c,qty:c.qty+1}:c);return[...prev,{...item,qty:1}];});showN("+ "+item.name);
+  }
+  function confirmWeigh(){
+    const w=parseFloat(weighKg);
+    if(!(w>0)){showN("❌ Enter a valid weight");return;}
+    const kg=Math.round(w*1000)/1000;
+    setCart(prev=>[...prev,{...weighItem,qty:kg,weighed:true}]);
+    showN("+ "+weighItem.name+" ("+kg+" kg)");
+    setWeighItem(null);setWeighKg("");
   }
   function updateQty(delta){if(selectedRow===null)return;setCart(prev=>{const next=prev.map((c,i)=>i===selectedRow?{...c,qty:Math.max(0,c.qty+delta)}:c).filter(c=>c.qty>0);if(next.length<=selectedRow){setSelectedRow(null);setDescModalIdx(null);}return next;});}
   function showN(msg){setNotif(msg);setTimeout(()=>setNotif(null),1500);}
@@ -4765,6 +4766,26 @@ function POS({items,sales,setSales,tables,setTables,promos,license,lang="en",cur
       <style>{`@keyframes slideDown{from{opacity:0;transform:translateX(-50%) translateY(-20px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}`}</style>
       {showPayment&&<PaymentModal total={total} subtotal={subtotal} vat={vat} promos={promos} license={license} vno={vno} kotNo={kotNo} customers={LS.get("restopos_customers")||[]} customerName={customerName} customerPhone={customerPhone} orderType={orderType} onConfirm={confirmPayment} onClose={()=>setShowPayment(false)}/>}
       {showReceipt&&lastOrder&&<ReceiptModal order={lastOrder} license={license} zatcaInvoice={lastZatcaInvoice} onClose={()=>{setShowReceipt(false);setLastZatcaInvoice(null);}}/>}
+      {weighItem&&(()=>{const w=parseFloat(weighKg)||0;const lineTotal=(weighItem.price*w);return(
+        <div onClick={()=>setWeighItem(null)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:2000,padding:20}}>
+          <div onClick={e=>e.stopPropagation()} style={{background:"#fff",borderRadius:16,padding:24,width:360,maxWidth:"100%",fontFamily:"inherit"}}>
+            <div style={{fontSize:16,fontWeight:800,marginBottom:4}}>⚖️ {weighItem.name}</div>
+            <div style={{fontSize:13,color:C.textMid,marginBottom:16}}>{fmtSAR(weighItem.price)} / kg</div>
+            <input autoFocus type="number" inputMode="decimal" step="0.001" min="0" value={weighKg} onChange={e=>setWeighKg(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")confirmWeigh();}} placeholder="Weight in kg" style={{width:"100%",padding:"14px 16px",border:`2px solid ${C.primary}`,borderRadius:10,fontSize:22,fontWeight:800,textAlign:"center",fontFamily:"inherit",color:C.text}}/>
+            <div style={{display:"flex",gap:6,margin:"12px 0",flexWrap:"wrap"}}>
+              {[0.25,0.5,1,1.5,2,5].map(q=><button key={q} onClick={()=>setWeighKg(String(q))} style={{flex:"1 1 28%",padding:"8px 0",border:`1px solid ${C.border}`,background:C.bg,borderRadius:8,fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer",color:C.textMid}}>{q} kg</button>)}
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 12px",background:C.zatcaLight,borderRadius:8,marginBottom:16}}>
+              <span style={{fontSize:13,color:C.textMid}}>Line total</span>
+              <span style={{fontSize:18,fontWeight:800,color:C.primary}}>{fmtSAR(lineTotal)}</span>
+            </div>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={()=>setWeighItem(null)} style={{flex:1,padding:"12px 0",border:`1.5px solid ${C.border}`,background:"#fff",color:C.textMid,borderRadius:10,fontFamily:"inherit",fontSize:14,fontWeight:700,cursor:"pointer"}}>Cancel</button>
+              <button onClick={confirmWeigh} disabled={!(parseFloat(weighKg)>0)} style={{flex:2,padding:"12px 0",border:"none",background:parseFloat(weighKg)>0?C.primary:"#ccc",color:"#fff",borderRadius:10,fontFamily:"inherit",fontSize:14,fontWeight:800,cursor:parseFloat(weighKg)>0?"pointer":"not-allowed"}}>Add to cart</button>
+            </div>
+          </div>
+        </div>
+      );})()}
       {notif&&<div style={{position:"fixed",top:70,right:20,background:C.primary,color:"#fff",padding:"10px 18px",borderRadius:10,fontSize:13,fontWeight:700,zIndex:9999,boxShadow:"0 4px 16px rgba(0,0,0,0.2)"}}>{notif}</div>}
       {/* Description popup modal */}
       {showDescModal&&descModalIdx!==null&&cart[descModalIdx]&&(()=>{
@@ -14282,7 +14303,9 @@ function InventoryManagement({items,setItems,lang="en"}){
 function AdvancedFeatures({sales,items,setItems,license,company,invoiceFormat,setInvoiceFormat,users,setUsers,lang="en"}){
   const _t=s=>t(s,lang);
   const [tab,setTab]=useState("qztray");
-  const tabs=[["qztray","🖨️ QZ Tray"],["printtype",`🖨️ ${_t("Print Type")}`],["silentprint",`🔇 ${_t("Silent Printing")}`],["description",`📋 ${_t("Description (Item Modifiers")}`],["progressbar",`📊 ${_t("Sales Progress Bar")}`],["kitchen",`🍽️ ${_t("Kitchen Printer")}`],["users",`👤 ${_t("Users")}`],["kds","🍳 KDS"],["stocktakes",`📦 ${_t("Stock Takes")}`],["recipes",`📋 ${_t("Recipes")}`],["giftcards",`🎁 ${_t("Gift Cards")}`],["delivery",`🛵 ${_t("Delivery")}`],["locations",`🏢 ${_t("Locations")}`],["accounting",`📤 ${_t("Accounting")}`],["reports",`📅 ${_t("Reports")}`],["printer","🖨️ ESC/POS"],["errorlog",`⚠️ ${_t("Error Log")}`],["analytics",`📉 ${_t("Analytics")}`],["audit",`🔍 ${_t("Audit Trail")}`],["tools",`🔧 ${_t("Tools")}`]];
+  const tabs=[["qztray","🖨️ QZ Tray"],["printtype",`🖨️ ${_t("Print Type")}`],["silentprint",`🔇 ${_t("Silent Printing")}`],["description",`📋 ${_t("Description (Item Modifiers")}`],["progressbar",`📊 ${_t("Sales Progress Bar")}`],["kitchen",`🍽️ ${_t("Kitchen Printer")}`],["users",`👤 ${_t("Users")}`],["kds","🍳 KDS"],["stocktakes",`📦 ${_t("Stock Takes")}`],["recipes",`📋 ${_t("Recipes")}`],["giftcards",`🎁 ${_t("Gift Cards")}`],["delivery",`🛵 ${_t("Delivery")}`],["locations",`🏢 ${_t("Locations")}`],["accounting",`📤 ${_t("Accounting")}`],["reports",`📅 ${_t("Reports")}`],["printer","🖨️ ESC/POS"],["errorlog",`⚠️ ${_t("Error Log")}`],["analytics",`📉 ${_t("Analytics")}`],["audit",`🔍 ${_t("Audit Trail")}`],["tools",`🔧 ${_t("Tools")}`]]
+    // Supermarket mode has no kitchen/KDS/recipes.
+    .filter(([id])=>!(isSupermarket()&&["kitchen","kds","recipes"].includes(id)));
   return(
     <div>
       <div style={{display:"flex",gap:6,marginBottom:20,flexWrap:"wrap"}}>
