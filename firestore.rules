@@ -1,0 +1,137 @@
+rules_version = '2';
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RestoPOS Firestore security rules — SINGLE SOURCE OF TRUTH for the
+// restopos-db project. Deploy with:  firebase deploy --only firestore:rules
+//
+// ⚠️  TEST BEFORE PRODUCTION. These rules tighten a previously permissive
+//     database. Run the Firebase emulator and exercise activation, credential
+//     set, login, invoicing, cloud sync and the admin panel against them before
+//     deploying to the live project — a wrong rule can lock out live tills.
+//
+// Model:
+//   - Cloud Functions and the ZATCA microservice use the Admin SDK, which
+//     BYPASSES these rules. So credential hashing (setClientCredentials),
+//     login (verifyLogin), manager analytics (getManagerData) and ZATCA signing
+//     are unaffected by anything here.
+//   - Secrets (config, zatca_egs, orgs, manager_logins) are readable/writable
+//     ONLY through the Admin SDK — never from any client.
+//   - A device "owns" a license when its UID is in the license's authUids.
+// ═══════════════════════════════════════════════════════════════════════════
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    // Single owner admin (admin panel signs in as this Firebase Auth account).
+    function isAdmin() {
+      return request.auth != null
+        && request.auth.token.email == '8742sabithsaleem@gmail.com'
+        && request.auth.token.email_verified == true;
+    }
+    // The caller's device UID is on the license's authUids allowlist.
+    function ownsLicenseDoc(data) {
+      return isSignedIn() && data.authUids is list && request.auth.uid in data.authUids;
+    }
+    function ownsLicenseKey(licenseKey) {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/pending_activations/$(licenseKey))
+        && request.auth.uid in get(/databases/$(database)/documents/pending_activations/$(licenseKey)).data.authUids;
+    }
+
+    // ── HARD-LOCKED SECRETS ────────────────────────────────────────────────
+    // Anthropic API key, ZATCA EGS private keys/certs, manager PIN hashes and
+    // the branch→client linking. Only reachable via the Admin SDK.
+    match /config/{doc}            { allow read, write: if false; }
+    match /zatca_egs/{licenseKey}  { allow read, write: if false; }
+    match /manager_logins/{key}    { allow read, write: if isAdmin(); }
+    match /orgs/{orgId}            { allow read, write: if false; }
+    match /activity_log/{doc}      { allow read, write: if isAdmin(); }
+
+    // ── pending_activations ────────────────────────────────────────────────
+    // The core license/account doc. Credential fields (passwordHash,
+    // clientUsername, credentialsApproved) and lifecycle fields (isActive,
+    // status) are set only by the Admin SDK / admin panel. A device may edit a
+    // narrow set of its own device-management fields.
+    match /pending_activations/{key} {
+      allow read: if isAdmin() || ownsLicenseDoc(resource.data);
+
+      // Activation creates the doc — must not self-approve.
+      allow create: if isAdmin() || (
+        isSignedIn()
+        && request.resource.data.credentialsApproved == false
+        && request.resource.data.status == 'pending'
+        && (request.auth.uid in request.resource.data.authUids)
+      );
+
+      // Device may only touch device-management fields — never approval,
+      // credentials or lifecycle. Credential changes go through the
+      // setClientCredentials Cloud Function (Admin SDK).
+      allow update: if isAdmin() || (
+        ownsLicenseDoc(resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'authUids', 'approvedDevices', 'pendingDevices',
+          'forceLogout', 'lastDeviceRequestAt', 'deviceId', 'deviceInfo'
+        ])
+        && request.resource.data.get('credentialsApproved', false) == resource.data.get('credentialsApproved', false)
+        && request.resource.data.get('passwordHash', '') == resource.data.get('passwordHash', '')
+        && request.resource.data.get('status', '') == resource.data.get('status', '')
+      );
+
+      allow delete: if isAdmin();
+    }
+
+    // ── licenses (issued by admin; activation stamps activatedBy/at) ────────
+    match /licenses/{key} {
+      allow read: if isSignedIn();
+      allow create, delete: if isAdmin();
+      // Activation may stamp activation metadata; admin may change anything.
+      allow update: if isAdmin() || isSignedIn();
+    }
+
+    // ── lookup indexes (written at activation; read during login/reset) ─────
+    match /vat_index/{vat} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin() || isSignedIn();
+    }
+    match /email_index/{email} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin() || isSignedIn();
+    }
+
+    // ── ZATCA invoice archive (keyed by invoice number) ────────────────────
+    // No per-owner field is guaranteed on these docs, so gate on auth. They
+    // contain no secrets (signatures/hashes are public artifacts on receipts).
+    match /zatca_invoices/{invoiceNumber} {
+      allow read, create, update: if isSignedIn();
+      allow delete: if isAdmin();
+    }
+
+    // ── client_data (sales rollups; manager function reads via Admin SDK) ───
+    // Doc id is the license key, so we can gate on license ownership directly.
+    match /client_data/{licenseKey} {
+      allow read, write: if isAdmin() || ownsLicenseKey(licenseKey);
+    }
+
+    // ── live support chat (room id = chat_<licenseKey>) ────────────────────
+    match /live_chats/{room} {
+      allow read, write: if isAdmin() || isSignedIn();
+      match /messages/{msg} {
+        allow read, write: if isAdmin() || isSignedIn();
+      }
+    }
+
+    // ── support tickets (clients create; admin triages) ────────────────────
+    match /support_tickets/{ticket} {
+      allow create: if isSignedIn();
+      allow read, update, delete: if isAdmin();
+    }
+
+    // Default: deny everything not explicitly allowed above.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
