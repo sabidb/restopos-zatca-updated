@@ -13,6 +13,8 @@
 
 [🌐 Live Demo](https://restopos.store) • [👑 Admin Panel](https://restopos-admin.vercel.app) • [📧 Support](mailto:restopos.noreply@gmail.com)
 
+**📘 [Complete Setup, Registration, Billing & Printer Guide → GUIDE.md](./GUIDE.md)** — deployment, onboarding, POS billing, ZATCA Phase 2, and thermal-printer setup, step by step.
+
 </div>
 
 ---

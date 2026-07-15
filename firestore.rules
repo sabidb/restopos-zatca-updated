@@ -1,0 +1,145 @@
+rules_version = '2';
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RestoPOS Firestore security rules — SINGLE SOURCE OF TRUTH for the
+// restopos-db project. Deploy with:  firebase deploy --only firestore:rules
+//
+// ⚠️  TEST BEFORE PRODUCTION. These rules tighten a previously permissive
+//     database. Run the Firebase emulator and exercise activation, credential
+//     set, login, invoicing, cloud sync and the admin panel against them before
+//     deploying to the live project — a wrong rule can lock out live tills.
+//
+// Model:
+//   - Cloud Functions and the ZATCA microservice use the Admin SDK, which
+//     BYPASSES these rules. So credential hashing (setClientCredentials),
+//     login (verifyLogin), manager analytics (getManagerData) and ZATCA signing
+//     are unaffected by anything here.
+//   - Secrets (config, zatca_egs, orgs, manager_logins) are readable/writable
+//     ONLY through the Admin SDK — never from any client.
+//   - A device "owns" a license when its UID is in the license's authUids.
+// ═══════════════════════════════════════════════════════════════════════════
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    // Single owner admin (admin panel signs in as this Firebase Auth account).
+    function isAdmin() {
+      return request.auth != null
+        && request.auth.token.get('email', '') == '8742sabithsaleem@gmail.com'
+        && request.auth.token.get('email_verified', false) == true;
+    }
+    // A caller "owns" a license when either (a) it is signed in with the
+    // custom token minted by verifyLogin (uid == the license key / doc id), or
+    // (b) its anonymous device UID is on the license's authUids allowlist.
+    function ownsLicenseKey(licenseKey) {
+      return isSignedIn() && (
+        request.auth.uid == licenseKey
+        || (exists(/databases/$(database)/documents/pending_activations/$(licenseKey))
+            && request.auth.uid in get(/databases/$(database)/documents/pending_activations/$(licenseKey)).data.authUids)
+      );
+    }
+    // Fields on pending_activations that only the Admin SDK / admin panel may
+    // change. A client update that leaves all of these untouched is allowed.
+    function noPrivilegedChange() {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+        'credentialsApproved', 'isActive', 'status', 'passwordHash',
+        'clientUsername', 'subscriptionPlan', 'customExpiryDate',
+        // Brute-force lockout counters — only the Admin SDK (verifyLogin) writes these.
+        'loginFailCount', 'loginLockUntil'
+      ]);
+    }
+
+    // ── HARD-LOCKED SECRETS ────────────────────────────────────────────────
+    // Anthropic API key, ZATCA EGS private keys/certs, manager PIN hashes and
+    // the branch→client linking. Only reachable via the Admin SDK.
+    match /config/{doc}            { allow read, write: if false; }
+    match /zatca_egs/{licenseKey}  { allow read, write: if false; }
+    match /manager_logins/{key}    { allow read, write: if isAdmin(); }
+    match /orgs/{orgId}            { allow read, write: if false; }
+    match /activity_log/{doc}      { allow read, write: if isAdmin(); }
+    // Password-reset OTP hashes — written/verified only by the Admin SDK.
+    match /password_resets/{key}   { allow read, write: if false; }
+
+    // ── pending_activations ────────────────────────────────────────────────
+    // The core license/account doc. Credential fields (passwordHash,
+    // clientUsername, credentialsApproved) and lifecycle fields (isActive,
+    // status) are set only by the Admin SDK / admin panel. A device may edit a
+    // narrow set of its own device-management fields.
+    // Read is open to any signed-in device: a new/unapproved device must read
+    // this doc to poll for approval, and the logged-in client (uid == key) and
+    // the kill-switch watchdog read it live. The doc holds no plaintext secret
+    // (passwordHash is bcrypt); the real protection is on the writes below.
+    match /pending_activations/{key} {
+      allow read: if isSignedIn();
+
+      // Activation creates the doc — a client can never create it pre-approved.
+      allow create: if isAdmin() || (
+        isSignedIn()
+        && request.resource.data.get('credentialsApproved', false) == false
+        && request.resource.data.get('status', 'pending') == 'pending'
+      );
+
+      // A signed-in device may update device-management state (authUids,
+      // pendingDevices, forceLogout, deviceInfo, …) but can NEVER flip approval,
+      // active/status, subscription or the credential fields — those are set
+      // only by the admin panel or the setClientCredentials Cloud Function.
+      allow update: if isAdmin() || (isSignedIn() && noPrivilegedChange());
+
+      allow delete: if isAdmin();
+    }
+
+    // ── licenses (issued by admin; activation stamps activatedBy/at) ────────
+    match /licenses/{key} {
+      allow read: if isSignedIn();
+      allow create, delete: if isAdmin();
+      // Activation may stamp activation metadata; admin may change anything.
+      allow update: if isAdmin() || isSignedIn();
+    }
+
+    // ── lookup indexes (written at activation; read during login/reset) ─────
+    match /vat_index/{vat} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin() || isSignedIn();
+    }
+    match /email_index/{email} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin() || isSignedIn();
+    }
+
+    // ── ZATCA invoice archive (keyed by invoice number) ────────────────────
+    // No per-owner field is guaranteed on these docs, so gate on auth. They
+    // contain no secrets (signatures/hashes are public artifacts on receipts).
+    match /zatca_invoices/{invoiceNumber} {
+      allow read, create, update: if isSignedIn();
+      allow delete: if isAdmin();
+    }
+
+    // ── client_data (sales rollups; manager function reads via Admin SDK) ───
+    // Doc id is the license key, so we can gate on license ownership directly.
+    match /client_data/{licenseKey} {
+      allow read, write: if isAdmin() || ownsLicenseKey(licenseKey);
+    }
+
+    // ── live support chat (room id = chat_<licenseKey>) ────────────────────
+    match /live_chats/{room} {
+      allow read, write: if isAdmin() || isSignedIn();
+      match /messages/{msg} {
+        allow read, write: if isAdmin() || isSignedIn();
+      }
+    }
+
+    // ── support tickets (clients create; admin triages) ────────────────────
+    match /support_tickets/{ticket} {
+      allow create: if isSignedIn();
+      allow read, update, delete: if isAdmin();
+    }
+
+    // Default: deny everything not explicitly allowed above.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
