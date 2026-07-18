@@ -1,19 +1,28 @@
 import { onCall, HttpsError } from "firebase-functions/v2/https";
-import { defineSecret } from "firebase-functions/params";
 import { initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import { getAuth } from "firebase-admin/auth";
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
 
-// Secrets (Google Secret Manager). Set with:
-//   firebase functions:secrets:set QZ_PRIVATE_KEY
-//   firebase functions:secrets:set AI_API_KEY   # optional; else config/ai is used
-const QZ_PRIVATE_KEY = defineSecret("QZ_PRIVATE_KEY");
-const AI_API_KEY = defineSecret("AI_API_KEY");
-
 initializeApp();
 const db = getFirestore();
+
+// Server-side secrets live in a locked Firestore doc (config/secrets), read here
+// with the Admin SDK. Firestore rules deny all client access to the `config`
+// collection, so these never reach the browser — same protection as Secret
+// Manager, but the functions deploy with no pre-provisioning and the owner can
+// set/rotate values by editing one doc in the Firebase console. Fields:
+//   qzPrivateKey       — QZ Tray RSA private key (PEM)
+//   emailjsPrivateKey  — EmailJS private key (server-side reset email)
+//   aiApiKey           — Anthropic API key (falls back to config/ai.apiKey)
+async function getSecret(field) {
+  try {
+    const snap = await db.collection("config").doc("secrets").get();
+    if (snap.exists && snap.data()[field]) return String(snap.data()[field]);
+  } catch (e) { /* fall through */ }
+  return "";
+}
 
 // Legacy hash (fast SHA-256 with a single global salt). Kept ONLY so existing
 // accounts created before the bcrypt migration can still log in — on a
@@ -169,11 +178,11 @@ export const setClientCredentials = onCall({ cors: true, region: "us-central1" }
 });
 
 // AI support assistant proxy. The Anthropic API key stays server-side (read from
-// the AI_API_KEY env var, falling back to the config/ai Firestore doc). The
-// browser never receives the key. Requires the caller to be signed in.
+// config/secrets.aiApiKey, falling back to the config/ai doc). The browser never
+// receives the key. Requires the caller to be signed in.
 const AI_SYSTEM_PROMPT = "You are RestoPOS Assistant — a helpful support bot for the RestoPOS restaurant management system used in Saudi Arabia. You help restaurant staff with: POS billing, ZATCA QR codes and compliance (Phase 1 & 2), UBL 2.1 XML invoices, FATOORA reporting queue, ICV sequential counters, SHA-256 hash chains, reports, menu management, settings, user roles, barcode scanning, payment methods (Cash, Card, Cash+Card split), VAT calculations (15%), and general app usage. Keep answers short, clear and practical.";
 
-export const aiChat = onCall({ cors: true, region: "us-central1", secrets: [AI_API_KEY] }, async (req) => {
+export const aiChat = onCall({ cors: true, region: "us-central1" }, async (req) => {
   if (!req.auth) throw new HttpsError("unauthenticated", "Sign-in required.");
   const messages = Array.isArray(req.data?.messages) ? req.data.messages : null;
   if (!messages || !messages.length) throw new HttpsError("invalid-argument", "messages array is required.");
@@ -184,8 +193,8 @@ export const aiChat = onCall({ cors: true, region: "us-central1", secrets: [AI_A
     content: String(m.content || "").slice(0, 4000),
   }));
 
-  // Prefer the AI_API_KEY secret; fall back to the config/ai Firestore doc.
-  let apiKey = AI_API_KEY.value() || "";
+  // config/secrets.aiApiKey, falling back to the legacy config/ai.apiKey doc.
+  let apiKey = await getSecret("aiApiKey");
   if (!apiKey) {
     try {
       const cfg = await db.collection("config").doc("ai").get();
@@ -213,12 +222,12 @@ export const aiChat = onCall({ cors: true, region: "us-central1", secrets: [AI_A
 });
 
 // Signs a QZ Tray connection challenge with the RestoPOS private key (held in
-// the QZ_PRIVATE_KEY env var, PEM with real newlines). The key never reaches the
-// browser. Returns a base64 RSA-SHA512 signature, which is what QZ Tray expects.
-export const qzSign = onCall({ cors: true, region: "us-central1", secrets: [QZ_PRIVATE_KEY] }, async (req) => {
+// config/secrets.qzPrivateKey, PEM). The key never reaches the browser.
+// Returns a base64 RSA-SHA512 signature, which is what QZ Tray expects.
+export const qzSign = onCall({ cors: true, region: "us-central1" }, async (req) => {
   if (!req.auth) throw new HttpsError("unauthenticated", "Sign-in required.");
   const toSign = String(req.data?.toSign ?? "");
-  const pem = QZ_PRIVATE_KEY.value();
+  const pem = await getSecret("qzPrivateKey");
   if (!pem) throw new HttpsError("failed-precondition", "QZ signing key is not configured.");
   try {
     const signer = crypto.createSign("RSA-SHA512");
@@ -236,10 +245,9 @@ export const qzSign = onCall({ cors: true, region: "us-central1", secrets: [QZ_P
 const EMAILJS_SERVICE = "service_mxln2w4";
 const EMAILJS_RESET_TEMPLATE = "template_444v50v";
 const EMAILJS_PUBLIC_KEY = "jlfUG0WjJ3UVXUgCb";
-const EMAILJS_PRIVATE_KEY = defineSecret("EMAILJS_PRIVATE_KEY");
 
 // Step 1: request a reset code. Always returns ok (no account enumeration).
-export const requestPasswordReset = onCall({ cors: true, region: "us-central1", secrets: [EMAILJS_PRIVATE_KEY] }, async (req) => {
+export const requestPasswordReset = onCall({ cors: true, region: "us-central1" }, async (req) => {
   const email = String(req.data?.email || "").trim().toLowerCase();
   if (!email) throw new HttpsError("invalid-argument", "Email is required.");
   try {
@@ -266,7 +274,7 @@ export const requestPasswordReset = onCall({ cors: true, region: "us-central1", 
         service_id: EMAILJS_SERVICE,
         template_id: EMAILJS_RESET_TEMPLATE,
         user_id: EMAILJS_PUBLIC_KEY,
-        accessToken: EMAILJS_PRIVATE_KEY.value(),
+        accessToken: await getSecret("emailjsPrivateKey"),
         template_params: { to_email: email, to_name: name, code },
       }),
     });
