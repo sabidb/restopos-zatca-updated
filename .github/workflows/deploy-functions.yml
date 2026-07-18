@@ -23,10 +23,8 @@ jobs:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
 
       - name: Deploy to Firebase
-        # Secrets are read from Google Secret Manager at runtime (bound via
-        # defineSecret in functions/index.js). Set them once with:
-        #   firebase functions:secrets:set QZ_PRIVATE_KEY
-        #   firebase functions:secrets:set AI_API_KEY   # optional; else config/ai is used
+        # No Secret Manager pre-provisioning needed: qz/emailjs/ai keys are read
+        # at runtime from the locked Firestore doc config/secrets (Admin SDK).
         run: npx firebase-tools@13 deploy --only functions:verifyLogin,functions:setClientCredentials,functions:aiChat,functions:qzSign,functions:requestPasswordReset,functions:resetPasswordWithOtp --project restopos-db
         env:
           GOOGLE_APPLICATION_CREDENTIALS: /tmp/key.json
