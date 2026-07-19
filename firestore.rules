@@ -55,6 +55,13 @@ service cloud.firestore {
     // ── HARD-LOCKED SECRETS ────────────────────────────────────────────────
     // Anthropic API key, ZATCA EGS private keys/certs, manager PIN hashes and
     // the branch→client linking. Only reachable via the Admin SDK.
+    //
+    // config/announcement is the ONE exception: it carries the plain-text system
+    // broadcast the admin panel pushes to every terminal (no secret). Without this
+    // carve-out the admin's broadcast write AND the client's live banner listener
+    // both hit the `if false` below and silently fail. A request is allowed if ANY
+    // matching rule grants it, so this specific match wins over config/{doc}.
+    match /config/announcement     { allow read: if isSignedIn(); allow write: if isAdmin(); }
     match /config/{doc}            { allow read, write: if false; }
     match /zatca_egs/{licenseKey}  { allow read, write: if false; }
     match /manager_logins/{key}    { allow read, write: if isAdmin(); }
