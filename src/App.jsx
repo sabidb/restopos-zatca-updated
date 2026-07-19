@@ -9030,17 +9030,24 @@ function OwnerDashboardInline(){
             const lat=focusClient.location.lat;
             const lng=focusClient.location.lng;
             const zoom=mapClient?13:5;
+            // Keyless, iframe-friendly OpenStreetMap embed. The old
+            // maps.google.com/maps?output=embed URL is now blocked by Google
+            // without an Embed API key, which rendered a blank white map.
+            const spanDeg=180/Math.pow(2,zoom);
+            const bbox=`${lng-spanDeg},${lat-spanDeg},${lng+spanDeg},${lat+spanDeg}`;
             return(
               <div>
-                <div style={{borderRadius:10,overflow:"hidden",height:340,marginBottom:10,border:`1px solid ${DS.border}`}}>
+                <div style={{borderRadius:10,overflow:"hidden",height:340,marginBottom:8,border:`1px solid ${DS.border}`}}>
                   <iframe
                     width="100%" height="340"
-                    frameBorder="0" style={{border:0}}
-                    src={`https://maps.google.com/maps?q=${lat},${lng}&z=${zoom}&output=embed`}
-                    allowFullScreen
+                    frameBorder="0" style={{border:0,display:"block"}}
+                    src={`https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${lat},${lng}`}
+                    allowFullScreen loading="lazy"
                     title="Client Location Map"
                   />
                 </div>
+                <a href={`https://www.google.com/maps?q=${lat},${lng}&z=${zoom}`} target="_blank" rel="noreferrer"
+                  style={{display:"inline-block",marginBottom:10,color:"#6366f1",fontSize:11,fontWeight:700,textDecoration:"none"}}>🌍 Open in Google Maps →</a>
                 <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
                   {clientsWithLocation.map(a=>(
                     <button key={a.id} onClick={()=>setMapClient(a)}
