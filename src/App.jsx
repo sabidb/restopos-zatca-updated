@@ -4,6 +4,21 @@ import { getFirestore, collection, query, where, getDocs, updateDoc, doc, addDoc
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "firebase/auth";
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { getFunctions, httpsCallable } from "firebase/functions";
+import { isDemo, isDemoBuild, startDemo, exitDemo, resetDemo, consumeDemoStartError, DEMO_LICENSE } from "./demo.js";
+
+// ═══════════════════════════════════════════════════════════════════
+// DEMO MODE — see src/demo.js. DEMO is fixed for the life of the tab:
+// main.jsx installs the storage sandbox before this module is imported.
+// Everything below that touches Firestore, Cloud Functions or the ZATCA
+// microservice checks it, so a demo session stays entirely on-device.
+// ═══════════════════════════════════════════════════════════════════
+const DEMO = isDemo();
+// Rejects a cloud-backed action with a message the visitor can act on.
+function demoBlocked(what){
+  const msg=`${what||"This"} is disabled in the demo.\n\nThe demo runs entirely on this device — nothing is sent to the cloud or to ZATCA. Register to use it for real.`;
+  try{alert(msg);}catch(e){}
+  return new Error("Disabled in demo mode");
+}
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -34,6 +49,8 @@ if (typeof window !== "undefined") {
 // ═══════════════════════════════════════════════════════════════════
 let _authReadyPromise = null;
 function ensureSignedIn() {
+  // Demo sessions never authenticate — no device UID, no Firestore identity.
+  if (DEMO) return Promise.reject(new Error("Disabled in demo mode"));
   if (!_authReadyPromise) {
     _authReadyPromise = new Promise((resolve) => {
       const unsub = onAuthStateChanged(auth, (user) => {
@@ -68,6 +85,7 @@ async function zatcaAuthHeaders() {
   return headers;
 }
 async function registerDeviceUid(licenseKey, vatNumber) {
+  if (DEMO) return;
   if (!licenseKey) return;
   try {
     const user = await ensureSignedIn();
@@ -204,6 +222,7 @@ const invoiceStorage = {
   // Upserts by invoice_number (not addDoc's random ID) so later report/clearance updates merge
   // into the SAME Firestore document instead of creating a duplicate archive entry per invoice.
   async archiveToFirestore(inv, extra={}) {
+    if(DEMO)return; // demo invoices stay in the sandbox, never in the 5-year archive
     try{
       await setDoc(doc(db,"zatca_invoices",inv.invoice_number),{...inv,...extra,archived_at:new Date().toISOString()},{merge:true});
     }catch(e){ console.warn("[ZATCA] Firestore archive failed:",e.message); }
@@ -215,6 +234,7 @@ const invoiceStorage = {
   // localStorage is intact, but fully restores history after a browser cache clear or on a
   // brand-new device, so the sequential ICV/hash chain never resets or breaks.
   async syncFromFirestore(sellerVat) {
+    if(DEMO)return; // never pull a real tenant's chain into a demo session
     if(!sellerVat)return; // can't safely restore without knowing which tenant this is
     try{
       // 1) Find the true latest invoice (by ICV) to restore the counter + hash chain head.
@@ -281,7 +301,25 @@ function buildZatcaReportPayload(inv, licenseKey) {
   };
 }
 
+// In the demo, ZATCA reporting/clearance is walked through locally: the invoice
+// is marked reported so the queue, VAT dashboard and history all behave, but
+// nothing leaves the device and every record is flagged demo_simulated.
+function simulateZatcaSubmission(inv, { cleared = false } = {}) {
+  try {
+    const all = invoiceStorage.getAll().map(i =>
+      i.invoice_number === inv.invoice_number
+        ? { ...i, zatca_reported: true, zatca_cleared: cleared, phase: 2, demo_simulated: true }
+        : i
+    );
+    localStorage.setItem(ZATCA_STORAGE_KEY, JSON.stringify(all));
+  } catch (e) { /* storage best-effort */ }
+  fatooraQueue.markSent(inv.invoice_number);
+  try { window.dispatchEvent(new Event("restopos-invoice")); } catch (e) {}
+  return { success: true, demo: true, invoiceHash: inv.invoice_hash_base64 || null, qr: inv.qr_string || null, signedXml: null, reportError: null };
+}
+
 async function reportToFatoora(inv) {
+  if (DEMO) return simulateZatcaSubmission(inv);
   const licenseKey = LS.get("restopos_license_v2")?.licenseKey;
   if (!licenseKey) {
     console.warn("[ZATCA] No licenseKey found; cannot report invoice.");
@@ -330,6 +368,7 @@ async function reportToFatoora(inv) {
 
 // Fix #10: B2B Standard Invoice — must be CLEARED by ZATCA before giving to buyer
 async function clearanceB2BInvoice(inv) {
+  if (DEMO) return simulateZatcaSubmission(inv, { cleared: true });
   const licenseKey = LS.get("restopos_license_v2")?.licenseKey;
   if (!licenseKey) throw new Error("No license key found.");
   const payload = buildZatcaReportPayload(inv, licenseKey);
@@ -773,6 +812,7 @@ function debouncedSync(licenseKey,key,data){
 }
 
 async function syncKeyToFirestore(licenseKey,key,data){
+  if(DEMO)return; // demo data never reaches client_data
   if(!licenseKey)return;
   try{
     const docRef=doc(db,"client_data",licenseKey);
@@ -789,6 +829,7 @@ async function syncKeyToFirestore(licenseKey,key,data){
 }
 
 async function restoreFromFirestore(licenseKey){
+  if(DEMO)return false; // never pull a real client's data into the sandbox
   if(!licenseKey)return false;
   try{
     const docRef=doc(db,"client_data",licenseKey);
@@ -1112,7 +1153,7 @@ function PendingApprovalScreen({license,onApproved,onSwitchAccount}){
 }
 
 // ═══════════════════════════════════════════════════════════════════
-function ClientLogin({license,onSuccess,onForgotPassword,onBack}){
+function ClientLogin({license,onSuccess,onForgotPassword,onBack,onTryDemo}){
   const [mode,setMode]=useState("login"); // "login" | "already"
   const [username,setUsername]=useState("");
   const [password,setPassword]=useState("");
@@ -1380,6 +1421,7 @@ function ClientLogin({license,onSuccess,onForgotPassword,onBack}){
               ← Back to role login
             </button>
           )}
+          {onTryDemo&&<DemoInviteLink onTry={onTryDemo}/>}
         </div>
       </div>
     </div>
@@ -2303,9 +2345,146 @@ const DataTable=({headers,rows,emptyMsg="No data"})=>(
 );
 
 // ═══════════════════════════════════════════════════════════════════
+// TRY THE DEMO — shown on the pre-registration screens
+// ═══════════════════════════════════════════════════════════════════
+const DEMO_HIGHLIGHTS=[
+  ["🖥️","Full POS billing","Ring up orders, split payments, print or preview receipts"],
+  ["📋","A stocked menu","24 items, 6 categories, 12 tables — edit them however you like"],
+  ["📊","5 weeks of sales","Dashboard, reports, P&L and CRM already have data in them"],
+  ["🧾","ZATCA Phase 2 tour","QR codes, invoice numbering and the VAT dashboard, in simulation"],
+];
+const DEMO_LIMITS=[
+  "Everything stays on this device — nothing is sent to the cloud",
+  "Invoices are never reported to ZATCA and are not valid tax invoices",
+  "Support chat, the AI assistant and Phase 2 onboarding stay switched off",
+  "Your demo is wiped when you exit — real data on this browser is untouched",
+];
+
+/** The full-width invitation card. Sits above the registration form. */
+function DemoInviteSection({onTry}){
+  // Set when a previous attempt couldn't sandbox storage (private mode, blocked
+  // site data). Without this the demo button would just appear to do nothing.
+  const [failed]=useState(()=>consumeDemoStartError());
+  return(
+    <div dir="ltr" style={{background:"linear-gradient(135deg,rgba(240,165,0,0.14),rgba(26,107,74,0.14))",border:"1px solid rgba(240,165,0,0.4)",borderRadius:20,padding:"22px 24px",marginBottom:18}}>
+      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+        <span style={{fontSize:22}}>🧪</span>
+        <div>
+          <div style={{fontSize:16,fontWeight:800,color:"#fff"}}>Try RestoPOS before you register</div>
+          <div style={{fontSize:12,color:"rgba(255,255,255,0.55)"}}>No license key, no account, no card — opens instantly</div>
+        </div>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:8,margin:"14px 0"}}>
+        {DEMO_HIGHLIGHTS.map(([icon,title,desc])=>(
+          <div key={title} style={{background:"rgba(0,0,0,0.18)",borderRadius:10,padding:"10px 12px"}}>
+            <div style={{fontSize:12,fontWeight:700,color:"#fff",marginBottom:2}}>{icon} {title}</div>
+            <div style={{fontSize:11,color:"rgba(255,255,255,0.5)",lineHeight:1.45}}>{desc}</div>
+          </div>
+        ))}
+      </div>
+      {failed&&(
+        <div style={{background:"rgba(217,64,64,0.18)",border:"1px solid rgba(217,64,64,0.45)",borderRadius:10,padding:"10px 12px",marginBottom:10,fontSize:12,color:"#ffb3b3",lineHeight:1.5}}>
+          The demo couldn't start — this browser won't let the app isolate its storage. Try a normal (non-private) window, or allow site data for this site.
+        </div>
+      )}
+      <button onClick={onTry} type="button"
+        style={{width:"100%",padding:14,background:"linear-gradient(135deg,#F0A500,#e09000)",color:"#1a1200",border:"none",borderRadius:12,fontSize:15,fontWeight:800,cursor:"pointer",fontFamily:"inherit"}}>
+        ▶ Open the free demo
+      </button>
+    </div>
+  );
+}
+
+/** Compact one-line version for the license / login screens. */
+function DemoInviteLink({onTry}){
+  return(
+    <button onClick={onTry} type="button" dir="ltr"
+      style={{width:"100%",marginTop:10,padding:"11px 14px",background:"rgba(240,165,0,0.12)",border:"1px solid rgba(240,165,0,0.35)",borderRadius:12,cursor:"pointer",fontFamily:"inherit",display:"flex",alignItems:"center",gap:10,textAlign:"left"}}>
+      <span style={{fontSize:18}}>🧪</span>
+      <div style={{flex:1}}>
+        <div style={{fontSize:13,fontWeight:700,color:"#F5C451"}}>Try the demo instead</div>
+        <div style={{fontSize:11,color:"rgba(255,255,255,0.4)"}}>Explore the full system with sample data</div>
+      </div>
+      <span style={{color:"rgba(240,165,0,0.6)"}}>→</span>
+    </button>
+  );
+}
+
+/** Sets expectations before the demo starts, so nothing surprises the visitor. */
+function DemoIntroModal({onClose}){
+  const [starting,setStarting]=useState(false);
+  return(
+    <div dir="ltr" style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.72)",zIndex:9000,display:"flex",alignItems:"center",justifyContent:"center",padding:18,fontFamily:"'Plus Jakarta Sans',sans-serif"}}>
+      <div style={{background:"#0F2340",border:"1px solid rgba(255,255,255,0.14)",borderRadius:20,width:"100%",maxWidth:480,maxHeight:"90vh",overflow:"auto",padding:26}}>
+        <div style={{fontSize:19,fontWeight:900,color:"#fff",marginBottom:4}}>🧪 Start the demo</div>
+        <div style={{fontSize:13,color:"rgba(255,255,255,0.55)",marginBottom:18,lineHeight:1.6}}>
+          You'll land in a sample Riyadh restaurant — <strong style={{color:"#fff"}}>Bayt Al Mandi</strong> — as the Admin, with a full menu and five weeks of trading history already loaded.
+        </div>
+        <div style={{background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:12,padding:"14px 16px",marginBottom:16}}>
+          <div style={{fontSize:12,fontWeight:800,color:"#F0A500",marginBottom:8}}>Good to know</div>
+          {DEMO_LIMITS.map(l=>(
+            <div key={l} style={{display:"flex",gap:8,marginBottom:6,fontSize:12,color:"rgba(255,255,255,0.62)",lineHeight:1.5}}>
+              <span style={{color:"#2ECC71"}}>✓</span><span>{l}</span>
+            </div>
+          ))}
+        </div>
+        <button onClick={()=>{setStarting(true);startDemo();}} disabled={starting}
+          style={{width:"100%",padding:14,background:starting?"#444":"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:12,fontSize:15,fontWeight:800,cursor:starting?"wait":"pointer",fontFamily:"inherit"}}>
+          {starting?"Loading the demo…":"▶ Start demo"}
+        </button>
+        <button onClick={onClose} disabled={starting}
+          style={{width:"100%",marginTop:10,padding:12,background:"transparent",color:"rgba(255,255,255,0.45)",border:"1px solid rgba(255,255,255,0.12)",borderRadius:12,fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Always-visible reminder while a demo session is running. */
+function DemoBanner(){
+  const [showInfo,setShowInfo]=useState(false);
+  return(
+    <>
+      <div style={{display:"flex",alignItems:"center",gap:10,padding:"6px 12px",background:"linear-gradient(90deg,#F0A500,#e09000)",color:"#1a1200",flexShrink:0,fontSize:12,fontWeight:700,flexWrap:"wrap"}}>
+        <span>🧪 DEMO MODE</span>
+        <span style={{fontWeight:500,opacity:0.85}}>Sample data on this device only — nothing is saved to the cloud or sent to ZATCA.</span>
+        <div style={{marginLeft:"auto",display:"flex",gap:8}}>
+          <button onClick={()=>setShowInfo(true)}
+            style={{padding:"4px 10px",background:"rgba(0,0,0,0.14)",border:"none",borderRadius:6,color:"#1a1200",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>What's limited?</button>
+          <button onClick={()=>{if(window.confirm("Reset the demo?\n\nEverything you changed will be replaced with the original sample business."))resetDemo();}}
+            style={{padding:"4px 10px",background:"rgba(0,0,0,0.14)",border:"none",borderRadius:6,color:"#1a1200",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>↻ Reset</button>
+          <button onClick={()=>{if(window.confirm("Leave the demo?\n\nThe sample data will be deleted and you'll go to registration."))exitDemo();}}
+            style={{padding:"4px 12px",background:"#1A3D2B",border:"none",borderRadius:6,color:"#fff",fontSize:11,fontWeight:800,cursor:"pointer",fontFamily:"inherit"}}>
+            {isDemoBuild()?"Register →":"Exit & register →"}
+          </button>
+        </div>
+      </div>
+      {showInfo&&(
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.7)",zIndex:9000,display:"flex",alignItems:"center",justifyContent:"center",padding:18}}>
+          <div style={{background:"#0F2340",border:"1px solid rgba(255,255,255,0.14)",borderRadius:18,width:"100%",maxWidth:460,padding:24,fontFamily:"'Plus Jakarta Sans',sans-serif"}}>
+            <div style={{fontSize:17,fontWeight:900,color:"#fff",marginBottom:12}}>What the demo can't do</div>
+            {DEMO_LIMITS.map(l=>(
+              <div key={l} style={{display:"flex",gap:8,marginBottom:8,fontSize:13,color:"rgba(255,255,255,0.65)",lineHeight:1.55}}>
+                <span style={{color:"#F0A500"}}>•</span><span>{l}</span>
+              </div>
+            ))}
+            <div style={{fontSize:12,color:"rgba(255,255,255,0.4)",marginTop:12,lineHeight:1.6}}>
+              Everything else — billing, the menu editor, tables, reports, VAT, printing — behaves exactly as it does on a licensed terminal.
+            </div>
+            <button onClick={()=>setShowInfo(false)}
+              style={{width:"100%",marginTop:16,padding:12,background:"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:12,fontSize:14,fontWeight:800,cursor:"pointer",fontFamily:"inherit"}}>Got it</button>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // BUSINESS REGISTRATION
 // ═══════════════════════════════════════════════════════════════════
-function BusinessRegistration({onNext,onLogin}){
+function BusinessRegistration({onNext,onLogin,onTryDemo}){
   const [form,setForm]=useState({businessName:"",businessNameAr:"",ownerName:"",email:"",crNumber:"",vatNumber:"",address:"",city:"Riyadh",phone:"",businessType:"restaurant"});
   const [isOwner,setIsOwner]=useState(null);
   const [error,setError]=useState("");
@@ -2345,6 +2524,7 @@ function BusinessRegistration({onNext,onLogin}){
             <div style={{textAlign:"left"}}><div style={{fontSize:26,fontWeight:900,color:"#fff",lineHeight:1}}>RestoPOS</div><div style={{fontSize:10,color:"rgba(255,255,255,0.5)",letterSpacing:"0.15em"}}>ZATCA PHASE 2 READY · KSA</div></div>
           </div>
         </div>
+        {onTryDemo&&<DemoInviteSection onTry={onTryDemo}/>}
         <div style={{background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:20,padding:32,backdropFilter:"blur(12px)"}}>
           <div style={{fontSize:18,fontWeight:800,color:"#fff",marginBottom:6}}>Business Registration</div>
           <div style={{fontSize:13,color:"rgba(255,255,255,0.5)",marginBottom:20}}>Step 1 of 2 — Enter your business details</div>
@@ -2433,7 +2613,7 @@ function BusinessRegistration({onNext,onLogin}){
 // ═══════════════════════════════════════════════════════════════════
 // LICENSE VERIFICATION
 // ═══════════════════════════════════════════════════════════════════
-function LicenseVerification({businessData,onSuccess,onBack,onLogin}){
+function LicenseVerification({businessData,onSuccess,onBack,onLogin,onTryDemo}){
   const [uploading,setUploading]=useState(false);
   const [key,setKey]=useState("");const [error,setError]=useState("");const [loading,setLoading]=useState(false);
   async function handleVerify(){
@@ -2528,6 +2708,7 @@ function LicenseVerification({businessData,onSuccess,onBack,onLogin}){
           <div style={{textAlign:"center",marginTop:14,paddingTop:14,borderTop:"1px solid rgba(255,255,255,0.1)"}}>
             <span style={{fontSize:12,color:"rgba(255,255,255,0.4)"}}>Already have an account? </span>
             <button onClick={onLogin} style={{background:"none",border:"none",color:"rgba(46,204,113,0.8)",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit",textDecoration:"underline"}}>Sign In</button>
+            {onTryDemo&&<DemoInviteLink onTry={onTryDemo}/>}
           </div>
 
         </div>
@@ -4629,7 +4810,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     });
   },[items,activeCat,savedCats,favourites,effOrder]);
   return(
-    <div style={{display:"flex",height:"calc(100vh - 52px)",overflow:"hidden"}}>
+    <div style={{display:"flex",height:`calc(100vh - ${DEMO?82:52}px)`,overflow:"hidden"}}>
       {/* Previous Bills — step backward through printed invoices */}
       {showPrevBill&&(()=>{
         const printedAll=(sales||[]).filter(s=>s.status!=="voided").slice().sort((a,b)=>{
@@ -6448,6 +6629,7 @@ function LicenseTab({license,onClearLicense,onSwitchAccount}){
   const [locData,setLocData]=useState(()=>LS.get("restopos_loc_data")||null);
   const [locLoading,setLocLoading]=useState(false);
   async function shareLocation(){
+    if(DEMO){demoBlocked("Sharing your location with the provider");return;}
     setLocLoading(true);setLocStatus("requesting");
     if(!navigator.geolocation){setLocStatus("error");setLocLoading(false);return;}
     navigator.geolocation.getCurrentPosition(
@@ -8554,6 +8736,7 @@ function OwnerDashboardInline(){
   const [mapClient,setMapClient]=useState(null);
 
   useEffect(()=>{
+    if(DEMO){setLoading(false);return;} // the owner console reads every real tenant
     async function load(){
       try{
         const aSnap=await getDocs(collection(db,"pending_activations"));
@@ -9475,6 +9658,7 @@ function ArchiveExportPanel({license,lang="en"}){
   }
 
   async function runEstimate(){
+    if(DEMO){setError("Archive export is disabled in the demo — it reads the permanent 5-year ZATCA archive in the cloud. Demo invoices live only on this device.");return;}
     if(!sellerVat){setError("No VAT number found on this license — can't scope an export.");return;}
     setEstimating(true);setError("");setEstimate(null);
     try{
@@ -9490,6 +9674,7 @@ function ArchiveExportPanel({license,lang="en"}){
   }
 
   async function runExport(){
+    if(DEMO){setError("Archive export is disabled in the demo — it reads the permanent 5-year ZATCA archive in the cloud. Demo invoices live only on this device.");return;}
     if(!sellerVat){setError("No VAT number found on this license — can't scope an export.");return;}
     setRunning(true);setError("");setDoneMsg("");setProgress(0);cancelRef.current=false;
     let lastDoc=null,fetched=0;
@@ -9649,7 +9834,7 @@ function Help({license: helpLicense, lang="en", onLogout}){
   const chatRoomId=lic.licenseKey?`chat_${lic.licenseKey}`:null;
 
   useEffect(()=>{
-    if(tab!=="livechat"||!chatRoomId)return;
+    if(DEMO||tab!=="livechat"||!chatRoomId)return;
     let unsub=()=>{};
     try{
       const q=query(collection(db,"live_chats",chatRoomId,"messages"),orderBy("sentAt","asc"),limit(100));
@@ -9663,6 +9848,7 @@ function Help({license: helpLicense, lang="en", onLogout}){
   },[tab,chatRoomId]);
 
   async function sendChatMessage(){
+    if(DEMO){demoBlocked("Live chat with support");return;}
     if((!chatInput.trim()&&!chatPhoto)||chatSending||!chatRoomId)return;
     setChatSending(true);
     try{
@@ -9679,6 +9865,7 @@ function Help({license: helpLicense, lang="en", onLogout}){
     setChatSending(false);
   }
   async function sendMessage(){
+    if(DEMO){demoBlocked("The AI assistant");return;}
     if(!aiInput.trim()||aiLoading)return;const userMsg=aiInput.trim();setAiInput("");setAiMessages(prev=>[...prev,{role:"user",content:userMsg}]);setAiLoading(true);
     try{
       // The Anthropic API key stays server-side. The aiChat Cloud Function holds
@@ -9690,6 +9877,7 @@ function Help({license: helpLicense, lang="en", onLogout}){
     setAiLoading(false);setTimeout(()=>chatRef.current?.scrollTo({top:chatRef.current.scrollHeight,behavior:"smooth"}),100);
   }
   async function submitLiveHelp(){
+    if(DEMO){demoBlocked("Submitting a support ticket");return;}
     if(!liveForm.name||!liveForm.issue)return alert("Please fill in your name and describe the issue.");
     setLiveSending(true);
     try{
@@ -9703,6 +9891,7 @@ function Help({license: helpLicense, lang="en", onLogout}){
   }
   const [upgradeSent,setUpgradeSent]=useState(false);const [upgradeLoading,setUpgradeLoading]=useState(false);const [selectedPlan,setSelectedPlan]=useState("");
   async function submitUpgradeRequest(){
+    if(DEMO){demoBlocked("Requesting a plan upgrade");return;}
     if(!selectedPlan)return alert("Please select a plan to upgrade to.");
     setUpgradeLoading(true);
     try{
@@ -10670,6 +10859,7 @@ function ZATCASetup({license,sales=[]}){
   ];
 
   async function handleActivate(){
+    if(DEMO){setMsg("⚠️ ZATCA Phase 2 onboarding is disabled in the demo — it issues real production certificates. Register to activate it for your business.");return;}
     if(!license?.licenseKey){setMsg("⚠️ No license key found. Please re-activate RestoPOS first.");return;}
     if(!vatNumber||!/^3\d{14}$/.test(vatNumber)){setMsg("⚠️ Enter a valid 15-digit VAT number starting with 3.");return;}
     if(!companyName){setMsg("⚠️ Company name is required.");return;}
@@ -14687,6 +14877,37 @@ function usePWAInstall(){
   return{prompt,installed,install,showInstructions,setShowInstructions};
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// DEMO RECEIPT STAMP
+// A demo receipt carries a real-looking ZATCA QR, so it must never be
+// mistakable for a tax invoice. Every printed/previewed document gets a
+// header and footer saying so. Applied by wrapping the builders once, at
+// module load, rather than threading a flag through all of them.
+// ═══════════════════════════════════════════════════════════════════
+const DEMO_STAMP_MARK="restopos-demo-stamp";
+function demoStampHTML(html){
+  if(typeof html!=="string"||html.includes(DEMO_STAMP_MARK))return html;
+  const bar=(txt)=>`<div class="${DEMO_STAMP_MARK}" style="text-align:center;font-family:'Courier New',monospace;font-size:11px;font-weight:bold;color:#000;border:2px dashed #000;padding:4px 2px;margin:4px 0;line-height:1.35">${txt}</div>`;
+  const top=bar("*** DEMO RECEIPT ***<br/>NOT A VALID TAX INVOICE<br/>إيصال تجريبي — ليست فاتورة ضريبية");
+  const bottom=bar("Sample data from the RestoPOS demo.<br/>Not reported to ZATCA.");
+  let out=html;
+  if(out.includes("<body"))out=out.replace(/(<body[^>]*>)/i,`$1${top}`);
+  else out=top+out;
+  if(out.includes("</body>"))out=out.replace("</body>",bottom+"</body>");
+  else out=out+bottom;
+  return out;
+}
+if(DEMO){
+  const _rcpt=buildReceiptHTML,_preset=buildPresetHTML,_draft=buildDraftReceiptHTML,_kot=buildKOTHtml,_pkot=buildPresetKOT;
+  // demoStampHTML is idempotent, so the builders that delegate to each other
+  // (buildReceiptHTML → buildPresetHTML) stamp exactly once.
+  buildReceiptHTML=(...a)=>demoStampHTML(_rcpt(...a));
+  buildPresetHTML=(...a)=>demoStampHTML(_preset(...a));
+  buildDraftReceiptHTML=(...a)=>demoStampHTML(_draft(...a));
+  buildKOTHtml=(...a)=>demoStampHTML(_kot(...a));
+  buildPresetKOT=(...a)=>demoStampHTML(_pkot(...a));
+}
+
 export default function App(){
   const [step,setStep]=useState("checking");const [businessData,setBusinessData]=useState(null);const [license,setLicense]=useState(null);const [currentUser,setCurrentUser]=useState(null);const [screen,_setScreen]=useState(()=>{
     // Crash-recovery: if the error boundary set this, honor it once then clear.
@@ -14696,6 +14917,7 @@ export default function App(){
   });
   function setScreen(s){_setScreen(s);LS.set("restopos_last_screen",s);}
   const [terminated,setTerminated]=useState(null);
+  const [showDemoIntro,setShowDemoIntro]=useState(false);
   // Daily token (top-bar box) — updates live when an invoice increments it.
   const [dailyToken,setDailyToken]=useState(()=>getDailyToken());
   // ZATCA Invoice number (ICV) — reads current counter, updates live on real invoices only
@@ -14735,7 +14957,7 @@ export default function App(){
   // permanent Firestore archive, so a cleared browser or a new device
   // doesn't lose 5-year ZATCA history or break invoice continuity.
   // ═══════════════════════════════════════════════════════════════════
-  useEffect(()=>{ if(license?.vatNumber)invoiceStorage.syncFromFirestore(license.vatNumber); },[license?.vatNumber]);
+  useEffect(()=>{ if(!DEMO&&license?.vatNumber)invoiceStorage.syncFromFirestore(license.vatNumber); },[license?.vatNumber]);
   useEffect(()=>{ if(license?.licenseKey)registerDeviceUid(license.licenseKey,license.vatNumber); },[license?.licenseKey,license?.vatNumber]);
   // ═══════════════════════════════════════════════════════════════════
   // OFFLINE ZATCA AUTO-SYNC — auto-reports queued invoices when back online
@@ -14855,6 +15077,7 @@ export default function App(){
 
   // RESTORE DATA ON NEW DEVICE — runs once on mount
   useEffect(()=>{
+    if(DEMO)return; // the sandbox is seeded locally; nothing to restore or back up
     const savedLic=LS.get("restopos_license_v2");
     if(!savedLic?.licenseKey)return;
     const hasLocalData=localStorage.getItem("restopos_items");
@@ -14888,6 +15111,7 @@ export default function App(){
 
   // REAL-TIME KILL-SWITCH WATCHDOG — listens for status changes in Firestore
   useEffect(()=>{
+    if(DEMO)return; // the demo license is not a real tenant
     const savedLic=LS.get("restopos_license_v2");
     if(!savedLic?.licenseKey)return;
     const unsub=onSnapshot(doc(db,"pending_activations",savedLic.licenseKey.trim().toUpperCase()),(snap)=>{
@@ -14935,6 +15159,7 @@ export default function App(){
 
   // LIVE ANNOUNCEMENT LISTENER
   useEffect(()=>{
+    if(DEMO)return; // operator broadcasts are for real terminals only
     try{
       const unsub=onSnapshot(doc(db,"config","announcement"),snap=>{
         try{
@@ -15032,6 +15257,14 @@ export default function App(){
   const [uiScale,setUiScale]=useState(()=>{const v=parseInt(LS.get("restopos_ui_scale")||"100");return isNaN(v)?100:v;});
   function handleScaleChange(v){const s=Math.max(70,Math.min(130,parseInt(v)||100));setUiScale(s);LS.set("restopos_ui_scale",String(s));}
   useEffect(()=>{
+    if(DEMO){
+      // Straight into the sample business as Admin — a visitor evaluating the
+      // product shouldn't have to invent a license key or a PIN to see it.
+      setLicense(LS.get("restopos_license_v2")||DEMO_LICENSE);
+      setCurrentUser({role:"Admin",name:"Demo Admin"});
+      setStep("app");
+      return;
+    }
     const saved=LS.get("restopos_license_v2");
     const pendingId=localStorage.getItem("restopos_pending_id");
     const creds=LS.get("restopos_client_creds");
@@ -15078,17 +15311,19 @@ export default function App(){
       </div>
     </div>
   );
-  if(step==="register")return<BusinessRegistration onNext={(data)=>{setBusinessData(data);setStep("license");}} onLogin={()=>setStep("clientLogin")}/>;
-  if(step==="license")return<LicenseVerification businessData={businessData||{businessName:"",crNumber:"",vatNumber:"",address:"",city:"",phone:""}} onSuccess={(lic)=>{setLicense(lic);setStep("setCredentials");}} onBack={()=>setStep("register")} onLogin={()=>setStep("clientLogin")}/>;
+  const tryDemo=()=>setShowDemoIntro(true);
+  if(step==="register")return<>{showDemoIntro&&<DemoIntroModal onClose={()=>setShowDemoIntro(false)}/>}<BusinessRegistration onNext={(data)=>{setBusinessData(data);setStep("license");}} onLogin={()=>setStep("clientLogin")} onTryDemo={tryDemo}/></>;
+  if(step==="license")return<>{showDemoIntro&&<DemoIntroModal onClose={()=>setShowDemoIntro(false)}/>}<LicenseVerification businessData={businessData||{businessName:"",crNumber:"",vatNumber:"",address:"",city:"",phone:""}} onSuccess={(lic)=>{setLicense(lic);setStep("setCredentials");}} onBack={()=>setStep("register")} onLogin={()=>setStep("clientLogin")} onTryDemo={tryDemo}/></>;
   if(step==="setCredentials")return<SetCredentials license={license} onDone={()=>setStep("pendingApproval")}/>;
   if(step==="pendingApproval")return<PendingApprovalScreen license={license} onApproved={()=>setStep("clientLogin")} onSwitchAccount={handleSwitchAccount}/>;
-  if(step==="clientLogin")return<ClientLogin license={license} onSuccess={()=>setStep("login")} onForgotPassword={()=>setStep("forgotPassword")} onBack={()=>setStep("login")}/>;
+  if(step==="clientLogin")return<>{showDemoIntro&&<DemoIntroModal onClose={()=>setShowDemoIntro(false)}/>}<ClientLogin license={license} onSuccess={()=>setStep("login")} onForgotPassword={()=>setStep("forgotPassword")} onBack={()=>setStep("login")} onTryDemo={tryDemo}/></>;
   if(step==="forgotPassword")return<ForgotPassword onBack={()=>setStep("clientLogin")} onReset={()=>setStep("clientLogin")}/>;
   if(step==="login"||!currentUser)return<RoleLogin license={license} lang={lang} onLogin={(user)=>{setCurrentUser(user);setStep("app");if(user.role==="Cashier")setScreen("pos");}} onClientLogin={()=>setStep("clientLogin")}/>;
   return(
     <ErrorBoundary>
     <div dir={dir(lang)} style={{fontFamily:lang==="ar"?"'Tajawal','Plus Jakarta Sans',sans-serif":"'Plus Jakarta Sans','Tajawal',sans-serif",background:C.bg,height:"100vh",display:"flex",flexDirection:"column",overflow:"hidden",zoom:`${uiScale}%`}}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Tajawal:wght@400;500;700;800&display=swap');html,body,#root{height:100%;margin:0;padding:0;width:100%}*{box-sizing:border-box;margin:0;padding:0}::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-track{background:${C.bg}}::-webkit-scrollbar-thumb{background:${C.border};border-radius:3px}input,select{outline:none}input:focus,select:focus{border-color:${C.primary}!important}@media print{header,nav{display:none!important}}${lang==="ar"?"body,button,input,select,textarea{font-family:'Tajawal',sans-serif!important}":""}`}</style>
+      {DEMO&&<DemoBanner/>}
       <div style={{display:"flex",alignItems:"stretch",flexShrink:0,zIndex:100,boxShadow:"0 2px 12px rgba(0,0,0,0.18)",minHeight:50,width:"100%",flexWrap:"nowrap"}}>
         <div style={{background:"linear-gradient(135deg,#1A3D2B 0%,#1F4D36 100%)",display:"flex",alignItems:"center",gap:8,padding:"0 12px",flexShrink:0,borderRight:"1px solid rgba(255,255,255,0.1)"}}>
           <div style={{width:26,height:26,background:"linear-gradient(135deg,#2ECC71,#F0A500)",borderRadius:6,display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontSize:13,fontWeight:900,flexShrink:0}}>R</div>

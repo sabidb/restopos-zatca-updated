@@ -115,6 +115,27 @@ RestoPOS is a fully featured, cloud-connected restaurant Point of Sale system bu
 4. The app installs to your desktop like a native application
 5. Works offline after first load
 
+### Try the Demo (no registration)
+
+A prospective client can explore the whole system before signing up:
+
+1. Open [restopos.store](https://restopos.store)
+2. On the registration screen, click **▶ Open the free demo**
+3. The POS opens as a sample Riyadh restaurant — full menu, 12 tables, and
+   five weeks of trading history already loaded
+4. **Exit & register →** in the yellow banner wipes the demo and returns to signup
+
+The demo is completely sealed off:
+
+- Storage is sandboxed — a real client's menu, sales and ZATCA invoice chain on
+  the same browser are never read or overwritten, and exiting deletes only demo data
+- Nothing reaches the cloud — no Firestore writes, no Cloud Functions, no FATOORA
+- Demo receipts are stamped **NOT A VALID TAX INVOICE** and ZATCA reporting is simulated
+- Support chat, the AI assistant, archive export and Phase 2 onboarding stay off
+
+To run a permanently-demo deployment on its own domain (e.g. `demo.restopos.store`),
+build the same repo with `VITE_DEMO_MODE=true` (see `.env.example`).
+
 ### Setup for New Clients
 
 1. Client opens restopos.store

@@ -143,6 +143,49 @@ keychain.
 
 This is the customer onboarding lifecycle.
 
+### Step 0 — Try the demo (optional, before any of the above)
+
+The registration screen carries a **Try RestoPOS before you register** section.
+Clicking **▶ Open the free demo** starts a sandboxed session: no license key, no
+account, no admin approval. The visitor lands in the POS as Admin, running a
+sample Riyadh restaurant (*Bayt Al Mandi*) with 24 menu items, 6 categories,
+12 tables, 6 customers and roughly five weeks of trading history — so the
+Dashboard, Reports, Financials, CRM and VAT screens all have real numbers in them.
+
+**How the isolation works** (`src/demo.js`):
+
+- `main.jsx` calls `installDemoSandbox()` **before** `App.jsx` — and therefore
+  Firebase — is imported. It replaces `window.localStorage` with a shim that
+  prefixes every key with `restopos_demo_sandbox::`. Existing code is unchanged;
+  it just reads and writes an isolated namespace. A real client's menu, sales
+  and ZATCA hash chain on the same browser are never touched, and leaving the
+  demo removes only the prefixed keys.
+- `App.jsx` sets `const DEMO = isDemo()` and returns early at every cloud call
+  site: `syncKeyToFirestore`, `restoreFromFirestore`, `ensureSignedIn`,
+  `registerDeviceUid`, `invoiceStorage.archiveToFirestore` / `syncFromFirestore`,
+  the kill-switch and announcement listeners, live chat, support tickets, the
+  AI assistant, archive export and Phase 2 onboarding. A demo session issues
+  **zero** Firestore, Cloud Function and ZATCA-service requests.
+- `reportToFatoora` / `clearanceB2BInvoice` run `simulateZatcaSubmission()`
+  instead, so the FATOORA queue and VAT dashboard behave — records are flagged
+  `demo_simulated`.
+- Every printed or previewed document is stamped **DEMO RECEIPT — NOT A VALID
+  TAX INVOICE** (bilingual), so a demo receipt can never pass as a real one.
+- The demo license (`DEMO-TRIAL`) is not a real tenant and has no Firestore
+  document, so the kill-switch, subscription expiry and device allowlist
+  simply do not apply.
+
+The yellow banner across the top of the app carries **What's limited?**,
+**↻ Reset** (restore the original sample business) and **Exit & register →**
+(delete the sandbox and return to registration).
+
+**Optional: a demo-only deployment.** Building the same repo with
+`VITE_DEMO_MODE=true` makes the whole deployment a demo — useful for
+`demo.restopos.store` on a second Vercel project pointed at this repo. Set
+`VITE_DEMO_EXIT_URL=https://restopos.store` so **Register →** sends visitors to
+the real site. Because it is a different origin, that variant is isolated by the
+browser as well as by the sandbox.
+
 ### Step 1 — License activation
 1. Open the app. On first run you're on the **License** screen.
 2. **Choose your business type — Restaurant or Supermarket** (top of the
