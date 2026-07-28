@@ -115,6 +115,47 @@ RestoPOS is a fully featured, cloud-connected restaurant Point of Sale system bu
 4. The app installs to your desktop like a native application
 5. Works offline after first load
 
+### Free 14-Day Trial (no registration)
+
+A prospective client can run the whole system for two weeks before signing up:
+
+1. Open [restopos.store](https://restopos.store)
+2. On the registration screen, click **▶ Start my free 14-day trial**
+3. Pick **Restaurant** or **Supermarket**, enter a business name, your name and a
+   **10-digit mobile number** (required — it is the trial account)
+4. The POS opens **completely empty** — no demo data, nothing fake. Add your own
+   products and start billing. (To see a stocked system first, the landing page has
+   a preview gallery of real screenshots.)
+5. **Register now →** at any point carries your products and sales into a real account
+
+What the trial is:
+
+- **Both modes, in full.** Restaurant (tables, dine-in, KOT) and Supermarket
+  (barcode checkout, weighed items). Switch between them any time — your products
+  and sales stay put; only the till layout changes
+- **A real account.** Everything you enter syncs to the cloud against your mobile
+  number, so yesterday's sales are still there tomorrow, reports cover the whole
+  trial, and **↩ Continue my trial** restores it onto another device
+- **Visible to the operator.** Signing up writes a `pending_activations/TRIAL-<mobile>`
+  document that appears in the admin panel's **Trials** tab with the mobile number,
+  business type and days remaining. Extend and Convert-to-paid work on it live
+- **Fully readable in Firebase.** Everything the trial does is mirrored into a
+  `trials/TRIAL-<mobile>` document — usage summary on the parent, with their
+  `sales`, `products` and `customers` as subcollections — so it can be browsed in
+  the Firebase console and in the admin panel's **View their data** view.
+  *(Needs `firebase deploy --only firestore:rules` once, for the new collection.)*
+
+What it is not:
+
+- Not ZATCA-onboarded: invoices are never reported to FATOORA and every receipt is
+  stamped **NOT A VALID TAX INVOICE**. Phase 2 onboarding needs a real CR and VAT number
+- Archive export and the AI assistant stay off; live chat and support tickets work
+- Trial work is kept in its own storage namespace, so a trial can never overwrite
+  another RestoPOS account on the same browser
+
+For a trial-only deployment on its own domain, build with `VITE_TRIAL_MODE=true`
+(see `.env.example`).
+
 ### Setup for New Clients
 
 1. Client opens restopos.store

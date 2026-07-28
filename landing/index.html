@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>RestoPOS — ZATCA Phase 2 Point of Sale for Saudi Arabia</title>
+<meta name="description" content="Restaurant and supermarket point of sale built for Saudi Arabia. ZATCA Phase 2 e-invoicing, Arabic and English, works offline. Free 14-day trial — no card." />
+<meta name="theme-color" content="#1A6B4A" />
+<link rel="icon" href="/favicon.svg" />
+<link rel="apple-touch-icon" href="/icon-192.png" />
+
+<meta property="og:title" content="RestoPOS — ZATCA Phase 2 Point of Sale" />
+<meta property="og:description" content="Restaurant and supermarket POS for Saudi Arabia. ZATCA Phase 2, bilingual, works offline. Free 14-day trial." />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://restopos.store" />
+
+<style>
+/* ══════════════════════════════════════════════════════════════════
+   RestoPOS landing page — restopos.store
+
+   Try Now sends people to APP_URL — set at the bottom of this file.
+   restopos.store serves this page; the app lives at app.restopos.store.
+   ══════════════════════════════════════════════════════════════════ */
+
+/* ── Tokens ──────────────────────────────────────────────────────
+   Brand green and gold are the app's own values. Neutrals carry a
+   green cast so they belong to the palette rather than being
+   inherited greys. Components read tokens only — never raw hex —
+   so the two themes stay in step. */
+:root{
+  --brand:#1A6B4A;
+  --brand-lit:#2ECC71;
+  --brand-deep:#0F3D2A;
+  --gold:#F0A500;
+  --gold-soft:#FFC94A;
+  --danger:#D94040;
+
+  --bg:#F2F4F0;
+  --bg-alt:#E7EBE5;
+  --surface:#FFFFFF;
+  --text:#0A1A14;
+  --text-mid:#3D5148;
+  --muted:#697C72;
+  --line:#D6DED7;
+  --receipt:#FCFCFA;
+  --receipt-ink:#14201A;
+  --glow:rgba(26,107,74,.18);
+
+  --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono","Courier New",monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","Helvetica Neue",Arial,sans-serif;
+  --arabic:"Tahoma","Segoe UI","Noto Naskh Arabic","Geeza Pro",sans-serif;
+
+  --rail:1120px;
+  --step--1:.8125rem;
+  --step-0:1.0625rem;
+  --step-1:1.25rem;
+  --step-2:clamp(1.5rem,2.6vw,2.1rem);
+  --step-3:clamp(2rem,4vw,3rem);
+  --step-4:clamp(2.6rem,6.2vw,4.5rem);
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#07130F; --bg-alt:#0C1D17; --surface:#0E211A;
+    --text:#E9F0EB; --text-mid:#B4C5BB; --muted:#8B9E93; --line:#1D3830;
+    --receipt:#101E19; --receipt-ink:#DCE8E1;
+    --brand-lit:#43E08A; --glow:rgba(46,204,113,.16);
+  }
+}
+/* The viewer's own toggle must beat the OS preference in both directions. */
+:root[data-theme="dark"]{
+  --bg:#07130F; --bg-alt:#0C1D17; --surface:#0E211A;
+  --text:#E9F0EB; --text-mid:#B4C5BB; --muted:#8B9E93; --line:#1D3830;
+  --receipt:#101E19; --receipt-ink:#DCE8E1;
+  --brand-lit:#43E08A; --glow:rgba(46,204,113,.16);
+}
+:root[data-theme="light"]{
+  --bg:#F2F4F0; --bg-alt:#E7EBE5; --surface:#FFFFFF;
+  --text:#0A1A14; --text-mid:#3D5148; --muted:#697C72; --line:#D6DED7;
+  --receipt:#FCFCFA; --receipt-ink:#14201A;
+  --brand-lit:#2ECC71; --glow:rgba(26,107,74,.18);
+}
+
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--bg); color:var(--text);
+  font-family:var(--sans); font-size:var(--step-0); line-height:1.65;
+  overflow-x:hidden;
+}
+img{max-width:100%}
+a{color:inherit}
+:focus-visible{outline:2.5px solid var(--gold); outline-offset:3px; border-radius:4px}
+
+.rail{width:100%; max-width:var(--rail); margin-inline:auto; padding-inline:clamp(18px,4vw,32px)}
+.stack{display:flex; flex-direction:column}
+
+/* Mono is the voice of the system: eyebrows, labels, figures, receipt. */
+.eyebrow{
+  font-family:var(--mono); font-size:.6875rem; font-weight:600;
+  letter-spacing:.18em; text-transform:uppercase; color:var(--muted);
+}
+h1,h2,h3{margin:0; text-wrap:balance; letter-spacing:-.03em; line-height:1.06; font-weight:800}
+h2{font-size:var(--step-3); letter-spacing:-.025em; line-height:1.12}
+h3{font-size:var(--step-1); letter-spacing:-.015em; line-height:1.25}
+p{margin:0}
+.lede{font-size:var(--step-1); color:var(--text-mid); line-height:1.6; max-width:34ch}
+.prose{color:var(--text-mid); max-width:62ch}
+
+/* Bilingual pairs, set the way the product's own receipts set them. */
+.ar{font-family:var(--arabic); direction:rtl; unicode-bidi:isolate}
+
+/* ── Header ──────────────────────────────────────────────────── */
+header{
+  position:sticky; top:0; z-index:50;
+  background:color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter:blur(12px);
+  border-bottom:1px solid var(--line);
+}
+.bar{display:flex; align-items:center; gap:16px; height:62px}
+.logo{display:flex; align-items:center; gap:10px; font-weight:800; letter-spacing:-.02em; text-decoration:none}
+.mark{
+  width:30px; height:30px; border-radius:8px; display:grid; place-items:center;
+  background:linear-gradient(135deg,var(--brand),var(--gold));
+  color:#fff; font-weight:900; font-size:15px; flex:none;
+}
+.logo span small{display:block; font-family:var(--mono); font-size:.5625rem; letter-spacing:.14em; color:var(--muted); font-weight:600}
+.bar nav{margin-inline-start:auto; display:flex; gap:22px; align-items:center}
+.bar nav a:not(.try){font-size:.875rem; color:var(--text-mid); text-decoration:none; font-weight:500}
+.bar nav a:not(.try):hover{color:var(--text)}
+@media (max-width:760px){ .bar nav a.hide-sm{display:none} }
+
+/* ── Try Now button ──────────────────────────────────────────── */
+.try{
+  --ring:var(--glow);
+  position:relative; display:inline-flex; align-items:center; gap:10px;
+  padding:15px 28px; border:0; border-radius:999px; cursor:pointer;
+  background:linear-gradient(135deg,var(--brand),var(--brand-deep));
+  color:#fff; font-family:var(--sans); font-size:1rem; font-weight:750;
+  letter-spacing:-.01em; text-decoration:none; overflow:hidden; isolation:isolate;
+  box-shadow:0 1px 0 rgba(255,255,255,.14) inset, 0 10px 26px -12px rgba(0,0,0,.6);
+  animation:halo 3.4s ease-in-out infinite;
+  transition:transform .18s cubic-bezier(.2,.8,.3,1), box-shadow .18s ease;
+}
+.try.sm{padding:10px 18px; font-size:.875rem}
+.try:hover{transform:translateY(-2px)}
+.try:active{transform:translateY(0)}
+.try .arrow{transition:transform .22s cubic-bezier(.2,.8,.3,1); display:inline-block}
+.try:hover .arrow{transform:translateX(5px)}
+/* A light sweeps across the face on hover — a till screen catching the light. */
+.try::before{
+  content:""; position:absolute; inset:0; z-index:-1;
+  background:linear-gradient(100deg,transparent 20%,rgba(255,255,255,.26) 50%,transparent 80%);
+  transform:translateX(-110%);
+}
+.try:hover::before{ animation:sweep .75s ease-out }
+@keyframes sweep{ to{ transform:translateX(110%) } }
+@keyframes halo{
+  0%,100%{ box-shadow:0 1px 0 rgba(255,255,255,.14) inset, 0 10px 26px -12px rgba(0,0,0,.6), 0 0 0 0 var(--ring) }
+  50%    { box-shadow:0 1px 0 rgba(255,255,255,.14) inset, 0 10px 26px -12px rgba(0,0,0,.6), 0 0 0 13px transparent }
+}
+.try-note{font-family:var(--mono); font-size:.75rem; color:var(--muted); letter-spacing:.02em}
+
+/* ── Hero ────────────────────────────────────────────────────── */
+.hero{padding:clamp(48px,7vw,88px) 0 clamp(40px,6vw,72px)}
+.hero-grid{display:grid; grid-template-columns:1.05fr .95fr; gap:clamp(32px,5vw,64px); align-items:center}
+@media (max-width:920px){ .hero-grid{grid-template-columns:1fr; gap:44px} }
+.hero h1{font-size:var(--step-4)}
+.hero h1 .ar{display:block; text-align:left; font-size:.44em; font-weight:700; letter-spacing:0; line-height:1.5; color:var(--brand); margin-top:.34em}
+:root[data-theme="dark"] .hero h1 .ar,
+:root:not([data-theme="light"]) .hero h1 .ar{color:var(--brand-lit)}
+@media (prefers-color-scheme:light){ :root:not([data-theme="dark"]) .hero h1 .ar{color:var(--brand)} }
+.hero-cta{display:flex; align-items:center; gap:18px; flex-wrap:wrap; margin-top:6px}
+.ghost{
+  display:inline-flex; align-items:center; gap:8px; padding:14px 22px; border-radius:999px;
+  border:1.5px solid var(--line); background:transparent; color:var(--text);
+  font:inherit; font-size:.9375rem; font-weight:650; text-decoration:none; cursor:pointer;
+  transition:border-color .18s ease, background .18s ease;
+}
+.ghost:hover{border-color:var(--brand); background:color-mix(in srgb,var(--brand) 8%,transparent)}
+
+/* ── The receipt: this product's one true artifact ───────────── */
+.receipt-wrap{display:flex; justify-content:center; perspective:1400px}
+.receipt{
+  position:relative; width:min(330px,100%);
+  background:var(--receipt); color:var(--receipt-ink);
+  font-family:var(--mono); font-size:11.5px; line-height:1.55;
+  padding:26px 22px 30px; border-radius:3px;
+  box-shadow:0 30px 60px -28px rgba(0,0,0,.55), 0 2px 10px -4px rgba(0,0,0,.25);
+  transform:rotate(-1.4deg) rotateY(7deg);
+}
+/* Torn edges, top and bottom. */
+.receipt::before,.receipt::after{
+  content:""; position:absolute; left:0; right:0; height:9px;
+  background:repeating-linear-gradient(-45deg,var(--receipt) 0 6px,transparent 6px 12px);
+}
+.receipt::before{top:-8px; transform:scaleY(-1)}
+.receipt::after{bottom:-8px}
+.r-line{display:flex; justify-content:space-between; gap:10px}
+.r-rule{border-top:1px dashed color-mix(in srgb,var(--receipt-ink) 34%,transparent); margin:9px 0}
+.r-center{text-align:center}
+.r-shop{font-size:14px; font-weight:700; letter-spacing:.02em}
+.r-dim{opacity:.62}
+.r-item{margin:5px 0}
+.r-item .ar{font-size:11px; opacity:.78}
+.r-total{font-size:15px; font-weight:700}
+.r-qr{width:82px; height:82px; margin:12px auto 8px; display:block; image-rendering:pixelated}
+.r-stamp{
+  display:inline-block; font-size:9.5px; font-weight:700; letter-spacing:.1em;
+  border:1.5px solid var(--brand); color:var(--brand); border-radius:3px; padding:3px 9px;
+}
+/* Print sequence — the receipt rolls out of the printer on load. */
+.roll>*{opacity:0; transform:translateY(-6px); animation:roll .34s ease-out forwards}
+@keyframes roll{ to{opacity:1; transform:none} }
+
+/* ── Trust strip ─────────────────────────────────────────────── */
+.strip{border-block:1px solid var(--line); background:var(--bg-alt)}
+.strip-grid{display:grid; grid-template-columns:repeat(4,1fr); gap:1px; background:var(--line)}
+@media (max-width:760px){ .strip-grid{grid-template-columns:repeat(2,1fr)} }
+.strip-cell{background:var(--bg-alt); padding:22px 20px}
+.strip-cell b{display:block; font-family:var(--mono); font-size:1.375rem; font-weight:700; letter-spacing:-.02em; font-variant-numeric:tabular-nums}
+.strip-cell span{font-size:.8125rem; color:var(--muted)}
+
+/* ── Sections ────────────────────────────────────────────────── */
+section{padding:clamp(56px,8vw,96px) 0}
+.head{max-width:62ch; margin-bottom:clamp(28px,4vw,44px)}
+.head .eyebrow{margin-bottom:12px; display:block}
+.head p{margin-top:14px}
+
+/* Two modes */
+.modes{display:grid; grid-template-columns:1fr 1fr; gap:18px}
+@media (max-width:820px){ .modes{grid-template-columns:1fr} }
+.mode{
+  background:var(--surface); border:1px solid var(--line); border-radius:16px;
+  padding:26px 26px 28px; position:relative; overflow:hidden;
+}
+.mode-ico{font-size:26px; line-height:1}
+.mode h3{margin:12px 0 8px}
+.mode ul{margin:16px 0 0; padding:0; list-style:none; display:flex; flex-direction:column; gap:9px}
+.mode li{display:flex; gap:10px; font-size:.9375rem; color:var(--text-mid)}
+.mode li::before{content:"—"; color:var(--brand); font-family:var(--mono); flex:none}
+.mode .ar{font-size:.8125rem; color:var(--muted); margin-top:2px}
+
+/* Features */
+.feats{display:grid; grid-template-columns:repeat(3,1fr); gap:18px}
+@media (max-width:900px){ .feats{grid-template-columns:1fr 1fr} }
+@media (max-width:600px){ .feats{grid-template-columns:1fr} }
+.feat{padding:22px 0 0; border-top:2px solid var(--text)}
+.feat h3{font-size:1.0625rem; margin-bottom:8px}
+.feat p{font-size:.9375rem; color:var(--text-mid)}
+.feat .eyebrow{display:block; margin-bottom:10px}
+
+/* ── Preview gallery: real screenshots of the real app ───────── */
+.shots{display:grid; grid-template-columns:230px 1fr; gap:22px; align-items:start}
+@media (max-width:900px){ .shots{grid-template-columns:1fr; gap:16px} }
+.shot-nav{display:flex; flex-direction:column; gap:4px}
+@media (max-width:900px){
+  .shot-nav{flex-direction:row; overflow-x:auto; gap:6px; padding-bottom:6px; scrollbar-width:thin}
+}
+.shot-tab{
+  display:flex; align-items:center; gap:9px; width:100%;
+  padding:11px 13px; border-radius:10px; cursor:pointer; text-align:left;
+  border:1px solid transparent; background:transparent; color:var(--text-mid);
+  font:inherit; font-size:.875rem; font-weight:600; white-space:nowrap;
+  transition:background .15s ease, color .15s ease, border-color .15s ease;
+}
+.shot-tab:hover{background:color-mix(in srgb,var(--brand) 8%,transparent); color:var(--text)}
+.shot-tab[aria-selected="true"]{
+  background:var(--surface); border-color:var(--line); color:var(--text);
+  box-shadow:inset 3px 0 0 var(--brand);
+}
+@media (max-width:900px){ .shot-tab[aria-selected="true"]{box-shadow:inset 0 -3px 0 var(--brand)} }
+.shot-tab i{font-style:normal; font-size:15px; line-height:1}
+.shot-stage{min-width:0}
+.shot-frame{
+  background:var(--surface); border:1px solid var(--line); border-radius:14px;
+  overflow:hidden; box-shadow:0 24px 50px -30px rgba(0,0,0,.5);
+}
+/* Window chrome, so a flat screenshot reads as an application. */
+.shot-chrome{
+  display:flex; align-items:center; gap:7px; padding:9px 13px;
+  border-bottom:1px solid var(--line); background:var(--bg-alt);
+}
+.shot-chrome b{width:9px; height:9px; border-radius:50%; background:var(--line); flex:none}
+.shot-chrome span{
+  margin-inline-start:8px; font-family:var(--mono); font-size:.6875rem; color:var(--muted);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.shot-frame img{display:block; width:100%; height:auto}
+.shot-cap{margin-top:14px; display:flex; gap:14px; align-items:flex-start; flex-wrap:wrap}
+.shot-cap h3{font-size:1.0625rem; margin-bottom:4px}
+.shot-cap p{font-size:.9375rem; color:var(--text-mid); max-width:60ch}
+.shot-note{
+  font-family:var(--mono); font-size:.6875rem; color:var(--muted);
+  letter-spacing:.04em; margin-top:14px; display:block;
+}
+
+/* Pricing */
+.plans{display:grid; grid-template-columns:repeat(3,1fr); gap:18px; align-items:start}
+@media (max-width:860px){ .plans{grid-template-columns:1fr} }
+.plan{
+  background:var(--surface); border:1px solid var(--line);
+  border-radius:16px; padding:26px;
+}
+.plan.pick{border-color:var(--brand); box-shadow:0 0 0 1px var(--brand)}
+.plan .tag{
+  font-family:var(--mono); font-size:.625rem; letter-spacing:.16em; text-transform:uppercase;
+  color:var(--brand); font-weight:700;
+}
+.plan h3{margin:10px 0 4px}
+.price{display:flex; align-items:baseline; gap:6px; margin:14px 0 4px}
+.price b{font-family:var(--mono); font-size:2.25rem; font-weight:700; letter-spacing:-.04em; font-variant-numeric:tabular-nums}
+.price span{font-size:.8125rem; color:var(--muted)}
+.plan ul{margin:18px 0 0; padding:0; list-style:none; display:flex; flex-direction:column; gap:8px}
+.plan li{font-size:.875rem; color:var(--text-mid); display:flex; gap:9px}
+.plan li::before{content:"✓"; color:var(--brand); font-weight:700; flex:none}
+
+/* Closing CTA */
+.close{
+  background:var(--brand-deep); color:#EAF6EF; border-radius:22px;
+  padding:clamp(34px,5vw,58px); text-align:center;
+  display:flex; flex-direction:column; align-items:center; gap:18px;
+}
+.close h2{color:#fff; max-width:20ch}
+.close p{color:#A9CBB9; max-width:48ch}
+.close .try{background:linear-gradient(135deg,var(--gold),#D68F00); color:#1E1500; --ring:rgba(240,165,0,.3)}
+.close .try-note{color:#8FB6A2}
+
+/* Footer */
+footer{border-top:1px solid var(--line); padding:38px 0 46px; color:var(--muted); font-size:.875rem}
+.foot{display:flex; gap:26px; flex-wrap:wrap; align-items:center}
+.foot a{text-decoration:none}
+.foot a:hover{color:var(--text)}
+.foot .sep{margin-inline-start:auto; font-family:var(--mono); font-size:.75rem}
+
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.001ms !important; animation-iteration-count:1 !important; transition-duration:.001ms !important}
+  .roll>*{opacity:1; transform:none}
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="rail bar">
+    <a class="logo" href="#top">
+      <span class="mark">R</span>
+      <span>RestoPOS<small>ZATCA PHASE 2 · KSA</small></span>
+    </a>
+    <nav>
+      <a class="hide-sm" href="#modes">What it runs</a>
+      <a class="hide-sm" href="#preview">See it</a>
+      <a class="hide-sm" href="#features">Features</a>
+      <a class="hide-sm" href="#pricing">Pricing</a>
+      <a class="try sm" data-app href="#" role="button">Try Now <span class="arrow">→</span></a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+
+  <!-- ── Hero ─────────────────────────────────────────────────── -->
+  <div class="hero rail">
+    <div class="hero-grid">
+      <div class="stack" style="gap:22px">
+        <span class="eyebrow">Point of sale · Kingdom of Saudi Arabia</span>
+        <h1>
+          Every sale, ZATCA-ready.
+          <span class="ar">كل عملية بيع، جاهزة لزاتكا</span>
+        </h1>
+        <p class="lede">
+          A restaurant and supermarket till built for Saudi rules from the first line —
+          Phase&nbsp;2 e-invoicing, Arabic and English receipts, and it keeps trading when
+          the internet drops.
+        </p>
+        <div class="hero-cta">
+          <a class="try" data-app href="#" role="button">Try Now <span class="arrow">→</span></a>
+          <div class="stack">
+            <span class="try-note">14 days free · no card</span>
+            <span class="try-note">Just your mobile number</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- The receipt is the pitch: this is what the product makes. -->
+      <div class="receipt-wrap">
+        <div class="receipt roll" aria-label="Sample ZATCA Phase 2 receipt">
+          <div class="r-center">
+            <div class="r-shop">Bayt Al Mandi</div>
+            <div class="ar r-dim">بيت المندي</div>
+            <div class="r-dim" style="margin-top:4px">King Fahd Rd, Al Olaya · Riyadh</div>
+            <div class="r-dim">VAT 3000 0000 0000 003</div>
+          </div>
+          <div class="r-rule"></div>
+          <div class="r-line r-dim"><span>INV-001482</span><span>28/07/2026</span></div>
+          <div class="r-line r-dim"><span>Takeaway</span><span>Token 14</span></div>
+          <div class="r-rule"></div>
+          <div class="r-item">
+            <div class="r-line"><span>Chicken Mandi (Full)</span><span>49.00</span></div>
+            <div class="ar">مندي دجاج كامل</div>
+          </div>
+          <div class="r-item">
+            <div class="r-line"><span>Shish Tawook</span><span>38.00</span></div>
+            <div class="ar">شيش طاووق</div>
+          </div>
+          <div class="r-item">
+            <div class="r-line"><span>Saudi Coffee Pot</span><span>22.00</span></div>
+            <div class="ar">دلة قهوة عربية</div>
+          </div>
+          <div class="r-rule"></div>
+          <div class="r-line r-dim"><span>Subtotal</span><span>95.65</span></div>
+          <div class="r-line r-dim"><span>VAT 15%</span><span>14.35</span></div>
+          <div class="r-line r-total"><span>TOTAL</span><span>SAR 110.00</span></div>
+          <div class="r-rule"></div>
+          <canvas class="r-qr" width="29" height="29" aria-hidden="true"></canvas>
+          <div class="r-center">
+            <span class="r-stamp">ZATCA PHASE 2 · SIGNED</span>
+            <div class="r-dim" style="margin-top:8px">شكراً لزيارتكم · Thank you</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Trust strip ──────────────────────────────────────────── -->
+  <div class="strip">
+    <div class="rail" style="padding-inline:0">
+      <div class="strip-grid">
+        <div class="strip-cell"><b>Phase&nbsp;2</b><span>UBL 2.1, hash chain, TLV QR</span></div>
+        <div class="strip-cell"><b>0&nbsp;ms</b><span>Offline-first — sells with no internet</span></div>
+        <div class="strip-cell"><b>AR / EN</b><span>Full RTL interface and receipts</span></div>
+        <div class="strip-cell"><b>5&nbsp;years</b><span>Invoice archive, as ZATCA requires</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Two modes ────────────────────────────────────────────── -->
+  <section id="modes">
+    <div class="rail">
+      <div class="head">
+        <span class="eyebrow">One till, two businesses</span>
+        <h2>Pick the mode your floor actually works in.</h2>
+        <p class="prose">
+          The same system, laid out for how you sell. Choose at signup and switch whenever
+          you like — your products and sales stay exactly where they are.
+        </p>
+      </div>
+      <div class="modes">
+        <article class="mode">
+          <div class="mode-ico">🍽️</div>
+          <h3>Restaurant</h3>
+          <div class="ar">مطعم</div>
+          <ul>
+            <li>Table map with live status, dine-in, takeaway and delivery</li>
+            <li>Kitchen tickets to a second thermal printer</li>
+            <li>Hold and recall orders, split payments, coupons</li>
+            <li>Bilingual receipts with Arabic item names</li>
+          </ul>
+        </article>
+        <article class="mode">
+          <div class="mode-ico">🛒</div>
+          <h3>Supermarket</h3>
+          <div class="ar">سوبرماركت</div>
+          <ul>
+            <li>Barcode-first checkout — scan straight into the cart</li>
+            <li>Weighed items priced per kilo</li>
+            <li>Stock counts, low-stock alerts and supplier records</li>
+            <li>Fast keypad totals and cash-drawer control</li>
+          </ul>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Preview ──────────────────────────────────────────────── -->
+  <section id="preview" style="background:var(--bg-alt); border-block:1px solid var(--line)">
+    <div class="rail">
+      <div class="head">
+        <span class="eyebrow">See it before you sign up</span>
+        <h2>The actual screens, with a real day's trading in them.</h2>
+        <p class="prose">
+          These are screenshots of RestoPOS itself — a Riyadh mandi house three weeks in.
+          Your own trial starts completely empty, so the first thing in it is your menu.
+        </p>
+      </div>
+
+      <div class="shots">
+        <div class="shot-nav" role="tablist" aria-label="Application screens">
+          <button class="shot-tab" role="tab" aria-selected="true" data-shot="pos"><i>🖥️</i>POS &amp; billing</button>
+          <button class="shot-tab" role="tab" aria-selected="false" data-shot="dashboard"><i>📊</i>Dashboard</button>
+          <button class="shot-tab" role="tab" aria-selected="false" data-shot="transactions"><i>💳</i>Transactions</button>
+          <button class="shot-tab" role="tab" aria-selected="false" data-shot="reports"><i>📋</i>Reports</button>
+          <button class="shot-tab" role="tab" aria-selected="false" data-shot="vat"><i>🧾</i>VAT &amp; ZATCA</button>
+          <button class="shot-tab" role="tab" aria-selected="false" data-shot="inventory"><i>📦</i>Inventory</button>
+          <button class="shot-tab" role="tab" aria-selected="false" data-shot="customers"><i>👥</i>Customers</button>
+          <button class="shot-tab" role="tab" aria-selected="false" data-shot="financials"><i>🏦</i>Financials</button>
+        </div>
+
+        <div class="shot-stage">
+          <figure class="shot-frame" style="margin:0">
+            <div class="shot-chrome"><b></b><b></b><b></b><span id="shot-url">app.restopos.store — POS</span></div>
+            <img id="shot-img" src="shots/pos.jpg" width="1600" height="938" alt="The RestoPOS till: menu grid on the left, running cart and VAT-inclusive total on the right" />
+          </figure>
+          <div class="shot-cap">
+            <div>
+              <h3 id="shot-title">POS &amp; billing</h3>
+              <p id="shot-desc">Tap items into the cart, or scan them in supermarket mode. VAT is calculated inclusive as ZATCA requires, and the kitchen ticket prints separately from the bill.</p>
+            </div>
+          </div>
+          <span class="shot-note">Sample business shown · your trial starts empty</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Features ─────────────────────────────────────────────── -->
+  <section id="features" style="background:var(--bg-alt); border-block:1px solid var(--line)">
+    <div class="rail">
+      <div class="head">
+        <span class="eyebrow">What you get</span>
+        <h2>Built for the parts of the job nobody enjoys.</h2>
+      </div>
+      <div class="feats">
+        <div class="feat">
+          <span class="eyebrow">Compliance</span>
+          <h3>ZATCA Phase 2, done</h3>
+          <p>UBL 2.1 XML, TLV QR codes, a SHA-256 hash chain and a sequential ICV counter on every invoice. FATOORA queue and VAT liability dashboard included.</p>
+        </div>
+        <div class="feat">
+          <span class="eyebrow">Reliability</span>
+          <h3>Sells without internet</h3>
+          <p>Ring up orders, print and report entirely offline. Everything syncs the moment the connection returns — nothing queues up in a drawer.</p>
+        </div>
+        <div class="feat">
+          <span class="eyebrow">Printing</span>
+          <h3>Two thermal printers</h3>
+          <p>Bill and kitchen printers over ESC/POS, auto-cut after every ticket, cash-drawer kick on cash payments, and a full receipt-format editor.</p>
+        </div>
+        <div class="feat">
+          <span class="eyebrow">Reporting</span>
+          <h3>Numbers you can file</h3>
+          <p>Daily, weekly and monthly sales, category and item breakdowns, VAT collected, profit and loss, and Excel export that handles Arabic properly.</p>
+        </div>
+        <div class="feat">
+          <span class="eyebrow">Continuity</span>
+          <h3>Nothing lives on one device</h3>
+          <p>Every sale backs up to the cloud continuously. Log in on a new tablet and your menu, customers and history are already there.</p>
+        </div>
+        <div class="feat">
+          <span class="eyebrow">Setup</span>
+          <h3>Installs from the browser</h3>
+          <p>No installer, no licence dongle. Open it in Chrome, install it to the desktop like a native app, and it runs on any PC, tablet or phone.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Pricing ──────────────────────────────────────────────── -->
+  <section id="pricing">
+    <div class="rail">
+      <div class="head">
+        <span class="eyebrow">Pricing</span>
+        <h2>Start free. Pay when it's earning.</h2>
+        <p class="prose">Every plan includes ZATCA Phase 2, offline mode, both business modes and cloud backup. The trial is the full system for 14 days.</p>
+      </div>
+      <div class="plans">
+        <div class="plan">
+          <span class="tag">Basic</span>
+          <h3>For a single till</h3>
+          <div class="price"><b>150</b><span>SAR / month</span></div>
+          <ul>
+            <li>Up to 2 users</li>
+            <li>Sales and VAT reports</li>
+            <li>ZATCA Phase 2 e-invoicing</li>
+            <li>Cloud backup</li>
+          </ul>
+        </div>
+        <div class="plan pick">
+          <span class="tag">Professional · most chosen</span>
+          <h3>For a busy floor</h3>
+          <div class="price"><b>299</b><span>SAR / month</span></div>
+          <ul>
+            <li>Up to 5 users</li>
+            <li>Advanced reports and P&amp;L</li>
+            <li>Custom invoice designer</li>
+            <li>Inventory and suppliers</li>
+          </ul>
+        </div>
+        <div class="plan">
+          <span class="tag">Premium</span>
+          <h3>For several branches</h3>
+          <div class="price"><b>399</b><span>SAR / month</span></div>
+          <ul>
+            <li>Unlimited users</li>
+            <li>Every feature, all modes</li>
+            <li>Multi-location settings</li>
+            <li>Priority support</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Closing CTA ──────────────────────────────────────────── -->
+  <section style="padding-top:0">
+    <div class="rail">
+      <div class="close">
+        <span class="eyebrow" style="color:#8FB6A2">Free for 14 days</span>
+        <h2>Put it on your counter tonight.</h2>
+        <p>Give a business name and your mobile number and the till opens straight away — no licence key, no CR or VAT number, nothing to install. Everything you enter is saved and carries over when you register.</p>
+        <a class="try" data-app href="#" role="button">Try Now <span class="arrow">→</span></a>
+        <span class="try-note">Restaurant or supermarket · your data is kept</span>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="rail foot">
+    <span>© 2026 RestoPOS</span>
+    <a href="tel:+966538360053">+966 53 836 0053</a>
+    <a href="mailto:restopos.noreply@gmail.com">restopos.noreply@gmail.com</a>
+    <a href="/RestoPOS_Terms_and_Conditions.pdf">Terms</a>
+    <span class="sep">restopos.store</span>
+  </div>
+</footer>
+
+<script>
+/* ══════════════════════════════════════════════════════════════
+   Where "Try Now" sends people: the RestoPOS app itself.
+
+   restopos.store serves THIS page, so the app lives on a subdomain of
+   the same domain — subdomains are free, nothing extra to buy. Point
+   app.restopos.store at the restopos-zatca-updated Vercel project and
+   this value is correct as-is. To test before the DNS record exists,
+   temporarily swap in that project's *.vercel.app URL.
+   ══════════════════════════════════════════════════════════════ */
+var APP_URL = "https://app.restopos.store";
+
+/* Tills already have RestoPOS installed as a PWA whose start_url is "/".
+   When that shortcut opens this page, send it straight through to the app
+   instead of showing an installed customer a sales pitch. */
+(function guardInstalledApp(){
+  var standalone = (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches)
+    || window.navigator.standalone === true;
+  if (standalone) window.location.replace(APP_URL);
+})();
+
+document.querySelectorAll("[data-app]").forEach(function(el){ el.href = APP_URL; });
+
+/* Receipt print sequence — each line rolls out just after the one above it. */
+(function printReceipt(){
+  var reduced = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var roll = document.querySelector(".roll");
+  if (!roll) return;
+  if (reduced) { roll.classList.remove("roll"); return; }
+  Array.prototype.forEach.call(roll.children, function(line, i){
+    line.style.animationDelay = (140 + i * 62) + "ms";
+  });
+})();
+
+/* Preview gallery. Descriptions live here rather than in eight hidden DOM
+   copies, so only the screenshot the visitor asked for is ever fetched. */
+(function previewGallery(){
+  var SHOTS = {
+    pos:        ["POS & billing", "Tap items into the cart, or scan them in supermarket mode. VAT is calculated inclusive as ZATCA requires, and the kitchen ticket prints separately from the bill.", "The RestoPOS till: menu grid on the left, running cart and VAT-inclusive total on the right"],
+    dashboard:  ["Dashboard", "Today's takings, VAT collected and live ZATCA invoice status the moment you open the till — plus the day's orders as they come in.", "Dashboard showing today's orders, VAT collected and ZATCA invoice counters"],
+    transactions:["Transactions", "Every invoice, searchable, with its ZATCA status attached. Reprint, refund or issue a credit note without leaving the list.", "Transactions list with per-invoice ZATCA reporting status"],
+    reports:    ["Reports", "Sales by day, week or month, broken down by category, item and payment method. Export to Excel with Arabic text intact.", "Sales report with revenue, VAT, payment breakdown and category breakdown"],
+    vat:        ["VAT & ZATCA", "Your VAT position and filing deadline, with the Phase 2 queue showing exactly which invoices have been reported and which are still pending.", "VAT dashboard showing output VAT, filing period and ZATCA submission status"],
+    inventory:  ["Inventory", "Stock levels per item, low-stock warnings, supplier records and stock-take adjustments — costed, so your margins stay honest.", "Inventory screen listing stock levels and low-stock alerts"],
+    customers:  ["Customers", "Names, numbers and order history build themselves as you bill. Loyalty tiers and spend totals come along with it.", "Customer list with spend totals and loyalty tiers"],
+    financials: ["Financials", "Revenue against expenses, profit and loss, and the numbers your accountant asks for at month end.", "Financial summary with revenue, expenses and profit"],
+  };
+  var img = document.getElementById("shot-img");
+  var url = document.getElementById("shot-url");
+  var title = document.getElementById("shot-title");
+  var desc = document.getElementById("shot-desc");
+  var tabs = Array.prototype.slice.call(document.querySelectorAll(".shot-tab"));
+  if (!img || !tabs.length) return;
+
+  // Warm the next screenshot so switching tabs doesn't flash an empty frame.
+  function preload(name){ var i = new Image(); i.src = "shots/" + name + ".jpg"; }
+
+  function show(name){
+    var s = SHOTS[name]; if (!s) return;
+    img.src = "shots/" + name + ".jpg";
+    img.alt = s[2];
+    title.textContent = s[0];
+    desc.textContent = s[1];
+    url.textContent = "app.restopos.store — " + s[0];
+    tabs.forEach(function(t){ t.setAttribute("aria-selected", String(t.dataset.shot === name)); });
+  }
+
+  tabs.forEach(function(t){
+    t.addEventListener("click", function(){ show(t.dataset.shot); });
+    t.addEventListener("mouseenter", function(){ preload(t.dataset.shot); });
+    t.addEventListener("keydown", function(e){
+      var i = tabs.indexOf(t);
+      if (e.key === "ArrowDown" || e.key === "ArrowRight") { e.preventDefault(); tabs[(i+1)%tabs.length].focus(); tabs[(i+1)%tabs.length].click(); }
+      if (e.key === "ArrowUp"   || e.key === "ArrowLeft")  { e.preventDefault(); tabs[(i-1+tabs.length)%tabs.length].focus(); tabs[(i-1+tabs.length)%tabs.length].click(); }
+    });
+  });
+  // Once the gallery is on screen, quietly fetch the rest.
+  if ("IntersectionObserver" in window) {
+    var io = new IntersectionObserver(function(es){
+      if (es.some(function(e){ return e.isIntersecting; })) {
+        Object.keys(SHOTS).forEach(preload); io.disconnect();
+      }
+    }, { rootMargin: "200px" });
+    io.observe(img);
+  }
+})();
+
+/* Stylised QR block for the sample receipt — drawn, not fetched, so the
+   page stays self-contained. Deterministic, so it renders the same every
+   load rather than flickering into a new pattern. */
+(function drawQR(){
+  var c = document.querySelector(".r-qr");
+  if (!c) return;
+  var ctx = c.getContext("2d"), N = 29, seed = 20260728;
+  function rnd(){ seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; }
+  var ink = getComputedStyle(document.querySelector(".receipt")).color;
+  ctx.clearRect(0,0,N,N);
+  ctx.fillStyle = ink;
+  for (var y=0; y<N; y++) for (var x=0; x<N; x++){
+    var finder = (x<8 && y<8) || (x>N-9 && y<8) || (x<8 && y>N-9);
+    if (finder || rnd() > 0.52) continue;
+    ctx.fillRect(x, y, 1, 1);
+  }
+  // Three finder squares, drawn properly so it reads as a QR at a glance.
+  [[0,0],[N-7,0],[0,N-7]].forEach(function(p){
+    ctx.fillRect(p[0], p[1], 7, 7);
+    ctx.clearRect(p[0]+1, p[1]+1, 5, 5);
+    ctx.fillRect(p[0]+2, p[1]+2, 3, 3);
+  });
+})();
+</script>
+</body>
+</html>

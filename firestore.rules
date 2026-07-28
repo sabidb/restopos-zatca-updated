@@ -71,6 +71,13 @@ service cloud.firestore {
     match /password_resets/{key}   { allow read, write: if false; }
 
     // ── pending_activations ────────────────────────────────────────────────
+    // Self-serve 14-day trials live here too, keyed TRIAL-<10-digit mobile>
+    // and flagged isTrial + trialSource:"self-serve". They are created by the
+    // client under exactly the same restriction as any activation — status
+    // "pending", credentialsApproved false — so no rule change was needed for
+    // them; the admin panel's Trials tab picks them out by the flag, and
+    // customExpiryDate (client-set at creation, admin-editable afterwards)
+    // is what the kill-switch watchdog enforces as the trial end date.
     // The core license/account doc. Credential fields (passwordHash,
     // clientUsername, credentialsApproved) and lifecycle fields (isActive,
     // status) are set only by the Admin SDK / admin panel. A device may edit a
@@ -122,6 +129,23 @@ service cloud.firestore {
     match /zatca_invoices/{invoiceNumber} {
       allow read, create, update: if isSignedIn();
       allow delete: if isAdmin();
+    }
+
+    // ── trials (readable mirror of a self-serve trial's activity) ──────────
+    // client_data holds each localStorage key as one long JSON string: perfect
+    // for restoring a device, unreadable in the console. `trials` carries the
+    // same information as real documents — a usage summary on the parent, then
+    // sales / products / customers as subcollections — so a trial can actually
+    // be browsed and queried.
+    //
+    // Doc id is the trial key (TRIAL-<10-digit mobile>), which is also the
+    // pending_activations id, so ownership is the same check as everywhere
+    // else: the device UID must be on that account's authUids.
+    match /trials/{trialKey} {
+      allow read, write: if isAdmin() || ownsLicenseKey(trialKey);
+      match /{document=**} {
+        allow read, write: if isAdmin() || ownsLicenseKey(trialKey);
+      }
     }
 
     // ── client_data (sales rollups; manager function reads via Admin SDK) ───

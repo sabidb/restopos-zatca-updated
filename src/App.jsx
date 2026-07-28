@@ -1,9 +1,35 @@
 import { useState, useEffect, useRef, useMemo, useCallback, Component } from "react";
 import { initializeApp } from "firebase/app";
-import { getFirestore, collection, query, where, getDocs, updateDoc, doc, addDoc, getDoc, onSnapshot, setDoc, deleteDoc, orderBy, limit, startAfter, getCountFromServer, arrayUnion } from "firebase/firestore";
+import { getFirestore, collection, query, where, getDocs, updateDoc, doc, addDoc, getDoc, onSnapshot, setDoc, deleteDoc, orderBy, limit, startAfter, getCountFromServer, arrayUnion, writeBatch } from "firebase/firestore";
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "firebase/auth";
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { getFunctions, httpsCallable } from "firebase/functions";
+import { isTrial, isTrialBuild, trialMeta, trialLicense, trialDaysLeft, trialExpired,
+  beginTrial, leaveTrial, endTrialAndErase, resetTrialData, promoteTrialWorkspace,
+  setTrialBusinessType, syncTrialMeta, consumeTrialStartError,
+  normalizePhone, isValidMobile, trialKeyForPhone, TRIAL_DAYS, TRIAL_LIMITS } from "./trial.js";
+import { initTrialMirror, mirrorTrialData, flushTrialMirror } from "./trialMirror.js";
+
+// ═══════════════════════════════════════════════════════════════════
+// TRIAL MODE — see src/trial.js. TRIAL is fixed for the life of the page:
+// main.jsx installs the isolated storage workspace before this module is
+// imported.
+//
+// A trial is a REAL account, so most of the cloud stack stays on: anonymous
+// auth, device registration, client_data sync/restore (this is what "saved
+// automatically" means), the kill-switch watchdog (which gives us expiry
+// enforcement and the admin's Extend/Convert buttons for free) and support.
+// Only the things a trial genuinely must not do are gated — see trialBlocked
+// call sites: the ZATCA archive and FATOORA reporting, Phase 2 onboarding,
+// the 5-year archive export, the paid AI assistant and the owner console.
+// ═══════════════════════════════════════════════════════════════════
+const TRIAL = isTrial();
+// Refuses an action a trial must not perform, and says why.
+function trialBlocked(what,why){
+  const reason=why||"It needs a registered business with a real CR and VAT number.";
+  try{alert(`${what||"This"} isn't available on the free trial.\n\n${reason}\n\nEverything else keeps working, and your data carries over when you register.`);}catch(e){}
+  return new Error("Not available on trial");
+}
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -19,6 +45,9 @@ const storage = getStorage(firebaseApp);
 const auth = getAuth(firebaseApp);
 const functions = getFunctions(firebaseApp);
 const verifyLoginFn = httpsCallable(functions, "verifyLogin");
+// Hand the trial mirror this app's Firestore handles — one Firebase app, one
+// auth session. Must come after db exists, not next to the TRIAL flag above.
+if (TRIAL) initTrialMirror({ db, doc, collection, setDoc, writeBatch });
 // ⚠️ TEMPORARY DEBUG HOOK — remove once the auth/registration issue is confirmed fixed.
 if (typeof window !== "undefined") {
   window.__restoposDebug = { auth, db, registerDeviceUid: null };
@@ -204,6 +233,7 @@ const invoiceStorage = {
   // Upserts by invoice_number (not addDoc's random ID) so later report/clearance updates merge
   // into the SAME Firestore document instead of creating a duplicate archive entry per invoice.
   async archiveToFirestore(inv, extra={}) {
+    if(TRIAL)return; // a trial has no real VAT number — keep it out of the 5-year archive
     try{
       await setDoc(doc(db,"zatca_invoices",inv.invoice_number),{...inv,...extra,archived_at:new Date().toISOString()},{merge:true});
     }catch(e){ console.warn("[ZATCA] Firestore archive failed:",e.message); }
@@ -215,6 +245,7 @@ const invoiceStorage = {
   // localStorage is intact, but fully restores history after a browser cache clear or on a
   // brand-new device, so the sequential ICV/hash chain never resets or breaks.
   async syncFromFirestore(sellerVat) {
+    if(TRIAL)return; // never pull a real tenant's invoice chain into a trial
     if(!sellerVat)return; // can't safely restore without knowing which tenant this is
     try{
       // 1) Find the true latest invoice (by ICV) to restore the counter + hash chain head.
@@ -281,7 +312,26 @@ function buildZatcaReportPayload(inv, licenseKey) {
   };
 }
 
+// On a trial, ZATCA reporting/clearance is walked through locally: the invoice
+// is marked reported so the queue, VAT dashboard and history all behave, but
+// nothing is sent to FATOORA (the account has no CSID) and every record is
+// flagged trial_simulated.
+function simulateZatcaSubmission(inv, { cleared = false } = {}) {
+  try {
+    const all = invoiceStorage.getAll().map(i =>
+      i.invoice_number === inv.invoice_number
+        ? { ...i, zatca_reported: true, zatca_cleared: cleared, phase: 2, trial_simulated: true }
+        : i
+    );
+    localStorage.setItem(ZATCA_STORAGE_KEY, JSON.stringify(all));
+  } catch (e) { /* storage best-effort */ }
+  fatooraQueue.markSent(inv.invoice_number);
+  try { window.dispatchEvent(new Event("restopos-invoice")); } catch (e) {}
+  return { success: true, trial: true, invoiceHash: inv.invoice_hash_base64 || null, qr: inv.qr_string || null, signedXml: null, reportError: null };
+}
+
 async function reportToFatoora(inv) {
+  if (TRIAL) return simulateZatcaSubmission(inv);
   const licenseKey = LS.get("restopos_license_v2")?.licenseKey;
   if (!licenseKey) {
     console.warn("[ZATCA] No licenseKey found; cannot report invoice.");
@@ -330,6 +380,7 @@ async function reportToFatoora(inv) {
 
 // Fix #10: B2B Standard Invoice — must be CLEARED by ZATCA before giving to buyer
 async function clearanceB2BInvoice(inv) {
+  if (TRIAL) return simulateZatcaSubmission(inv, { cleared: true });
   const licenseKey = LS.get("restopos_license_v2")?.licenseKey;
   if (!licenseKey) throw new Error("No license key found.");
   const payload = buildZatcaReportPayload(inv, licenseKey);
@@ -796,7 +847,11 @@ async function restoreFromFirestore(licenseKey){
     if(!snap.exists())return false;
     const data=snap.data();
     let restored=0;
-    SYNC_KEYS.forEach(key=>{
+    // SYNC_KEYS is a fixed list, but monthly sales archives are dynamic
+    // (restopos_sales_YYYY-MM). Restore whichever ones the cloud holds so a
+    // resumed device can still show earlier days, not just the recent 200.
+    const keysToRestore=[...SYNC_KEYS,...Object.keys(data).filter(k=>/^restopos_sales_\d{4}-\d{2}$/.test(k))];
+    keysToRestore.forEach(key=>{
       if(data[key]){
         try{
           const parsed=JSON.parse(data[key]);
@@ -1112,7 +1167,7 @@ function PendingApprovalScreen({license,onApproved,onSwitchAccount}){
 }
 
 // ═══════════════════════════════════════════════════════════════════
-function ClientLogin({license,onSuccess,onForgotPassword,onBack}){
+function ClientLogin({license,onSuccess,onForgotPassword,onBack,onTryTrial}){
   const [mode,setMode]=useState("login"); // "login" | "already"
   const [username,setUsername]=useState("");
   const [password,setPassword]=useState("");
@@ -1380,6 +1435,7 @@ function ClientLogin({license,onSuccess,onForgotPassword,onBack}){
               ← Back to role login
             </button>
           )}
+          {onTryTrial&&<TrialInviteLink onStart={onTryTrial}/>}
         </div>
       </div>
     </div>
@@ -2303,9 +2359,376 @@ const DataTable=({headers,rows,emptyMsg="No data"})=>(
 );
 
 // ═══════════════════════════════════════════════════════════════════
+// FREE TRIAL — invitation, signup and in-app banner
+// ═══════════════════════════════════════════════════════════════════
+const TRIAL_HIGHLIGHTS=[
+  ["🍽️","Restaurant or Supermarket","Pick your mode at signup and switch any time — both run in full"],
+  ["📋","Your own products","Start clean and add your real menu or stock, or load a sample to look around"],
+  ["☁️","Saved automatically","Your work is backed up to your mobile number — yesterday's sales are still there tomorrow"],
+  ["🧾","The whole system","POS, tables, reports, VAT dashboard, CRM, inventory and printing"],
+];
+
+const SA_CITIES=["Riyadh","Jeddah","Makkah","Madinah","Dammam","Khobar","Dhahran","Taif","Buraidah","Tabuk","Abha","Khamis Mushait","Hail","Najran","Jubail","Yanbu","Al Ahsa","Qatif","Other"];
+
+/** Trial doc → the shape beginTrial() and the local licence expect. */
+function trialDetailsFromDoc(key,d){
+  return {
+    key,
+    phone:d.phone||"",
+    businessName:d.businessName||"My Business",
+    ownerName:d.ownerName||"",
+    email:d.email||"",
+    city:d.city||"Riyadh",
+    businessType:d.businessType==="supermarket"?"supermarket":"restaurant",
+    startedAt:d.trialStartedAt||d.activatedAt||d.submittedAt||new Date().toISOString(),
+    endsAt:d.customExpiryDate?new Date(d.customExpiryDate+"T23:59:59").toISOString():new Date(Date.now()+TRIAL_DAYS*86400000).toISOString(),
+  };
+}
+
+/** The full-width invitation. Sits above the registration form. */
+function TrialInviteSection({onStart}){
+  // Set when a previous attempt couldn't isolate storage (private mode, blocked
+  // site data). Without this the button would just appear to do nothing.
+  const [failed]=useState(()=>consumeTrialStartError());
+  return(
+    <div dir="ltr" style={{background:"linear-gradient(135deg,rgba(240,165,0,0.14),rgba(26,107,74,0.14))",border:"1px solid rgba(240,165,0,0.4)",borderRadius:20,padding:"22px 24px",marginBottom:18}}>
+      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+        <span style={{fontSize:22}}>🎁</span>
+        <div>
+          <div style={{fontSize:16,fontWeight:800,color:"#fff"}}>Start a free {TRIAL_DAYS}-day trial</div>
+          <div style={{fontSize:12,color:"rgba(255,255,255,0.55)"}}>No license key, no CR or VAT, no card — just your mobile number</div>
+        </div>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(190px,1fr))",gap:8,margin:"14px 0"}}>
+        {TRIAL_HIGHLIGHTS.map(([icon,title,desc])=>(
+          <div key={title} style={{background:"rgba(0,0,0,0.18)",borderRadius:10,padding:"10px 12px"}}>
+            <div style={{fontSize:12,fontWeight:700,color:"#fff",marginBottom:2}}>{icon} {title}</div>
+            <div style={{fontSize:11,color:"rgba(255,255,255,0.5)",lineHeight:1.45}}>{desc}</div>
+          </div>
+        ))}
+      </div>
+      {failed&&(
+        <div style={{background:"rgba(217,64,64,0.18)",border:"1px solid rgba(217,64,64,0.45)",borderRadius:10,padding:"10px 12px",marginBottom:10,fontSize:12,color:"#ffb3b3",lineHeight:1.5}}>
+          The trial couldn't start — this browser won't let the app keep its storage separate. Try a normal (non-private) window, or allow site data for this site.
+        </div>
+      )}
+      <button onClick={onStart} type="button"
+        style={{width:"100%",padding:14,background:"linear-gradient(135deg,#F0A500,#e09000)",color:"#1a1200",border:"none",borderRadius:12,fontSize:15,fontWeight:800,cursor:"pointer",fontFamily:"inherit"}}>
+        ▶ Start my free {TRIAL_DAYS}-day trial
+      </button>
+    </div>
+  );
+}
+
+/** Compact version for the license / login screens. */
+function TrialInviteLink({onStart}){
+  return(
+    <button onClick={onStart} type="button" dir="ltr"
+      style={{width:"100%",marginTop:10,padding:"11px 14px",background:"rgba(240,165,0,0.12)",border:"1px solid rgba(240,165,0,0.35)",borderRadius:12,cursor:"pointer",fontFamily:"inherit",display:"flex",alignItems:"center",gap:10,textAlign:"left"}}>
+      <span style={{fontSize:18}}>🎁</span>
+      <div style={{flex:1}}>
+        <div style={{fontSize:13,fontWeight:700,color:"#F5C451"}}>Free {TRIAL_DAYS}-day trial</div>
+        <div style={{fontSize:11,color:"rgba(255,255,255,0.4)"}}>Restaurant or Supermarket · no license key needed</div>
+      </div>
+      <span style={{color:"rgba(240,165,0,0.6)"}}>→</span>
+    </button>
+  );
+}
+
+/**
+ * Trial signup. The mobile number is the account: it identifies the trial in
+ * the admin panel, keys the cloud backup, and is how the client resumes on
+ * another device. Exactly 10 digits, required.
+ */
+function TrialSignup({onClose}){
+  const [mode,setMode]=useState("new"); // "new" | "resume"
+  const [form,setForm]=useState({businessName:"",ownerName:"",phone:"",email:"",city:"Riyadh",businessType:"restaurant"});
+  const [resumePhone,setResumePhone]=useState("");
+  const [error,setError]=useState("");
+  const [busy,setBusy]=useState(false);
+  const set=(k,v)=>{setForm(f=>({...f,[k]:v}));setError("");};
+  const phoneDigits=normalizePhone(form.phone);
+
+  async function handleStart(){
+    setError("");
+    if(!form.businessName.trim())return setError("Business name is required.");
+    if(!form.ownerName.trim())return setError("Your name is required.");
+    if(!isValidMobile(form.phone))return setError("Enter your 10-digit mobile number (for example 0512345678). It's how your trial is saved and restored.");
+    setBusy(true);
+    const key=trialKeyForPhone(form.phone);
+    try{
+      const user=await ensureSignedIn();
+      const snap=await getDoc(doc(db,"pending_activations",key));
+      if(snap.exists()){
+        const d=snap.data();
+        const details=trialDetailsFromDoc(key,d);
+        if(new Date(details.endsAt).getTime()<Date.now()){
+          setBusy(false);
+          return setError("A trial for this mobile number has already finished. Register to keep using RestoPOS — your data is safe and will be restored.");
+        }
+        // Same number, trial still running: resume it rather than restart the clock.
+        beginTrial(details);
+        return;
+      }
+      const now=new Date();
+      const endsAt=new Date(now.getTime()+TRIAL_DAYS*86400000);
+      // status stays "pending" and credentialsApproved false — that is all a
+      // client is permitted to create under the Firestore rules. isTrial marks
+      // it for the admin panel's Trials tab; customExpiryDate drives both the
+      // "days left" column there and the client-side expiry watchdog.
+      await setDoc(doc(db,"pending_activations",key),{
+        licenseKey:key,
+        businessName:form.businessName.trim(),
+        ownerName:form.ownerName.trim(),
+        phone:phoneDigits,
+        email:form.email.trim().toLowerCase(),
+        city:form.city,
+        businessType:form.businessType,
+        crNumber:"",vatNumber:"",address:"",
+        isTrial:true,
+        trialSource:"self-serve",
+        trialStartedAt:now.toISOString(),
+        customExpiryDate:endsAt.toISOString().slice(0,10),
+        submittedAt:now.toISOString(),
+        activatedAt:now.toISOString(),
+        status:"pending",
+        credentialsApproved:false,
+        isActive:true,
+        forceLogout:false,
+        subscriptionPlan:"basic",
+        authUids:[user.uid],
+        deviceId:navigator.userAgent.slice(0,100),
+        deviceInfo:getDeviceInfo(),
+      });
+      beginTrial({
+        key,phone:phoneDigits,
+        businessName:form.businessName.trim(),
+        ownerName:form.ownerName.trim(),
+        email:form.email.trim().toLowerCase(),
+        city:form.city,businessType:form.businessType,
+        startedAt:now.toISOString(),endsAt:endsAt.toISOString(),
+      });
+    }catch(e){
+      setBusy(false);
+      setError("Couldn't start the trial: "+(e.message||"unknown error")+". Check your connection and try again.");
+    }
+  }
+
+  async function handleResume(){
+    setError("");
+    if(!isValidMobile(resumePhone))return setError("Enter the 10-digit mobile number you started the trial with.");
+    setBusy(true);
+    const key=trialKeyForPhone(resumePhone);
+    try{
+      await ensureSignedIn();
+      const snap=await getDoc(doc(db,"pending_activations",key));
+      if(!snap.exists()){
+        setBusy(false);
+        return setError("No trial found for that mobile number. Start a new one instead.");
+      }
+      const details=trialDetailsFromDoc(key,snap.data());
+      if(new Date(details.endsAt).getTime()<Date.now()){
+        setBusy(false);
+        return setError("That trial has finished. Register to keep using RestoPOS — your data is safe and will be restored.");
+      }
+      beginTrial(details);
+    }catch(e){
+      setBusy(false);
+      setError("Couldn't look that up: "+(e.message||"unknown error"));
+    }
+  }
+
+  const fieldStyle={width:"100%",padding:"12px 14px",background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:10,fontSize:14,color:"#fff",fontFamily:"inherit"};
+  const labelStyle={fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.6)",display:"block",marginBottom:6,marginTop:14};
+
+  return(
+    <div dir="ltr" style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.72)",zIndex:9000,display:"flex",alignItems:"center",justifyContent:"center",padding:18,fontFamily:"'Plus Jakarta Sans',sans-serif"}}>
+      <div style={{background:"#0F2340",border:"1px solid rgba(255,255,255,0.14)",borderRadius:20,width:"100%",maxWidth:500,maxHeight:"92vh",overflow:"auto",padding:26}}>
+        <div style={{display:"flex",gap:8,marginBottom:18}}>
+          {[["new",`🎁 Start ${TRIAL_DAYS}-day trial`],["resume","↩ Continue my trial"]].map(([id,label])=>(
+            <button key={id} onClick={()=>{setMode(id);setError("");}} type="button"
+              style={{flex:1,padding:"9px 8px",borderRadius:10,border:`1.5px solid ${mode===id?"#F0A500":"rgba(255,255,255,0.14)"}`,background:mode===id?"rgba(240,165,0,0.18)":"transparent",color:mode===id?"#F5C451":"rgba(255,255,255,0.5)",fontSize:12,fontWeight:800,cursor:"pointer",fontFamily:"inherit"}}>
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {mode==="new"?(
+          <>
+            <div style={{fontSize:19,fontWeight:900,color:"#fff",marginBottom:4}}>Your free {TRIAL_DAYS}-day trial</div>
+            <div style={{fontSize:13,color:"rgba(255,255,255,0.55)",lineHeight:1.6}}>
+              Everything you enter is saved against your mobile number, so you can close the browser, come back tomorrow and carry on.
+            </div>
+
+            <label style={labelStyle}>What are you running?</label>
+            <div style={{display:"flex",gap:10}}>
+              {[["restaurant","🍽️","Restaurant","Tables, dine-in, kitchen tickets"],["supermarket","🛒","Supermarket","Barcode checkout, weighed items"]].map(([v,icon,label,desc])=>(
+                <button key={v} onClick={()=>set("businessType",v)} type="button"
+                  style={{flex:1,padding:"12px",borderRadius:10,border:`2px solid ${form.businessType===v?"#1A6B4A":"rgba(255,255,255,0.15)"}`,background:form.businessType===v?"rgba(26,107,74,0.25)":"rgba(255,255,255,0.05)",color:form.businessType===v?"#7FFAB5":"rgba(255,255,255,0.6)",fontFamily:"inherit",cursor:"pointer",textAlign:"left"}}>
+                  <div style={{fontSize:20,marginBottom:4}}>{icon}</div>
+                  <div style={{fontSize:13,fontWeight:800}}>{label}</div>
+                  <div style={{fontSize:10,opacity:0.75,lineHeight:1.35,marginTop:2}}>{desc}</div>
+                </button>
+              ))}
+            </div>
+            <div style={{fontSize:11,color:"rgba(255,255,255,0.35)",marginTop:6}}>You can switch mode any time during the trial.</div>
+
+            <label style={labelStyle}>Business name *</label>
+            <input value={form.businessName} onChange={e=>set("businessName",e.target.value)} placeholder="e.g. Bayt Al Mandi" style={fieldStyle}/>
+
+            <label style={labelStyle}>Your name *</label>
+            <input value={form.ownerName} onChange={e=>set("ownerName",e.target.value)} placeholder="Owner / contact name" style={fieldStyle}/>
+
+            <label style={labelStyle}>Mobile number * <span style={{color:"#F0A500",fontWeight:800}}>(10 digits)</span></label>
+            <input value={form.phone} onChange={e=>set("phone",e.target.value)} inputMode="numeric" maxLength={14}
+              placeholder="0512345678"
+              style={{...fieldStyle,fontFamily:"monospace",fontSize:17,letterSpacing:"0.08em",
+                borderColor:form.phone&&!isValidMobile(form.phone)?"rgba(217,64,64,0.6)":"rgba(255,255,255,0.2)"}}/>
+            <div style={{fontSize:11,color:phoneDigits.length===10?"rgba(46,204,113,0.8)":"rgba(255,255,255,0.35)",marginTop:5}}>
+              {phoneDigits.length===10
+                ?"✓ This is how your trial is saved and how you'll get back into it."
+                :`${phoneDigits.length}/10 digits — required, this is your trial account.`}
+            </div>
+
+            <label style={labelStyle}>City</label>
+            <select value={form.city} onChange={e=>set("city",e.target.value)} style={fieldStyle}>
+              {SA_CITIES.map(c=><option key={c} value={c} style={{background:"#0F2340"}}>{c}</option>)}
+            </select>
+
+            <label style={labelStyle}>Email (optional)</label>
+            <input value={form.email} onChange={e=>set("email",e.target.value)} placeholder="you@business.com" style={fieldStyle}/>
+
+            <div style={{background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:12,padding:"14px 16px",margin:"18px 0 14px"}}>
+              <div style={{fontSize:12,fontWeight:800,color:"#F0A500",marginBottom:8}}>What a trial can't do</div>
+              {TRIAL_LIMITS.map(l=>(
+                <div key={l} style={{display:"flex",gap:8,marginBottom:6,fontSize:12,color:"rgba(255,255,255,0.62)",lineHeight:1.5}}>
+                  <span style={{color:"#2ECC71"}}>✓</span><span>{l}</span>
+                </div>
+              ))}
+            </div>
+
+            {error&&<div style={{padding:"10px 12px",background:"rgba(217,64,64,0.2)",border:"1px solid rgba(217,64,64,0.4)",borderRadius:10,fontSize:13,color:"#ff9d9d",marginBottom:12,lineHeight:1.5}}>{error}</div>}
+
+            <button onClick={handleStart} disabled={busy}
+              style={{width:"100%",padding:14,background:busy?"#444":"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:12,fontSize:15,fontWeight:800,cursor:busy?"wait":"pointer",fontFamily:"inherit"}}>
+              {busy?"Setting up your trial…":`▶ Start my ${TRIAL_DAYS} days`}
+            </button>
+          </>
+        ):(
+          <>
+            <div style={{fontSize:19,fontWeight:900,color:"#fff",marginBottom:4}}>Continue your trial</div>
+            <div style={{fontSize:13,color:"rgba(255,255,255,0.55)",lineHeight:1.6,marginBottom:4}}>
+              Enter the mobile number you signed up with. Your menu and sales — including previous days — will be restored onto this device.
+            </div>
+            <label style={labelStyle}>Mobile number (10 digits)</label>
+            <input value={resumePhone} onChange={e=>{setResumePhone(e.target.value);setError("");}} inputMode="numeric" maxLength={14}
+              placeholder="0512345678" style={{...fieldStyle,fontFamily:"monospace",fontSize:17,letterSpacing:"0.08em"}}/>
+            {error&&<div style={{marginTop:12,padding:"10px 12px",background:"rgba(217,64,64,0.2)",border:"1px solid rgba(217,64,64,0.4)",borderRadius:10,fontSize:13,color:"#ff9d9d",lineHeight:1.5}}>{error}</div>}
+            <button onClick={handleResume} disabled={busy}
+              style={{width:"100%",marginTop:16,padding:14,background:busy?"#444":"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:12,fontSize:15,fontWeight:800,cursor:busy?"wait":"pointer",fontFamily:"inherit"}}>
+              {busy?"Looking up your trial…":"↩ Restore my trial"}
+            </button>
+          </>
+        )}
+
+        <button onClick={onClose} disabled={busy}
+          style={{width:"100%",marginTop:10,padding:12,background:"transparent",color:"rgba(255,255,255,0.45)",border:"1px solid rgba(255,255,255,0.12)",borderRadius:12,fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Always-visible trial status bar: days left, mode switch, register CTA. */
+function TrialBanner({license,onModeChange,onRegister}){
+  const meta=trialMeta()||{};
+  const [showInfo,setShowInfo]=useState(false);
+  const days=trialDaysLeft();
+  const mode=getBusinessType(license);
+  const urgent=days<=3;
+  const bg=urgent?"linear-gradient(90deg,#D94040,#b83232)":"linear-gradient(90deg,#F0A500,#e09000)";
+  const fg=urgent?"#fff":"#1a1200";
+  const chip={padding:"4px 10px",background:urgent?"rgba(255,255,255,0.18)":"rgba(0,0,0,0.14)",border:"none",borderRadius:6,color:fg,fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"};
+
+  function switchMode(){
+    const next=mode==="supermarket"?"restaurant":"supermarket";
+    if(!window.confirm(`Switch this trial to ${next==="supermarket"?"Supermarket":"Restaurant"} mode?\n\nYour products and sales stay exactly as they are — only the till layout changes.`))return;
+    onModeChange(next);
+  }
+
+  return(
+    <>
+      <div style={{display:"flex",alignItems:"center",gap:10,padding:"6px 12px",background:bg,color:fg,flexShrink:0,fontSize:12,fontWeight:700,flexWrap:"wrap"}}>
+        <span>🎁 FREE TRIAL · {days===0?"last day":`${days} day${days===1?"":"s"} left`}</span>
+        <span style={{fontWeight:500,opacity:0.85}}>
+          {`${meta.businessName||"Your business"} · ${mode==="supermarket"?"Supermarket":"Restaurant"} mode · saved to ${meta.phone||"your mobile"}`}
+        </span>
+        <div style={{marginLeft:"auto",display:"flex",gap:8,flexWrap:"wrap"}}>
+          <button onClick={switchMode} style={chip}>⇄ {mode==="supermarket"?"Restaurant":"Supermarket"} mode</button>
+          <button onClick={()=>setShowInfo(true)} style={chip}>What's limited?</button>
+          <button onClick={onRegister}
+            style={{padding:"4px 12px",background:urgent?"#fff":"#1A3D2B",border:"none",borderRadius:6,color:urgent?"#b83232":"#fff",fontSize:11,fontWeight:800,cursor:"pointer",fontFamily:"inherit"}}>
+            Register now →
+          </button>
+        </div>
+      </div>
+      {showInfo&&(
+        <div dir="ltr" style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.7)",zIndex:9000,display:"flex",alignItems:"center",justifyContent:"center",padding:18}}>
+          <div style={{background:"#0F2340",border:"1px solid rgba(255,255,255,0.14)",borderRadius:18,width:"100%",maxWidth:470,padding:24,fontFamily:"'Plus Jakarta Sans',sans-serif",maxHeight:"90vh",overflow:"auto"}}>
+            <div style={{fontSize:17,fontWeight:900,color:"#fff",marginBottom:12}}>About your trial</div>
+            {TRIAL_LIMITS.map(l=>(
+              <div key={l} style={{display:"flex",gap:8,marginBottom:8,fontSize:13,color:"rgba(255,255,255,0.65)",lineHeight:1.55}}>
+                <span style={{color:"#F0A500"}}>•</span><span>{l}</span>
+              </div>
+            ))}
+            <div style={{fontSize:12,color:"rgba(255,255,255,0.4)",marginTop:12,lineHeight:1.6}}>
+              Everything else — billing, both business modes, your products, tables, reports, VAT, CRM, inventory and printing — behaves exactly as it does on a licensed terminal.
+            </div>
+            <div style={{background:"rgba(255,255,255,0.05)",borderRadius:10,padding:"12px 14px",marginTop:14,fontSize:12,color:"rgba(255,255,255,0.6)",lineHeight:1.6}}>
+              <strong style={{color:"#fff"}}>Trial account:</strong> {meta.phone||"—"}<br/>
+              <strong style={{color:"#fff"}}>Started:</strong> {meta.startedAt?fmtDate(meta.startedAt):"—"} · <strong style={{color:"#fff"}}>Ends:</strong> {meta.endsAt?fmtDate(meta.endsAt):"—"}
+            </div>
+            <button onClick={()=>setShowInfo(false)}
+              style={{width:"100%",marginTop:16,padding:12,background:"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:12,fontSize:14,fontWeight:800,cursor:"pointer",fontFamily:"inherit"}}>Got it</button>
+            <button onClick={()=>{if(window.confirm("Step out of the trial?\n\nNothing is deleted — your data stays backed up and the same mobile number brings it all back."))leaveTrial();}}
+              style={{width:"100%",marginTop:8,padding:10,background:"transparent",color:"rgba(255,255,255,0.35)",border:"1px solid rgba(255,255,255,0.12)",borderRadius:10,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>Leave the trial for now</button>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+/** Shown once the 14 days are up. The data is not deleted — it's waiting. */
+function TrialEndedScreen({onRegister}){
+  const meta=trialMeta()||{};
+  return(
+    <div dir="ltr" style={{position:"fixed",inset:0,background:"#0a1628",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",zIndex:99999,fontFamily:"'Plus Jakarta Sans',sans-serif",padding:20}}>
+      <div style={{width:90,height:90,borderRadius:"50%",background:"rgba(240,165,0,0.12)",border:"2px solid rgba(240,165,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:40,marginBottom:24}}>🎁</div>
+      <div style={{fontSize:24,fontWeight:900,color:"#F0A500",marginBottom:12,textAlign:"center"}}>Your {TRIAL_DAYS}-day trial has ended</div>
+      <div style={{fontSize:14,color:"rgba(255,255,255,0.6)",textAlign:"center",maxWidth:420,lineHeight:1.7,marginBottom:8}}>
+        Thanks for trying RestoPOS. <strong style={{color:"#fff"}}>Nothing has been deleted</strong> — your products, customers and every invoice from the last {TRIAL_DAYS} days are backed up against {meta.phone||"your mobile number"}.
+      </div>
+      <div style={{fontSize:13,color:"rgba(255,255,255,0.4)",textAlign:"center",maxWidth:420,lineHeight:1.6,marginBottom:26}}>
+        Register your business and we'll restore all of it onto your licensed terminal.
+      </div>
+      <button onClick={onRegister}
+        style={{padding:"14px 30px",background:"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:12,fontSize:15,fontWeight:800,cursor:"pointer",fontFamily:"inherit"}}>
+        Register my business →
+      </button>
+      <div style={{marginTop:22,padding:"12px 20px",background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:12,fontSize:12,color:"rgba(255,255,255,0.45)",textAlign:"center",lineHeight:1.7}}>
+        Need more time or want to talk it through?<br/>
+        📞 +966 53 836 0053 · 📧 restopos.noreply@gmail.com
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // BUSINESS REGISTRATION
 // ═══════════════════════════════════════════════════════════════════
-function BusinessRegistration({onNext,onLogin}){
+function BusinessRegistration({onNext,onLogin,onTryTrial}){
   const [form,setForm]=useState({businessName:"",businessNameAr:"",ownerName:"",email:"",crNumber:"",vatNumber:"",address:"",city:"Riyadh",phone:"",businessType:"restaurant"});
   const [isOwner,setIsOwner]=useState(null);
   const [error,setError]=useState("");
@@ -2345,6 +2768,7 @@ function BusinessRegistration({onNext,onLogin}){
             <div style={{textAlign:"left"}}><div style={{fontSize:26,fontWeight:900,color:"#fff",lineHeight:1}}>RestoPOS</div><div style={{fontSize:10,color:"rgba(255,255,255,0.5)",letterSpacing:"0.15em"}}>ZATCA PHASE 2 READY · KSA</div></div>
           </div>
         </div>
+        {onTryTrial&&<TrialInviteSection onStart={onTryTrial}/>}
         <div style={{background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:20,padding:32,backdropFilter:"blur(12px)"}}>
           <div style={{fontSize:18,fontWeight:800,color:"#fff",marginBottom:6}}>Business Registration</div>
           <div style={{fontSize:13,color:"rgba(255,255,255,0.5)",marginBottom:20}}>Step 1 of 2 — Enter your business details</div>
@@ -2433,7 +2857,7 @@ function BusinessRegistration({onNext,onLogin}){
 // ═══════════════════════════════════════════════════════════════════
 // LICENSE VERIFICATION
 // ═══════════════════════════════════════════════════════════════════
-function LicenseVerification({businessData,onSuccess,onBack,onLogin}){
+function LicenseVerification({businessData,onSuccess,onBack,onLogin,onTryTrial}){
   const [uploading,setUploading]=useState(false);
   const [key,setKey]=useState("");const [error,setError]=useState("");const [loading,setLoading]=useState(false);
   async function handleVerify(){
@@ -2528,6 +2952,7 @@ function LicenseVerification({businessData,onSuccess,onBack,onLogin}){
           <div style={{textAlign:"center",marginTop:14,paddingTop:14,borderTop:"1px solid rgba(255,255,255,0.1)"}}>
             <span style={{fontSize:12,color:"rgba(255,255,255,0.4)"}}>Already have an account? </span>
             <button onClick={onLogin} style={{background:"none",border:"none",color:"rgba(46,204,113,0.8)",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit",textDecoration:"underline"}}>Sign In</button>
+            {onTryTrial&&<TrialInviteLink onStart={onTryTrial}/>}
           </div>
 
         </div>
@@ -4629,7 +5054,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     });
   },[items,activeCat,savedCats,favourites,effOrder]);
   return(
-    <div style={{display:"flex",height:"calc(100vh - 52px)",overflow:"hidden"}}>
+    <div style={{display:"flex",height:`calc(100vh - ${TRIAL?82:52}px)`,overflow:"hidden"}}>
       {/* Previous Bills — step backward through printed invoices */}
       {showPrevBill&&(()=>{
         const printedAll=(sales||[]).filter(s=>s.status!=="voided").slice().sort((a,b)=>{
@@ -8554,6 +8979,7 @@ function OwnerDashboardInline(){
   const [mapClient,setMapClient]=useState(null);
 
   useEffect(()=>{
+    if(TRIAL){setLoading(false);return;} // the owner console reads every real tenant
     async function load(){
       try{
         const aSnap=await getDocs(collection(db,"pending_activations"));
@@ -9475,6 +9901,7 @@ function ArchiveExportPanel({license,lang="en"}){
   }
 
   async function runEstimate(){
+    if(TRIAL){setError("Archive export needs a registered business — it reads the permanent 5-year ZATCA archive, which trial invoices are deliberately kept out of.");return;}
     if(!sellerVat){setError("No VAT number found on this license — can't scope an export.");return;}
     setEstimating(true);setError("");setEstimate(null);
     try{
@@ -9490,6 +9917,7 @@ function ArchiveExportPanel({license,lang="en"}){
   }
 
   async function runExport(){
+    if(TRIAL){setError("Archive export needs a registered business — it reads the permanent 5-year ZATCA archive, which trial invoices are deliberately kept out of.");return;}
     if(!sellerVat){setError("No VAT number found on this license — can't scope an export.");return;}
     setRunning(true);setError("");setDoneMsg("");setProgress(0);cancelRef.current=false;
     let lastDoc=null,fetched=0;
@@ -9679,6 +10107,7 @@ function Help({license: helpLicense, lang="en", onLogout}){
     setChatSending(false);
   }
   async function sendMessage(){
+    if(TRIAL){trialBlocked("The AI assistant","It runs on a paid API that we keep for licensed clients. Live chat and support tickets are open to you.");return;}
     if(!aiInput.trim()||aiLoading)return;const userMsg=aiInput.trim();setAiInput("");setAiMessages(prev=>[...prev,{role:"user",content:userMsg}]);setAiLoading(true);
     try{
       // The Anthropic API key stays server-side. The aiChat Cloud Function holds
@@ -10670,6 +11099,7 @@ function ZATCASetup({license,sales=[]}){
   ];
 
   async function handleActivate(){
+    if(TRIAL){setMsg("⚠️ ZATCA Phase 2 onboarding needs a registered business — it issues real production certificates against your CR and VAT number. Register to activate it.");return;}
     if(!license?.licenseKey){setMsg("⚠️ No license key found. Please re-activate RestoPOS first.");return;}
     if(!vatNumber||!/^3\d{14}$/.test(vatNumber)){setMsg("⚠️ Enter a valid 15-digit VAT number starting with 3.");return;}
     if(!companyName){setMsg("⚠️ Company name is required.");return;}
@@ -14687,6 +15117,38 @@ function usePWAInstall(){
   return{prompt,installed,install,showInstructions,setShowInstructions};
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// TRIAL RECEIPT STAMP
+// A trial receipt carries a real-looking ZATCA QR, but the account has no
+// CSID and nothing is reported to FATOORA, so it must never be mistakable
+// for a tax invoice. Every printed/previewed document gets a header and
+// footer saying so. Applied by wrapping the builders once, at module load,
+// rather than threading a flag through all of them.
+// ═══════════════════════════════════════════════════════════════════
+const TRIAL_STAMP_MARK="restopos-trial-stamp";
+function trialStampHTML(html){
+  if(typeof html!=="string"||html.includes(TRIAL_STAMP_MARK))return html;
+  const bar=(txt)=>`<div class="${TRIAL_STAMP_MARK}" style="text-align:center;font-family:'Courier New',monospace;font-size:11px;font-weight:bold;color:#000;border:2px dashed #000;padding:4px 2px;margin:4px 0;line-height:1.35">${txt}</div>`;
+  const top=bar("*** TRIAL RECEIPT ***<br/>NOT A VALID TAX INVOICE<br/>إيصال تجريبي — ليست فاتورة ضريبية");
+  const bottom=bar("RestoPOS free trial.<br/>Not reported to ZATCA.");
+  let out=html;
+  if(out.includes("<body"))out=out.replace(/(<body[^>]*>)/i,`$1${top}`);
+  else out=top+out;
+  if(out.includes("</body>"))out=out.replace("</body>",bottom+"</body>");
+  else out=out+bottom;
+  return out;
+}
+if(TRIAL){
+  const _rcpt=buildReceiptHTML,_preset=buildPresetHTML,_draft=buildDraftReceiptHTML,_kot=buildKOTHtml,_pkot=buildPresetKOT;
+  // trialStampHTML is idempotent, so the builders that delegate to each other
+  // (buildReceiptHTML → buildPresetHTML) stamp exactly once.
+  buildReceiptHTML=(...a)=>trialStampHTML(_rcpt(...a));
+  buildPresetHTML=(...a)=>trialStampHTML(_preset(...a));
+  buildDraftReceiptHTML=(...a)=>trialStampHTML(_draft(...a));
+  buildKOTHtml=(...a)=>trialStampHTML(_kot(...a));
+  buildPresetKOT=(...a)=>trialStampHTML(_pkot(...a));
+}
+
 export default function App(){
   const [step,setStep]=useState("checking");const [businessData,setBusinessData]=useState(null);const [license,setLicense]=useState(null);const [currentUser,setCurrentUser]=useState(null);const [screen,_setScreen]=useState(()=>{
     // Crash-recovery: if the error boundary set this, honor it once then clear.
@@ -14696,6 +15158,10 @@ export default function App(){
   });
   function setScreen(s){_setScreen(s);LS.set("restopos_last_screen",s);}
   const [terminated,setTerminated]=useState(null);
+  const [showTrialSignup,setShowTrialSignup]=useState(false);
+  // Local expiry check so an offline trial still locks on day 15; the
+  // kill-switch watchdog overrides it from the server whenever we're online.
+  const [trialOver,setTrialOver]=useState(()=>TRIAL&&trialExpired());
   // Daily token (top-bar box) — updates live when an invoice increments it.
   const [dailyToken,setDailyToken]=useState(()=>getDailyToken());
   // ZATCA Invoice number (ICV) — reads current counter, updates live on real invoices only
@@ -14726,6 +15192,14 @@ export default function App(){
   const [sessionTimeoutMin,setSessionTimeoutMin]=useState(()=>parseInt(localStorage.getItem("restopos_session_timeout")||"30"));
   function handleSessionTimeoutChange(v){const t=Math.max(5,Math.min(480,parseInt(v)||30));setSessionTimeoutMin(t);localStorage.setItem("restopos_session_timeout",String(t));}
   useSessionTimeout(currentUser,()=>{setCurrentUser(null);setStep("login");},sessionTimeoutMin);
+  // Trial countdown — re-checked every minute so a till left running overnight
+  // locks on time even with no connection.
+  useEffect(()=>{
+    if(!TRIAL)return;
+    const id=setInterval(()=>setTrialOver(trialExpired()),60000);
+    return()=>clearInterval(id);
+  },[]);
+
   
   // Offline sync state
   const {isOnline,syncQueue,justCameOnline}=useOfflineSync();
@@ -14735,7 +15209,7 @@ export default function App(){
   // permanent Firestore archive, so a cleared browser or a new device
   // doesn't lose 5-year ZATCA history or break invoice continuity.
   // ═══════════════════════════════════════════════════════════════════
-  useEffect(()=>{ if(license?.vatNumber)invoiceStorage.syncFromFirestore(license.vatNumber); },[license?.vatNumber]);
+  useEffect(()=>{ if(!TRIAL&&license?.vatNumber)invoiceStorage.syncFromFirestore(license.vatNumber); },[license?.vatNumber]);
   useEffect(()=>{ if(license?.licenseKey)registerDeviceUid(license.licenseKey,license.vatNumber); },[license?.licenseKey,license?.vatNumber]);
   // ═══════════════════════════════════════════════════════════════════
   // OFFLINE ZATCA AUTO-SYNC — auto-reports queued invoices when back online
@@ -14859,8 +15333,14 @@ export default function App(){
     if(!savedLic?.licenseKey)return;
     const hasLocalData=localStorage.getItem("restopos_items");
     if(!hasLocalData){
-      // New device — restore everything from Firestore
-      restoreFromFirestore(savedLic.licenseKey).then(restored=>{
+      // New device — restore everything from Firestore. Register this device's
+      // UID on the account FIRST: client_data reads are gated on the caller
+      // being in authUids, so racing the two loses the restore to a
+      // permission error. This matters most when a trial is resumed on a
+      // second device from its mobile number.
+      registerDeviceUid(savedLic.licenseKey,savedLic.vatNumber)
+        .then(()=>restoreFromFirestore(savedLic.licenseKey))
+        .then(restored=>{
         if(restored){
           // Reload state from localStorage after restore
           _setItems(LS.get("restopos_items")||[]);
@@ -14924,6 +15404,13 @@ export default function App(){
         if(expiry&&new Date()>expiry){
           setTerminated("expired");
         }
+        // A trial's end date lives on the server, so the admin panel's
+        // Extend buttons take effect here immediately.
+        if(TRIAL&&data.customExpiryDate){
+          const endsAt=new Date(data.customExpiryDate+"T23:59:59").toISOString();
+          if(trialMeta()?.endsAt!==endsAt)syncTrialMeta({endsAt});
+          setTrialOver(trialExpired());
+        }
         // ── Admin notification popup ──────────────────────────────────
         if(data.notification?.text&&!data.notification?.read){
           setAdminNotification(data.notification);
@@ -14979,6 +15466,16 @@ export default function App(){
           const existingIds=new Set(existing.map(s=>s.id));
           const merged=[...existing,...sales.filter(s=>!existingIds.has(s.id))];
           localStorage.setItem(key,JSON.stringify(merged));
+          // Back the archive bucket up too, but only on a trial. A trial is
+          // capped at 14 days, so the bucket stays small, and restoring it is
+          // what lets a resumed trial still show its earlier days. Real
+          // clients keep the existing behaviour: their archives can span years
+          // and would risk blowing Firestore's 1 MB document limit, which
+          // would take the whole client_data sync down with it.
+          if(TRIAL){
+            const licArch=LS.get("restopos_license_v2")?.licenseKey;
+            if(licArch)debouncedSync(licArch,key,merged);
+          }
         }catch(e){/* storage full — skip archiving this batch */}
       });
       LS.set("restopos_sales",recent);
@@ -15022,6 +15519,29 @@ export default function App(){
     const deduped=archived.filter(s=>{if(seen.has(s.id))return false;seen.add(s.id);return true;});
     return[...sales,...deduped].sort((a,b)=>b.date.localeCompare(a.date)||b.id.localeCompare(a.id));
   },[sales,salesVersion]);
+  // ── TRIAL DATA MIRROR ──────────────────────────────────────────────
+  // Push a readable copy of everything this trial does into Firebase, so the
+  // operator can browse it in the console instead of squinting at the JSON
+  // blobs in client_data. Debounced inside the mirror; best-effort throughout.
+  const trialSnapshot=useCallback(()=>({
+    meta:trialMeta(),
+    license:LS.get("restopos_license_v2"),
+    sales:allSales,
+    items,
+    customers:LS.get("restopos_customers")||[],
+    appVersion:APP_VERSION,
+  }),[allSales,items]);
+  useEffect(()=>{
+    if(!TRIAL)return;
+    mirrorTrialData(trialSnapshot());
+  },[trialSnapshot]);
+  useEffect(()=>{
+    if(!TRIAL)return;
+    // Catch the last few sales of a shift before the tab goes away.
+    const onHide=()=>{ if(document.visibilityState==="hidden")flushTrialMirror(trialSnapshot()); };
+    document.addEventListener("visibilitychange",onHide);
+    return()=>document.removeEventListener("visibilitychange",onHide);
+  },[trialSnapshot]);
   function setItems(v){_setItems(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_items",n);const _lic_setItems=LS.get("restopos_license_v2")?.licenseKey;if(_lic_setItems)debouncedSync(_lic_setItems,"restopos_items",n);if(n.length!==p.length)logActivity(n.length>p.length?"ITEM_ADDED":"ITEM_DELETED",{after:{itemCount:n.length}},currentUser?.role||"System");return n;});}
   function setTables(v){_setTables(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_tables",n);const lic=LS.get("restopos_license_v2")?.licenseKey;if(lic)debouncedSync(lic,"restopos_tables",n);return n;});}
   function setUsers(v){_setUsers(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_users",n);if(n.length!==p.length)logActivity(n.length>p.length?"USER_ADDED":"USER_DELETED",{after:{userCount:n.length}},currentUser?.role||"System");return n;});}
@@ -15032,6 +15552,14 @@ export default function App(){
   const [uiScale,setUiScale]=useState(()=>{const v=parseInt(LS.get("restopos_ui_scale")||"100");return isNaN(v)?100:v;});
   function handleScaleChange(v){const s=Math.max(70,Math.min(130,parseInt(v)||100));setUiScale(s);LS.set("restopos_ui_scale",String(s));}
   useEffect(()=>{
+    if(TRIAL){
+      // Straight into the till as Admin — a trial client shouldn't have to
+      // invent a license key or a role PIN to start entering their products.
+      setLicense(LS.get("restopos_license_v2")||trialLicense());
+      setCurrentUser({role:"Admin",name:trialMeta()?.ownerName||"Owner"});
+      setStep("app");
+      return;
+    }
     const saved=LS.get("restopos_license_v2");
     const pendingId=localStorage.getItem("restopos_pending_id");
     const creds=LS.get("restopos_client_creds");
@@ -15043,11 +15571,37 @@ export default function App(){
     }else if(pendingId){setStep("license");}
     else setStep("register");
   },[]);
+  // Trial mode switch — flip the local licence and mirror it onto the trial
+  // document so the admin panel and any other device stay in step.
+  function handleTrialModeChange(next){
+    const bt=setTrialBusinessType(next);
+    const lic={...(LS.get("restopos_license_v2")||trialLicense()),businessType:bt};
+    LS.set("restopos_license_v2",lic);
+    setLicense(lic);
+    const key=trialMeta()?.key;
+    if(key)updateDoc(doc(db,"pending_activations",key),{businessType:bt,businessTypeUpdatedAt:new Date().toISOString()}).catch(()=>{});
+    window.location.reload(); // the till layout is chosen at mount
+  }
+  // "Register now" — carry the trial's products and sales into the real
+  // workspace so nothing is retyped, then run the normal registration flow.
+  function handleRegisterFromTrial(){
+    const res=promoteTrialWorkspace();
+    if(!res.ok&&res.reason==="occupied"){
+      alert("Another RestoPOS account is already set up on this browser, so your trial data has been left where it is rather than overwriting it.\n\nRegister on a clean device and sign in with your mobile number to restore the trial data there.");
+      leaveTrial();
+      return;
+    }
+    window.location.reload();
+  }
   function handleClearLicense(){LS.del("restopos_license_v2");LS.del("restopos_pins");setLicense(null);setCurrentUser(null);setStep("register");}
   function handleSwitchAccount(){LS.del("restopos_license_v2");LS.del("restopos_client_creds");setLicense(null);setCurrentUser(null);setStep("register");}
   const ALL_NAV=[["dashboard","📊","Dashboard",["Admin","Manager"]],["pos","🖥️","POS",["Admin","Manager","Cashier"]],["settings","⚙️","Settings",["Admin"]],["create","➕","Create",["Admin","Manager"]],["transactions","💳","Transactions",["Admin","Manager"]],["financials","🏦","Financials",["Admin","Manager"]],["customers","👥","CRM",["Admin","Manager"]],["reports","📋","Reports",["Admin","Manager"]],["advanced","⚡","Advanced",["Admin","Manager"]],["inventory","📦","Inventory",["Admin","Manager"]],["vat","🧾","VAT",["Admin","Manager"]],["shifts","🔄","Shifts",["Admin","Manager"]],["help","❓","Help",["Admin","Manager","Cashier"]]];
   const NAV=ALL_NAV.filter(([,,,roles])=>currentUser&&roles.includes(currentUser.role));
   if(step==="checking")return<div style={{minHeight:"100vh",background:"#0a1628",display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{color:"#fff",fontSize:16}}>Loading…</div></div>;
+  // Day 15: the trial locks, but nothing is deleted — the workspace and its
+  // cloud copy both stay put, waiting for the client to register. Checked
+  // before the generic expiry screen so trial clients get the right message.
+  if(TRIAL&&(trialOver||terminated==="expired"))return<TrialEndedScreen onRegister={handleRegisterFromTrial}/>;
   if(terminated==="deactivated")return(
     <div style={{position:"fixed",inset:0,background:"#0a0a0a",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",zIndex:99999,fontFamily:"'Plus Jakarta Sans',sans-serif",padding:20}}>
       <div style={{width:90,height:90,borderRadius:"50%",background:"rgba(217,64,64,0.12)",border:"2px solid rgba(217,64,64,0.5)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:40,marginBottom:24}}>🔴</div>
@@ -15078,17 +15632,22 @@ export default function App(){
       </div>
     </div>
   );
-  if(step==="register")return<BusinessRegistration onNext={(data)=>{setBusinessData(data);setStep("license");}} onLogin={()=>setStep("clientLogin")}/>;
-  if(step==="license")return<LicenseVerification businessData={businessData||{businessName:"",crNumber:"",vatNumber:"",address:"",city:"",phone:""}} onSuccess={(lic)=>{setLicense(lic);setStep("setCredentials");}} onBack={()=>setStep("register")} onLogin={()=>setStep("clientLogin")}/>;
+  const tryTrial=()=>setShowTrialSignup(true);
+  const trialSignup=showTrialSignup?<TrialSignup onClose={()=>setShowTrialSignup(false)}/>:null;
+  // Day 15: the trial locks, but nothing is deleted — the workspace and its
+  // cloud copy both stay put, waiting for the client to register.
+  if(step==="register")return<>{trialSignup}<BusinessRegistration onNext={(data)=>{setBusinessData(data);setStep("license");}} onLogin={()=>setStep("clientLogin")} onTryTrial={tryTrial}/></>;
+  if(step==="license")return<>{trialSignup}<LicenseVerification businessData={businessData||{businessName:"",crNumber:"",vatNumber:"",address:"",city:"",phone:""}} onSuccess={(lic)=>{setLicense(lic);setStep("setCredentials");}} onBack={()=>setStep("register")} onLogin={()=>setStep("clientLogin")} onTryTrial={tryTrial}/></>;
   if(step==="setCredentials")return<SetCredentials license={license} onDone={()=>setStep("pendingApproval")}/>;
   if(step==="pendingApproval")return<PendingApprovalScreen license={license} onApproved={()=>setStep("clientLogin")} onSwitchAccount={handleSwitchAccount}/>;
-  if(step==="clientLogin")return<ClientLogin license={license} onSuccess={()=>setStep("login")} onForgotPassword={()=>setStep("forgotPassword")} onBack={()=>setStep("login")}/>;
+  if(step==="clientLogin")return<>{trialSignup}<ClientLogin license={license} onSuccess={()=>setStep("login")} onForgotPassword={()=>setStep("forgotPassword")} onBack={()=>setStep("login")} onTryTrial={tryTrial}/></>;
   if(step==="forgotPassword")return<ForgotPassword onBack={()=>setStep("clientLogin")} onReset={()=>setStep("clientLogin")}/>;
   if(step==="login"||!currentUser)return<RoleLogin license={license} lang={lang} onLogin={(user)=>{setCurrentUser(user);setStep("app");if(user.role==="Cashier")setScreen("pos");}} onClientLogin={()=>setStep("clientLogin")}/>;
   return(
     <ErrorBoundary>
     <div dir={dir(lang)} style={{fontFamily:lang==="ar"?"'Tajawal','Plus Jakarta Sans',sans-serif":"'Plus Jakarta Sans','Tajawal',sans-serif",background:C.bg,height:"100vh",display:"flex",flexDirection:"column",overflow:"hidden",zoom:`${uiScale}%`}}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Tajawal:wght@400;500;700;800&display=swap');html,body,#root{height:100%;margin:0;padding:0;width:100%}*{box-sizing:border-box;margin:0;padding:0}::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-track{background:${C.bg}}::-webkit-scrollbar-thumb{background:${C.border};border-radius:3px}input,select{outline:none}input:focus,select:focus{border-color:${C.primary}!important}@media print{header,nav{display:none!important}}${lang==="ar"?"body,button,input,select,textarea{font-family:'Tajawal',sans-serif!important}":""}`}</style>
+      {TRIAL&&<TrialBanner license={license} onModeChange={handleTrialModeChange} onRegister={handleRegisterFromTrial}/>}
       <div style={{display:"flex",alignItems:"stretch",flexShrink:0,zIndex:100,boxShadow:"0 2px 12px rgba(0,0,0,0.18)",minHeight:50,width:"100%",flexWrap:"nowrap"}}>
         <div style={{background:"linear-gradient(135deg,#1A3D2B 0%,#1F4D36 100%)",display:"flex",alignItems:"center",gap:8,padding:"0 12px",flexShrink:0,borderRight:"1px solid rgba(255,255,255,0.1)"}}>
           <div style={{width:26,height:26,background:"linear-gradient(135deg,#2ECC71,#F0A500)",borderRadius:6,display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontSize:13,fontWeight:900,flexShrink:0}}>R</div>

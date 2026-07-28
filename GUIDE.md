@@ -143,6 +143,126 @@ keychain.
 
 This is the customer onboarding lifecycle.
 
+### Step 0 — Free 14-day trial (optional, before any of the above)
+
+The registration screen leads with **Start a free 14-day trial**. A prospect
+picks Restaurant or Supermarket, gives a business name, their name and a
+**10-digit mobile number** (mandatory), and lands straight in the POS as Admin
+with a clean till — no license key, no CR/VAT, no admin approval.
+
+**The mobile number is the account.** It is the Firestore doc id
+(`TRIAL-<10 digits>`), the cloud-backup key, and how the client resumes on a
+second device via **↩ Continue my trial**. One trial per number: signing up
+again with the same number resumes the running trial rather than restarting
+the clock, and a finished trial is told to register.
+
+**Both business modes run in full.** The trial licence carries `businessType`,
+so Supermarket mode gets barcode-first checkout and weighed items while
+Restaurant mode gets tables, dine-in and KOT. The banner's **⇄ mode** button
+switches between them mid-trial — products and sales are untouched, only the
+till layout changes, and the new mode is written back to the trial document so
+the admin panel and any other device follow.
+
+A trial is **completely empty on entry** — no demo products, no fake sales,
+nothing to delete before the client can start. The first thing in the till is
+their own menu. Anyone who wants to see a stocked system looks at the preview
+gallery on the landing page instead (`landing/shots/`), which is real
+screenshots of a sample business and is labelled as such.
+
+**What the operator sees.** Signup writes `pending_activations/TRIAL-<mobile>`
+with `isTrial: true`, `trialSource: "self-serve"`, `businessType`,
+`trialStartedAt` and `customExpiryDate` = start + 14 days. It appears in the
+admin panel's **Trials** tab — mobile number, business type, owner, city, days
+remaining — and is deliberately kept out of the Pending approval queue, which
+is for license activations. **Extend +7/+14/+30** and **Convert to paid** work
+on it: extend edits `customExpiryDate`, which the client's kill-switch watchdog
+picks up live; converting also flips `status` to approved so the client isn't
+locked out.
+
+No Firestore rules change was needed: a client may only create an activation
+with `status: "pending"` and `credentialsApproved: false`, which is exactly
+what the trial does. `client_data/TRIAL-<mobile>` is gated on the device UID
+being in the document's `authUids`, set at creation and topped up by
+`registerDeviceUid` on each new device.
+
+**Seeing trial data in Firebase** (`src/trialMirror.js`). `client_data/{key}`
+stores each localStorage key as one long JSON *string* — it restores a device
+perfectly and is unreadable in the console. So a trial also mirrors itself into
+a `trials` collection as real documents:
+
+```
+trials/TRIAL-05xxxxxxxx            ← usage summary (read this one)
+  ├── sales/{INV-1042}             ← every invoice, one document each
+  ├── products/{itemId}            ← their catalogue
+  └── customers/{customerId}       ← their CRM
+```
+
+The summary carries who signed up (mobile, business, owner, city, mode), where
+they are in the 14 days (`daysUsed`, `daysLeft`, `expired`) and what they have
+actually done: `productCount`, `invoiceCount`, `revenueTotal`, `vatTotal`,
+`averageOrder`, `activeDays`, `firstSaleAt`/`lastSaleAt`, `salesByDay`,
+`paymentMix`, `topProducts` and `lastActiveAt` — enough to tell a live trial
+from an abandoned one at a glance.
+
+Writes are debounced (6 s), diffed against a per-row fingerprint so unchanged
+rows are never rewritten, batched under Firestore's 500-op cap, and flushed
+when the tab is hidden. Every path is best-effort: a failed mirror write logs
+and is dropped, it never interrupts the till. `client_data` remains the restore
+path — this is a readable view alongside it, not a replacement.
+
+> **This needs a rules deploy.** `trials` is a new collection, and the default
+> rule denies everything not matched, so until
+> `firebase deploy --only firestore:rules` runs, every mirror write is rejected
+> and the admin panel's Trials tab shows "No activity mirrored yet". Nothing
+> else breaks — the trial itself and `client_data` backup are unaffected.
+
+**Data retention** (`src/trial.js`):
+
+- `main.jsx` calls `installTrialWorkspace()` **before** `App.jsx` — and therefore
+  Firebase — is imported, prefixing every localStorage key with
+  `restopos_trial::<key>::`. Existing code is unchanged; it just reads and
+  writes an isolated namespace. A trial can never overwrite a real account's
+  menu, sales or ZATCA hash chain on the same browser, and two trials don't
+  collide.
+- Everything syncs to `client_data` exactly like a paid client. Monthly sales
+  archive buckets (`restopos_sales_YYYY-MM`) are synced **for trials only** —
+  a trial is capped at 14 days so the buckets stay small, and restoring them is
+  what lets a resumed trial still show its earlier days. Real clients keep the
+  old behaviour, because their archives can span years and would risk
+  Firestore's 1 MB document limit.
+- **Register now** runs `promoteTrialWorkspace()`, lifting the namespace into
+  the real one so 14 days of work survives becoming a paying client. It refuses
+  when another account already occupies the real namespace, and says so.
+
+**What a trial cannot do.** It has no CSID, so `reportToFatoora` and
+`clearanceB2BInvoice` run `simulateZatcaSubmission()` — the queue and VAT
+dashboard behave, records are flagged `trial_simulated`, nothing reaches
+FATOORA — and every printed document is stamped **TRIAL RECEIPT — NOT A VALID
+TAX INVOICE** (bilingual). Trial invoices are also kept out of the shared
+`zatca_invoices` archive, so the 5-year store holds only real tax invoices.
+Phase 2 onboarding, archive export, the paid AI assistant and the owner console
+are blocked. Live chat and support tickets stay open — trial clients are leads.
+
+**Expiry.** `customExpiryDate` is enforced by the existing kill-switch watchdog
+when online, and by a local one-minute ticker against the stored end date when
+offline, so a till left running overnight still locks on time. The client sees
+a trial-specific screen making clear nothing was deleted.
+
+**In the admin panel.** The Trials tab shows each trial's usage inline —
+products, invoices, revenue, VAT, active days, last seen — and **🔍 View their
+data** opens their actual invoices and catalogue, read straight from the
+`trials` subcollections.
+
+**Preview gallery.** `landing/shots/*.jpg` are real screenshots of the app —
+POS, dashboard, transactions, reports, VAT, inventory, customers, financials —
+captured from a seeded sample business. To refresh them after a UI change,
+re-run the capture against a local dev server rather than editing images.
+
+**Optional: a trial-only deployment.** Building with `VITE_TRIAL_MODE=true`
+makes a whole deployment a trial — useful for `try.restopos.store` on a second
+Vercel project. Set `VITE_TRIAL_EXIT_URL=https://restopos.store` so the
+Register button sends visitors to the real site.
+
 ### Step 1 — License activation
 1. Open the app. On first run you're on the **License** screen.
 2. **Choose your business type — Restaurant or Supermarket** (top of the
