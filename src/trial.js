@@ -91,11 +91,21 @@ function loadMeta(store) {
   return m;
 }
 
-/** Days remaining, rounded up; 0 once expired. Never negative. */
+/**
+ * Whole days remaining, counting calendar days rather than elapsed hours.
+ *
+ * A trial ends at the END of its last day: the server stores customExpiryDate
+ * as a date, and the watchdog reads it back as <date>T23:59:59. Measuring that
+ * against "right now" leaves 14 days plus part of today, which rounds up to 15
+ * on a 14-day trial. Comparing end-of-day to end-of-day gives the number a
+ * person would count. Rounded, not floored, so a DST shift can't drop a day.
+ */
 export function trialDaysLeft(meta) {
   const m = meta || _meta;
   if (!m || !m.endsAt) return 0;
-  return Math.max(0, Math.ceil((new Date(m.endsAt).getTime() - Date.now()) / 86400000));
+  const end = new Date(m.endsAt); end.setHours(23, 59, 59, 999);
+  const today = new Date(); today.setHours(23, 59, 59, 999);
+  return Math.max(0, Math.round((end.getTime() - today.getTime()) / 86400000));
 }
 
 /** Local expiry check — works offline; the server copy still wins when online. */

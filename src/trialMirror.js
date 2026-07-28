@@ -127,9 +127,15 @@ function summaryDoc({ meta, license, sales, items, customers, appVersion }) {
   }
   const dates = completed.map((s) => str(s.createdAt || s.date)).filter(Boolean).sort();
   const endsAt = meta.endsAt || "";
-  const daysLeft = endsAt
-    ? Math.max(0, Math.ceil((new Date(endsAt).getTime() - Date.now()) / 86400000))
-    : null;
+  // Calendar days, matching trialDaysLeft() in trial.js — a trial ends at the
+  // end of its last day, so measuring end-of-day to end-of-day is what gives
+  // the number a person would count. Measuring from "now" reads one too many.
+  let daysLeft = null;
+  if (endsAt) {
+    const end = new Date(endsAt); end.setHours(23, 59, 59, 999);
+    const today = new Date(); today.setHours(23, 59, 59, 999);
+    daysLeft = Math.max(0, Math.round((end.getTime() - today.getTime()) / 86400000));
+  }
 
   return {
     // identity — matches pending_activations/TRIAL-<mobile>
