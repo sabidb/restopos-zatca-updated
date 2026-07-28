@@ -7796,7 +7796,7 @@ function ReceiptPreview({sale,license}){
 // ═══════════════════════════════════════════════════════════════════
 // TRANSACTIONS — with ZATCA tab
 // ═══════════════════════════════════════════════════════════════════
-function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null}){
+function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,archiveIndex={},fetchCloudRange,cloudLoading,cloudError}){
   const _t=s=>t(s,lang);
   const [tab,setTab]=useState("sales");const [dateFrom,setDateFrom]=useState(TODAY);const [dateTo,setDateTo]=useState(TODAY);const [search,setSearch]=useState("");const [refundTarget,setRefundTarget]=useState(null);
   const [kotPrompt,setKotPrompt]=useState(null);const [viewInvoice,setViewInvoice]=useState(null);
@@ -7892,7 +7892,10 @@ function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null}){
     </Card>
     <div style={{display:"flex",gap:8,marginBottom:20,flexWrap:"wrap"}}>{[["sales","💳 Sales"],["payments","💰 Payments"],["saved","💾 Saved Invoices"],["kot","🍽 KOT"],["zatca","⬛ ZATCA Invoices"]].map(([id,label])=><button key={id} onClick={()=>setTab(id)} style={{padding:"8px 16px",borderRadius:8,border:`1.5px solid ${tab===id?C.primary:C.border}`,background:tab===id?C.primaryLight:"#fff",color:tab===id?C.primary:C.textMid,fontFamily:"inherit",fontSize:13,fontWeight:600,cursor:"pointer"}}>{label}</button>)}</div>
     {tab==="sales"&&<div style={{display:"flex",flexDirection:"column",gap:16}}>
-      {!search&&<Card style={{display:"flex",gap:12,alignItems:"flex-end",flexWrap:"wrap"}}><Inp label="From" value={dateFrom} onChange={setDateFrom} type="date"/><Inp label="To" value={dateTo} onChange={setDateTo} type="date"/><div style={{marginLeft:"auto"}}><div style={{fontSize:12,color:C.textMid}}>{filtered.length} orders · VAT: {fmtSAR(vat)}</div><div style={{fontSize:20,fontWeight:800,color:C.primary}}>{fmtSAR(total)}</div></div></Card>}
+      {!search&&<Card><CloudGapBar sales={sales} archiveIndex={archiveIndex} from={dateFrom} to={dateTo}
+        fetchCloudRange={fetchCloudRange} cloudLoading={cloudLoading} cloudError={cloudError}
+        whatFollows="these figures" showComplete={false}/>
+      <div style={{display:"flex",gap:12,alignItems:"flex-end",flexWrap:"wrap"}}><Inp label="From" value={dateFrom} onChange={setDateFrom} type="date"/><Inp label="To" value={dateTo} onChange={setDateTo} type="date"/><div style={{marginLeft:"auto"}}><div style={{fontSize:12,color:C.textMid}}>{filtered.length} orders · VAT: {fmtSAR(vat)}</div><div style={{fontSize:20,fontWeight:800,color:C.primary}}>{fmtSAR(total)}</div></div></div></Card>}
       {filtered.length===0?<Card><div style={{textAlign:"center",padding:"40px 0",color:C.textMid}}><div style={{fontSize:40,marginBottom:12}}>🧾</div><div style={{fontSize:15,fontWeight:700}}>No orders yet</div></div></Card>
       :<Card><DataTable headers={["Invoice","Date","Time","Type","Method","Total","Status","Actions"]} rows={filtered.slice(0,100).map(s=>[<span style={{fontFamily:"monospace",fontSize:12,color:C.primary,fontWeight:700}}>{s.displayNumber||s.id}</span>,s.date,s.time,s.type,s.payMethod,<strong>{fmtSAR(s.total)}</strong>,<Badge color={s.status==="completed"?C.success:s.status==="voided"?C.danger:C.warning} bg={s.status==="completed"?C.successLight:s.status==="voided"?C.dangerLight:C.warningLight}>{s.status}</Badge>,<div style={{display:"flex",gap:4,flexWrap:"wrap"}}><Btn size="sm" variant="outline" onClick={()=>setKotPrompt(s)}>🖨️ Print</Btn>{s.status==="completed"&&<><Btn size="sm" variant="ghost" onClick={()=>setRefundTarget(s)}>Refund</Btn><Btn size="sm" variant="danger" onClick={()=>{if(confirm("Void?"))setSales(prev=>prev.map(x=>x.id===s.id?{...x,status:"voided"}:x));}}>Void</Btn></>}<Btn size="sm" variant="outline" onClick={()=>setViewInvoice(s)}>👁️ View</Btn></div>])} emptyMsg="No orders found"/></Card>}
     </div>}
@@ -7971,6 +7974,96 @@ function Accounts({sales,items}){
 // ═══════════════════════════════════════════════════════════════════
 // REPORTS
 // ═══════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════
+// CLOUD GAP — "is what you are looking at the whole period?"
+//
+// A device carries recent months; the cloud holds years. Every screen that
+// totals or searches sales over a range can therefore be showing a fraction of
+// it, and the failure is silent: a month held in Firestore reads as "0 orders",
+// which a client will take to mean they had no business. Worse than an error.
+//
+// The archive index lists which business days exist and how many invoices each
+// holds, so comparing it against what is loaded says exactly what is missing
+// without fetching a single invoice. Shared, because every range-based screen
+// needs the same answer and each one that lacked it lied independently.
+// ═══════════════════════════════════════════════════════════════════
+function cloudGapOf(sales,archiveIndex,from,to){
+  const have={};
+  for(const s of sales||[]){
+    if(!s||s.isDraft||s.status==="voided")continue;
+    have[s.date]=(have[s.date]||0)+1;
+  }
+  const days=[];let invoices=0;
+  for(const [date,info] of Object.entries(archiveIndex||{})){
+    if(from&&date<from)continue;
+    if(to&&date>to)continue;
+    const missing=(info?.n||0)-(have[date]||0);
+    if(missing>0){days.push(date);invoices+=missing;}
+  }
+  days.sort();
+  return{days,invoices,from:days[0],to:days[days.length-1]};
+}
+
+function archiveSpanOf(archiveIndex){
+  const dates=Object.keys(archiveIndex||{}).sort();
+  if(!dates.length)return null;
+  const totals=Object.values(archiveIndex).reduce((a,v)=>({n:a.n+(v?.n||0),total:a.total+(v?.total||0)}),{n:0,total:0});
+  return{first:dates[0],last:dates[dates.length-1],days:dates.length,...totals};
+}
+
+/**
+ * `whatFollows` names what the missing invoices are being left out of, in the
+ * client's terms — totals, a search, a balance sheet — so the warning reads as
+ * a statement about their figures rather than about storage.
+ */
+function CloudGapBar({sales,archiveIndex,from,to,fetchCloudRange,cloudLoading,cloudError,
+  whatFollows="the totals below",showComplete=true,style}){
+  const gap=useMemo(()=>cloudGapOf(sales,archiveIndex,from,to),[sales,archiveIndex,from,to]);
+  const span=useMemo(()=>archiveSpanOf(archiveIndex),[archiveIndex]);
+  const has=gap.days.length>0;
+  if(!has&&(!showComplete||!span))return null;
+  return(
+    <div style={{padding:"10px 13px",borderRadius:10,marginBottom:10,
+      border:`1px solid ${has?"#F0A50055":C.border}`,background:has?"#FFF8E7":C.bg,
+      display:"flex",alignItems:"center",gap:12,flexWrap:"wrap",...style}}>
+      <span style={{fontSize:16}}>{has?"☁️":"✅"}</span>
+      <div style={{flex:1,minWidth:220}}>
+        {has?(
+          <>
+            <div style={{fontSize:12.5,fontWeight:700,color:"#8A6100"}}>
+              {gap.invoices.toLocaleString()} invoice{gap.invoices===1?"":"s"} in this period are stored in the cloud, not on this device.
+            </div>
+            <div style={{fontSize:11,color:C.textMid,marginTop:2}}>
+              {gap.days.length} day{gap.days.length===1?"":"s"} · {fmtDate(gap.from)}
+              {gap.from!==gap.to?` → ${fmtDate(gap.to)}`:""} — {whatFollows} exclude{whatFollows.endsWith("s")?"":"s"} them until you load them.
+            </div>
+          </>
+        ):(
+          <>
+            <div style={{fontSize:12.5,fontWeight:700,color:C.text}}>
+              This period is complete — everything in the cloud for these dates is loaded.
+            </div>
+            {span&&(
+              <div style={{fontSize:11,color:C.textMid,marginTop:2}}>
+                Cloud history: {span.days.toLocaleString()} day{span.days===1?"":"s"} from {fmtDate(span.first)} to {fmtDate(span.last)} · {span.n.toLocaleString()} invoices.
+              </div>
+            )}
+          </>
+        )}
+        {cloudError&&<div style={{fontSize:11,color:C.danger,marginTop:4}}>{cloudError}</div>}
+      </div>
+      {has&&(
+        <button onClick={()=>fetchCloudRange&&fetchCloudRange(gap.from,gap.to)} disabled={cloudLoading}
+          style={{padding:"9px 16px",background:cloudLoading?"#ccc":"linear-gradient(135deg,#1A6B4A,#134D36)",
+            color:"#fff",border:"none",borderRadius:9,fontSize:12,fontWeight:800,
+            cursor:cloudLoading?"wait":"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>
+          {cloudLoading?"Downloading…":"☁️ Load from cloud"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function Reports({sales,allSales,items,setSales,lang="en",archiveIndex={},fetchCloudRange,cloudLoading,cloudError}){
   const _t=s=>t(s,lang);
   // ── All hooks first ──────────────────────────────────────────────
@@ -8010,35 +8103,7 @@ function Reports({sales,allSales,items,setSales,lang="en",archiveIndex={},fetchC
   // client, honestly, whether the figures on screen are the whole period or
   // only the part this device happens to be carrying. Reporting a month as
   // "0 orders" when it is sitting in Firestore is worse than saying nothing.
-  function cloudGapFor(from,to){
-    const have={};
-    for(const s of allSalesData){
-      if(!s||s.isDraft||s.status==="voided")continue;
-      have[s.date]=(have[s.date]||0)+1;
-    }
-    const days=[];let invoices=0;
-    for(const [date,info] of Object.entries(archiveIndex||{})){
-      if(date<from||date>to)continue;
-      const missing=(info?.n||0)-(have[date]||0);
-      if(missing>0){days.push(date);invoices+=missing;}
-    }
-    days.sort();
-    return{days,invoices,from:days[0],to:days[days.length-1]};
-  }
-  const cloudGap=useMemo(()=>cloudGapFor(dateFrom,dateTo),[allSalesData,archiveIndex,dateFrom,dateTo]);
-
-  // The whole span the cloud holds, for the "you have history back to …" line.
-  const archiveSpan=useMemo(()=>{
-    const dates=Object.keys(archiveIndex||{}).sort();
-    if(!dates.length)return null;
-    const totals=Object.values(archiveIndex).reduce((a,v)=>({n:a.n+(v?.n||0),total:a.total+(v?.total||0)}),{n:0,total:0});
-    return{first:dates[0],last:dates[dates.length-1],days:dates.length,...totals};
-  },[archiveIndex]);
-
-  async function loadRangeFromCloud(){
-    if(!fetchCloudRange||!cloudGap.days.length)return;
-    await fetchCloudRange(cloudGap.from,cloudGap.to);
-  }
+  const cloudGapFor=(from,to)=>cloudGapOf(allSalesData,archiveIndex,from,to);
   const todaySales=(sales||[]).filter(s=>s.date===TODAY);
   const todayLog=dayLog[TODAY];
 
@@ -8438,58 +8503,11 @@ ${_brandingHTML({...REPORT_DEFAULTS,...(LS.get("restopos_report_format")||{})})}
     setShowDaySummary(true);
   }
 
-  // ── Cloud history bar ────────────────────────────────────────────
-  // Sits with the date controls, because that is where a client asks for a
-  // period. It only appears when it has something to say.
-  const CloudBar=()=>{
-    if(!archiveSpan&&!cloudGap.days.length)return null;
-    const gap=cloudGap.days.length>0;
-    return(
-      <div style={{marginBottom:10,padding:"10px 13px",borderRadius:10,
-        border:`1px solid ${gap?"#F0A50055":C.border}`,background:gap?"#FFF8E7":C.bg,
-        display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
-        <span style={{fontSize:16}}>{gap?"☁️":"✅"}</span>
-        <div style={{flex:1,minWidth:220}}>
-          {gap?(
-            <>
-              <div style={{fontSize:12.5,fontWeight:700,color:"#8A6100"}}>
-                {cloudGap.invoices.toLocaleString()} invoice{cloudGap.invoices===1?"":"s"} in this period are stored in the cloud, not on this device.
-              </div>
-              <div style={{fontSize:11,color:C.textMid,marginTop:2}}>
-                {cloudGap.days.length} day{cloudGap.days.length===1?"":"s"} · {fmtDate(cloudGap.from)}
-                {cloudGap.from!==cloudGap.to?` → ${fmtDate(cloudGap.to)}`:""} — the totals below exclude them until you load them.
-              </div>
-            </>
-          ):(
-            <>
-              <div style={{fontSize:12.5,fontWeight:700,color:C.text}}>
-                This period is complete — everything in the cloud for these dates is loaded.
-              </div>
-              {archiveSpan&&(
-                <div style={{fontSize:11,color:C.textMid,marginTop:2}}>
-                  Cloud history: {archiveSpan.days.toLocaleString()} day{archiveSpan.days===1?"":"s"} from {fmtDate(archiveSpan.first)} to {fmtDate(archiveSpan.last)} · {archiveSpan.n.toLocaleString()} invoices.
-                </div>
-              )}
-            </>
-          )}
-          {cloudError&&<div style={{fontSize:11,color:C.danger,marginTop:4}}>{cloudError}</div>}
-        </div>
-        {gap&&(
-          <button onClick={loadRangeFromCloud} disabled={cloudLoading}
-            style={{padding:"9px 16px",background:cloudLoading?"#ccc":"linear-gradient(135deg,#1A6B4A,#134D36)",
-              color:"#fff",border:"none",borderRadius:9,fontSize:12,fontWeight:800,
-              cursor:cloudLoading?"wait":"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>
-            {cloudLoading?"Downloading…":"☁️ Load from cloud"}
-          </button>
-        )}
-      </div>
-    );
-  };
-
   // ── DateFilter component ─────────────────────────────────────────
   const DateFilter=()=>(
     <Card style={{marginBottom:14}}>
-      <CloudBar/>
+      <CloudGapBar sales={allSalesData} archiveIndex={archiveIndex} from={dateFrom} to={dateTo}
+        fetchCloudRange={fetchCloudRange} cloudLoading={cloudLoading} cloudError={cloudError}/>
       <div style={{display:"flex",gap:6,marginBottom:10,flexWrap:"wrap"}}>
         {[["today","Today"],["yesterday","Yesterday"],["week","7 Days"],["month","This Month"],["lastmonth","Last Month"],["3months","3 Months"],["year","This Year"]].map(([id,label])=>(
           <button key={id} onClick={()=>setPreset(id)}
@@ -8852,10 +8870,9 @@ ${_brandingHTML({...REPORT_DEFAULTS,...(LS.get("restopos_report_format")||{})})}
       {/* ── TRANSACTIONS TAB ── */}
       {tab==="transactions"&&(()=>{
         const q=txSearch.toLowerCase().trim();
-        // This tab has its own range, so it needs its own gap check — a search
+        // This tab has its own range, so it gets its own gap check — a search
         // that quietly excluded invoices held in the cloud would look like the
         // invoice does not exist.
-        const txGap=cloudGapFor(txFrom,txTo);
         const txAll=allSalesData.filter(s=>!s.isDraft&&s.date>=txFrom&&s.date<=txTo);
         const txFiltered=q?txAll.filter(s=>
           s.id?.toLowerCase().includes(q)||
@@ -8874,20 +8891,9 @@ ${_brandingHTML({...REPORT_DEFAULTS,...(LS.get("restopos_report_format")||{})})}
                 placeholder="🔍 Search invoice #, customer name, payment method, item..."
                 style={{width:"100%",padding:"9px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontSize:13,fontFamily:"inherit"}}/>
               <div style={{fontSize:11,color:C.textMid,marginTop:6}}>{txFiltered.length} invoices found · {fmtSAR(txFiltered.reduce((s,o)=>s+o.total,0))}</div>
-              {txGap.days.length>0&&(
-                <div style={{marginTop:9,padding:"9px 12px",background:"#FFF8E7",border:"1px solid #F0A50055",borderRadius:9,
-                  display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-                  <span style={{fontSize:14}}>☁️</span>
-                  <div style={{flex:1,minWidth:200,fontSize:11.5,color:"#8A6100",fontWeight:600}}>
-                    {txGap.invoices.toLocaleString()} more invoice{txGap.invoices===1?"":"s"} in this range are in the cloud — not searched yet.
-                  </div>
-                  <button onClick={()=>fetchCloudRange&&fetchCloudRange(txGap.from,txGap.to)} disabled={cloudLoading}
-                    style={{padding:"7px 13px",background:cloudLoading?"#ccc":"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",
-                      border:"none",borderRadius:8,fontSize:11.5,fontWeight:800,cursor:cloudLoading?"wait":"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>
-                    {cloudLoading?"Downloading…":"☁️ Load & search"}
-                  </button>
-                </div>
-              )}
+              <CloudGapBar sales={allSalesData} archiveIndex={archiveIndex} from={txFrom} to={txTo}
+                fetchCloudRange={fetchCloudRange} cloudLoading={cloudLoading} cloudError={cloudError}
+                whatFollows="this search" showComplete={false} style={{marginTop:9,marginBottom:0}}/>
             </Card>
             {txFiltered.length===0?(
               <Card><div style={{textAlign:"center",padding:"40px 0",color:C.textMid}}>No invoices found</div></Card>
@@ -11151,7 +11157,7 @@ function getAgingBucket(lastOrderDate){
   const days=Math.floor((Date.now()-new Date(lastOrderDate).getTime())/(1000*60*60*24));
   if(days<=30)return"Active";if(days<=60)return"30-60d";if(days<=90)return"60-90d";return"90d+";
 }
-function Customers({sales,lang="en"}){
+function Customers({sales,lang="en",archiveIndex={},fetchCloudRange,cloudLoading,cloudError}){
   const _t=s=>t(s,lang);
   const [customers,setCustomers]=useState(()=>LS.get("restopos_customers")||[]);
   const [showModal,setShowModal]=useState(false);
@@ -11289,8 +11295,17 @@ function Customers({sales,lang="en"}){
     );
   }
 
+  // Customer totals are lifetime figures, so the range is everything the cloud
+  // holds. A regular's spend and visit count read low — not obviously wrong,
+  // just quietly understated — whenever their older invoices are not loaded,
+  // which is the kind of error nobody catches by looking.
+  const custSpan=archiveSpanOf(archiveIndex);
   return(
     <div>
+      <CloudGapBar sales={sales} archiveIndex={archiveIndex}
+        from={custSpan?custSpan.first:undefined} to={TODAY}
+        fetchCloudRange={fetchCloudRange} cloudLoading={cloudLoading} cloudError={cloudError}
+        whatFollows="customer totals" showComplete={false}/>
       {showModal&&<Modal title={editCust?"Edit Customer":"New Customer"} onClose={()=>setShowModal(false)} width={500}>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
           <Inp label="Full Name *" value={form.name} onChange={v=>setForm(f=>({...f,name:v}))}/>
@@ -11753,7 +11768,7 @@ function ZATCASetup({license,sales=[]}){
 // ═══════════════════════════════════════════════════════════════════
 // ADVANCED FINANCIAL REPORTS v15 — Balance Sheet, Cash Flow, Trial Balance, GL
 // ═══════════════════════════════════════════════════════════════════
-function FinancialReports({sales,items,license,lang="en"}){
+function FinancialReports({sales,items,license,lang="en",archiveIndex={},fetchCloudRange,cloudLoading,cloudError}){
   const _t=s=>t(s,lang);
   const [tab,setTab]=useState("balancesheet");
   const [pushingFatoora,setPushingFatoora]=useState(false);
@@ -11802,6 +11817,17 @@ function FinancialReports({sales,items,license,lang="en"}){
   ];
   const totalDebits=trialAccounts.reduce((s,a)=>s+a.debit,0);
   const totalCredits=trialAccounts.reduce((s,a)=>s+a.credit,0);
+  // The period buttons are the range, so they decide what the cloud check asks
+  // about. "All" is the one that matters most: a balance sheet or P&L over all
+  // time is exactly the report that must not quietly omit older years.
+  const periodRange=useMemo(()=>{
+    const span=archiveSpanOf(archiveIndex);
+    if(period==="today")return{from:TODAY,to:TODAY};
+    if(period==="week"){const w=new Date();w.setDate(w.getDate()-7);return{from:w.toISOString().slice(0,10),to:TODAY};}
+    if(period==="month"){const m=new Date();return{from:`${m.getFullYear()}-${String(m.getMonth()+1).padStart(2,"0")}-01`,to:TODAY};}
+    return{from:span?span.first:"1970-01-01",to:TODAY};
+  },[period,archiveIndex]);
+
   const PeriodBtns=()=>(
     <div style={{display:"flex",gap:6}}>
       {[["today","Today"],["week","Week"],["month","Month"],["all","All"]].map(([id,lbl])=>(
@@ -11815,6 +11841,9 @@ function FinancialReports({sales,items,license,lang="en"}){
         <div><div style={{fontSize:20,fontWeight:800}}>📊 Advanced Financial Reports</div><div style={{fontSize:13,color:C.textMid,marginTop:2}}>Balance Sheet · Cash Flow · Trial Balance · GL · VAT</div></div>
         <PeriodBtns/>
       </div>
+      <CloudGapBar sales={sales} archiveIndex={archiveIndex} from={periodRange.from} to={periodRange.to}
+        fetchCloudRange={fetchCloudRange} cloudLoading={cloudLoading} cloudError={cloudError}
+        whatFollows="these statements" showComplete={false}/>
       <div style={{display:"flex",gap:6,marginBottom:20,flexWrap:"wrap"}}>
         {[["balancesheet","📋 Balance Sheet"],["cashflow","💧 Cash Flow"],["trial","⚖️ Trial Balance"],["gl","📒 General Ledger"],["vat","🧾 VAT Liability"],["pnl","📈 P&L"],["expenses","💸 Expenses"],["zatcasetup","🔐 ZATCA Setup"],["vatguide","📖 VAT Guide"]].map(([id,lbl])=>(
           <button key={id} onClick={()=>setTab(id)} style={{padding:"8px 16px",borderRadius:8,border:`1.5px solid ${tab===id?C.primary:C.border}`,background:tab===id?C.primaryLight:"#fff",color:tab===id?C.primary:C.textMid,fontFamily:"inherit",fontSize:13,fontWeight:600,cursor:"pointer"}}>{lbl}</button>
@@ -16339,12 +16368,12 @@ export default function App(){
         {screen==="pos"&&<POS items={items} setItems={setItems} sales={sales} setSales={setSales} tables={tables} setTables={setTables} promos={promos} license={license} lang={lang} currentUser={currentUser}/>}
         {screen==="settings"&&<Settings company={company} setCompany={setCompany} tables={tables} setTables={setTables} license={license} onClearLicense={handleClearLicense} onSwitchAccount={handleSwitchAccount} pins={pins} setPins={setPins} invoiceFormat={invoiceFormat} setInvoiceFormat={setInvoiceFormat} lang={lang} onLangChange={handleLangChange} sales={allSales} items={items}/>}
         {screen==="create"&&<Create items={items} setItems={setItems} promos={promos} setPromos={setPromos} lang={lang}/>}
-        {screen==="transactions"&&<Transactions sales={allSales} setSales={setSales} license={license} lang={lang} autoSyncStatus={autoSyncStatus}/>}
+        {screen==="transactions"&&<Transactions sales={allSales} setSales={setSales} license={license} lang={lang} autoSyncStatus={autoSyncStatus} archiveIndex={archiveIndex} fetchCloudRange={fetchCloudRange} cloudLoading={cloudLoading} cloudError={cloudError}/>}
         {/* P&L moved to Financials tab */}
-        {screen==="financials"&&<FinancialReports sales={allSales} items={items} license={license} lang={lang}/>}
+        {screen==="financials"&&<FinancialReports sales={allSales} items={items} license={license} lang={lang} archiveIndex={archiveIndex} fetchCloudRange={fetchCloudRange} cloudLoading={cloudLoading} cloudError={cloudError}/>}
         {/* Invoices moved into Settings → Invoices tab */}
         {/* Expenses moved to Financials tab */}
-        {screen==="customers"&&<Customers sales={allSales} lang={lang}/>}
+        {screen==="customers"&&<Customers sales={allSales} lang={lang} archiveIndex={archiveIndex} fetchCloudRange={fetchCloudRange} cloudLoading={cloudLoading} cloudError={cloudError}/>}
         {screen==="reports"&&<Reports sales={sales} allSales={allSales} items={items} setSales={setSales} lang={lang}
           archiveIndex={archiveIndex} fetchCloudRange={fetchCloudRange} cloudLoading={cloudLoading} cloudError={cloudError}/>}
         {screen==="advanced"&&<AdvancedFeatures sales={allSales} items={items} setItems={setItems} license={license} company={company} invoiceFormat={invoiceFormat} setInvoiceFormat={setInvoiceFormat} users={users} setUsers={setUsers} lang={lang}/>}

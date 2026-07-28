@@ -117,6 +117,39 @@ const local = await p.evaluate(() => {
 });
 t('device holds none of it locally', local === 0, `${local} local sale(s)`);
 
+// ── Every other range-based screen must warn too ────────────────────
+// Each has its own idea of a period, and each would have understated its
+// figures independently and silently.
+const nav = (label) => p.getByRole('button').filter({ hasText: new RegExp(`^\\s*(\\S+\\s*)?${label}\\s*$`) }).first();
+const warned = async () => /stored in the cloud, not on this device/i.test((await p.locator('body').innerText()).replace(/\s+/g, ' '));
+
+await nav('Transactions').click();
+await p.waitForTimeout(1800);
+{
+  const d = p.locator('input[type=date]');
+  await d.nth(0).fill('2026-03-01');
+  await d.nth(1).fill('2026-03-31');
+  await p.waitForTimeout(1200);
+  t('Transactions warns about cloud-only invoices', await warned());
+  await p.screenshot({ path: SP + '/63-transactions.png' });
+}
+
+await nav('Financials').click();
+await p.waitForTimeout(1800);
+{
+  // "All" is the case that matters: a balance sheet over all time must not
+  // quietly omit older years.
+  await p.getByRole('button', { name: /^All$/ }).first().click();
+  await p.waitForTimeout(1200);
+  t('Financials warns on an all-time statement', await warned());
+  await p.screenshot({ path: SP + '/64-financials.png' });
+}
+
+await nav('CRM').click();
+await p.waitForTimeout(1800);
+t('CRM warns that customer totals are incomplete', await warned());
+await p.screenshot({ path: SP + '/65-crm.png' });
+
 // Into Reports.
 const navReports = p.getByRole('button').filter({ hasText: /^\s*(📋\s*)?Reports\s*$/ }).first();
 if (await navReports.count() === 0) {
