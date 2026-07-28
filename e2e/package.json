@@ -10,7 +10,8 @@
     "reports": "node reports.mjs",
     "loginflow": "node loginflow.mjs",
     "deviceapproval": "node deviceapproval.mjs",
-    "zatca": "node zatca.mjs"
+    "zatca": "node zatca.mjs",
+    "archivegap": "node archivegap.mjs"
   },
   "devDependencies": {
     "playwright": "^1.49.0",

@@ -76,9 +76,12 @@ if (TRIAL) initTrialMirror({ db, doc, collection, setDoc, writeBatch });
 // Every client's sales history, one document per business day, kept for years.
 // Must also come after db exists.
 initCloudArchive({ db, doc, collection, setDoc, getDoc, getDocs, query, where, orderBy, limit, startAfter, writeBatch });
-// ⚠️ TEMPORARY DEBUG HOOK — remove once the auth/registration issue is confirmed fixed.
+// Support hook. Not temporary any more, and not decoration: the questions it
+// answers are ones nobody can answer from the outside — is this till signed in,
+// and are any of its invoices still missing from the permanent archive. Reading
+// state only; every function exposed here is one the app calls itself anyway.
 if (typeof window !== "undefined") {
-  window.__restoposDebug = { auth, db, registerDeviceUid: null };
+  window.__restoposDebug = { auth, db, registerDeviceUid: null, invoiceStorage: null };
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -240,6 +243,13 @@ const ZATCA_STORAGE_KEY = "zatca_invoices_v2";
 // Invoices that could not be filed to the permanent archive yet (offline, or the
 // call failed). Retried on reconnect — a lost one is a lost tax record.
 const ZATCA_ARCHIVE_PENDING_KEY = "zatca_archive_pending";
+// Invoice numbers confirmed to be in the permanent archive. Without this there
+// is no way to tell a local invoice that was filed from one that never was —
+// and the gap that matters is the upgrade itself: a till running the previous
+// build wrote to Firestore directly, and once that door is closed those writes
+// fail with nothing but a console warning. Those invoices would have sat in
+// localStorage forever, absent from the record ZATCA audits.
+const ZATCA_ARCHIVED_KEY = "zatca_archived_numbers";
 const ZATCA_LAST_HASH_KEY = "zatca_last_hash_v2";
 const ZATCA_QUEUE_KEY = "zatca_queue_v2";
 // localStorage is just the fast local cache (Firestore "zatca_invoices" is the permanent
@@ -247,6 +257,10 @@ const ZATCA_QUEUE_KEY = "zatca_queue_v2";
 // Raised from 500 → 5000 so even a busy restaurant (≈100 invoices/day) keeps ~50 days of
 // instant local history before falling back to Firestore for older records.
 const ZATCA_LOCAL_CACHE_LIMIT = 5000;
+// How far back to look for invoices the archive never confirmed. Generous
+// against the real exposure — the hours between the rules closing and a till
+// loading the new build — without re-filing years of confirmed history.
+const ZATCA_GAP_BACKFILL_LIMIT = 300;
 
 const invoiceStorage = {
   getNextCounter() { const c = parseInt(localStorage.getItem(ZATCA_COUNTER_KEY)||"1000",10); localStorage.setItem(ZATCA_COUNTER_KEY,String(c+1)); return c+1; },
@@ -269,6 +283,7 @@ const invoiceStorage = {
     if(!licenseKey)return;
     try{
       await zatcaArchiveFn({licenseKey,invoice:inv,extra});
+      this.markArchived([inv.invoice_number]);
       this.drainPendingArchive();
     }catch(e){
       // A direct Firestore write used to ride the SDK's offline queue and land
@@ -286,6 +301,44 @@ const invoiceStorage = {
       q.push({inv,extra,queuedAt:new Date().toISOString()});
       localStorage.setItem(ZATCA_ARCHIVE_PENDING_KEY,JSON.stringify(q.slice(-500)));
     }catch(e){}
+  },
+  // ── Which invoices are known to be filed ────────────────────────
+  archivedSet(){
+    try{return new Set(JSON.parse(localStorage.getItem(ZATCA_ARCHIVED_KEY)||"[]"));}catch(e){return new Set();}
+  },
+  markArchived(numbers){
+    try{
+      const set=this.archivedSet();
+      for(const n of numbers)if(n)set.add(n);
+      // Bounded: only the tail is ever needed, since anything older has long
+      // since been confirmed and will not be re-checked.
+      localStorage.setItem(ZATCA_ARCHIVED_KEY,JSON.stringify(Array.from(set).slice(-5000)));
+    }catch(e){}
+  },
+  /**
+   * File any invoice this device holds that the archive has never confirmed.
+   *
+   * This is what carries a till across the upgrade. The previous build wrote
+   * to Firestore directly; once that path is closed those writes fail
+   * silently, and the invoices would live on in localStorage and nowhere else.
+   */
+  backfillArchiveGaps(){
+    if(TRIAL)return 0;
+    const known=this.archivedSet();
+    // Bounded to the recent window on purpose. The local cache holds up to
+    // 5,000 invoices, and on the first sync after an upgrade none of them are
+    // confirmed yet — re-filing all of them would be twenty minutes of calls
+    // to re-write invoices that are already there.
+    //
+    // The invoices genuinely at risk are only those written while the old
+    // build's direct path was failing, which is the hours between the rules
+    // closing and this till loading the new bundle. Anything older than this
+    // window was filed successfully by the old build at the time.
+    const recentFirst=this.getAll().slice(0,ZATCA_GAP_BACKFILL_LIMIT);
+    const missing=recentFirst.filter(i=>i&&i.invoice_number&&!known.has(i.invoice_number));
+    for(const inv of missing)this.queuePendingArchive(inv,{});
+    if(missing.length)console.log(`[ZATCA] ${missing.length} local invoice(s) not confirmed in the archive — queued.`);
+    return missing.length;
   },
   pendingArchiveCount(){
     try{return JSON.parse(localStorage.getItem(ZATCA_ARCHIVE_PENDING_KEY)||"[]").length;}catch(e){return 0;}
@@ -344,11 +397,18 @@ const invoiceStorage = {
         localStorage.setItem(ZATCA_STORAGE_KEY,JSON.stringify(merged.slice(0,ZATCA_LOCAL_CACHE_LIMIT)));
       }
       try{window.dispatchEvent(new Event("restopos-invoice"));}catch(e){}
-      // Anything that could not be filed while offline goes now.
-      this.drainPendingArchive();
+      // Whatever the server just returned is, by definition, filed.
+      if(Array.isArray(recent))this.markArchived(recent.map(r=>r.invoice_number));
+      // Then anything this device holds that the archive has never confirmed —
+      // invoices rung up offline, and invoices written by the previous build
+      // straight to Firestore in the window before that door was closed.
+      this.backfillArchiveGaps();
+      await this.drainPendingArchive();
     }catch(e){ console.warn("[ZATCA] chain sync failed:",e.message); }
   }
 };
+
+if (typeof window !== "undefined") { window.__restoposDebug.invoiceStorage = invoiceStorage; }
 
 const fatooraQueue = {
   enqueue(inv) { const q=this.getQueue(); q.push({invoice_number:inv.invoice_number,queued_at:new Date().toISOString(),attempts:0,status:"pending"}); localStorage.setItem(ZATCA_QUEUE_KEY,JSON.stringify(q)); },
