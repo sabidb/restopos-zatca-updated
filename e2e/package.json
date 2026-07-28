@@ -1,0 +1,13 @@
+{
+  "name": "restopos-e2e",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Browser tests that drive the real app against the local Firebase emulators. Kept out of the app's package.json — like rules-test/ — so the frontend build stays lean.",
+  "scripts": {
+    "killswitch": "node killswitch.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.49.0"
+  }
+}

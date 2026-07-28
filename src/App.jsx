@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback, Component } from "react";
 import { initializeApp } from "firebase/app";
-import { getFirestore, collection, query, where, getDocs, updateDoc, doc, addDoc, getDoc, onSnapshot, setDoc, deleteDoc, orderBy, limit, startAfter, getCountFromServer, arrayUnion, writeBatch } from "firebase/firestore";
-import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "firebase/auth";
+import { getFirestore, collection, query, where, getDocs, updateDoc, doc, addDoc, getDoc, onSnapshot, setDoc, deleteDoc, orderBy, limit, startAfter, getCountFromServer, arrayUnion, writeBatch , connectFirestoreEmulator } from "firebase/firestore";
+import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken, connectAuthEmulator } from "firebase/auth";
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { isTrial, isTrialBuild, trialMeta, trialLicense, trialDaysLeft, trialExpired,
@@ -46,6 +46,16 @@ const firebaseApp = initializeApp(firebaseConfig);
 const db = getFirestore(firebaseApp);
 const storage = getStorage(firebaseApp);
 const auth = getAuth(firebaseApp);
+// Local development only. Set VITE_USE_EMULATORS=1 to run the app against the
+// local Firebase emulators instead of the live project, so behaviour that
+// depends on server state — the kill switch, expiry, admin notifications —
+// can be exercised end to end without touching a real client's data.
+// A no-op when the variable is absent, which is every production build.
+if (import.meta.env.VITE_USE_EMULATORS) {
+  connectFirestoreEmulator(db, "127.0.0.1", 8080);
+  connectAuthEmulator(auth, "http://127.0.0.1:9099", { disableWarnings: true });
+  console.warn("[Firebase] using LOCAL EMULATORS — not the live project");
+}
 const functions = getFunctions(firebaseApp);
 const verifyLoginFn = httpsCallable(functions, "verifyLogin");
 // Hand the trial mirror this app's Firestore handles — one Firebase app, one
@@ -15565,11 +15575,48 @@ export default function App(){
     }
   },[]);
 
-  // REAL-TIME KILL-SWITCH WATCHDOG — listens for status changes in Firestore
+  // REAL-TIME KILL-SWITCH WATCHDOG
+  //
+  // Two different documents can switch a till off, and the admin panel writes
+  // them from two different screens:
+  //
+  //   pending_activations/{key} — the Clients tab: Deactivate, Force Logout,
+  //       plan changes, expiry, admin notifications.
+  //   licenses/{key}           — the Licenses tab's Revoke toggle, which sets
+  //       `active` and nothing else.
+  //
+  // Only the first was ever watched, so revoking a key from the Licenses tab
+  // had no effect whatsoever on a running till: the admin saw the key go red
+  // and the shop carried on selling. Both are watched now.
+  //
+  // The effect is also keyed on the licence rather than mounting once. With an
+  // empty dependency list it read the licence from localStorage at boot and
+  // gave up if there wasn't one — so a till that registered or logged in
+  // during the session stayed unwatched until the next page reload, which for
+  // a POS running all day can be a very long time.
+  // Each listener owns one verdict and the two are combined, never overwritten.
+  // Letting whichever snapshot fired last win is what left a restored client
+  // stranded: un-revoking a licence changes only the licence document, so the
+  // clearing branch — which lived in the account listener — never ran, and the
+  // shop stayed on the deactivated screen until someone reloaded the app.
+  const licenseRevokedRef=useRef(false);
+  const accountVerdictRef=useRef(null);
   useEffect(()=>{
     const savedLic=LS.get("restopos_license_v2");
     if(!savedLic?.licenseKey)return;
-    const unsub=onSnapshot(doc(db,"pending_activations",savedLic.licenseKey.trim().toUpperCase()),(snap)=>{
+    const key=savedLic.licenseKey.trim().toUpperCase();
+    const decide=()=>setTerminated(
+      accountVerdictRef.current||(licenseRevokedRef.current?"deactivated":null));
+
+    // The licence document itself. `active === false` is a revoked key.
+    // Absence is NOT treated as revoked: a trial has no licences entry, and a
+    // read that fails offline must never lock a shop out of its own till.
+    const unsubLicense=onSnapshot(doc(db,"licenses",key),(snap)=>{
+      licenseRevokedRef.current=snap.exists()&&snap.data().active===false;
+      decide();
+    },(err)=>console.warn("[KillSwitch] licence listener:",err.message));
+
+    const unsub=onSnapshot(doc(db,"pending_activations",key),(snap)=>{
       if(!snap.exists())return;
       const data=snap.data();
       // Keep the device-local offline-unlock gate in sync with server state, so
@@ -15580,11 +15627,22 @@ export default function App(){
         LS.set("restopos_client_creds",{...lc,active,approved:data.credentialsApproved===true});
       }
       if(data.forceLogout===true){
-        setTerminated("forceLogout");
-      }else if(data.status==="deactivated"||data.status==="suspended"){
-        setTerminated("deactivated");
+        accountVerdictRef.current="forceLogout";decide();
+      }else if(data.status==="deactivated"||data.status==="suspended"||data.isActive===false){
+        // isActive is checked as well as status: the two are written together
+        // today, but a suspension that set only one of them used to leave the
+        // till running, and which field an admin path happens to write is not
+        // something the kill switch should depend on.
+        accountVerdictRef.current="deactivated";decide();
+      }else if(data.passwordResetByAdmin===true&&data.credentialsApproved===false){
+        // The admin cleared this client's password. Their current session must
+        // end, or a reset does nothing until they happen to log out. Gated on
+        // the explicit admin flag so a client still working through initial
+        // registration — where credentialsApproved is legitimately false — is
+        // not bounced out of its own signup.
+        accountVerdictRef.current="forceLogout";decide();
       }else{
-        setTerminated(null);
+        accountVerdictRef.current=null;decide();
         // Sync subscriptionPlan, phone, ownerName from Firestore into local license
         const updatedLic={...LS.get("restopos_license_v2"),subscriptionPlan:data.subscriptionPlan||"basic",ownerName:data.ownerName||"",phone:data.phone||savedLic.phone||"",businessType:data.businessType||LS.get("restopos_license_v2")?.businessType||"restaurant"};
         LS.set("restopos_license_v2",updatedLic);
@@ -15601,7 +15659,7 @@ export default function App(){
           expiry.setMonth(expiry.getMonth()+(planMonths[data.subscriptionPlan||"basic"]||1));
         }
         if(expiry&&new Date()>expiry){
-          setTerminated("expired");
+          accountVerdictRef.current="expired";decide();
         }
         // A trial's end date lives on the server, so the admin panel's
         // Extend buttons take effect here immediately.
@@ -15615,9 +15673,9 @@ export default function App(){
           setAdminNotification(data.notification);
         }
       }
-    });
-    return()=>unsub();
-  },[]);
+    },(err)=>console.warn("[KillSwitch] account listener:",err.message));
+    return()=>{unsub();unsubLicense();};
+  },[license?.licenseKey]);
 
   // LIVE ANNOUNCEMENT LISTENER
   useEffect(()=>{
