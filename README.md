@@ -115,26 +115,40 @@ RestoPOS is a fully featured, cloud-connected restaurant Point of Sale system bu
 4. The app installs to your desktop like a native application
 5. Works offline after first load
 
-### Try the Demo (no registration)
+### Free 14-Day Trial (no registration)
 
-A prospective client can explore the whole system before signing up:
+A prospective client can run the whole system for two weeks before signing up:
 
 1. Open [restopos.store](https://restopos.store)
-2. On the registration screen, click **▶ Open the free demo**
-3. The POS opens as a sample Riyadh restaurant — full menu, 12 tables, and
-   five weeks of trading history already loaded
-4. **Exit & register →** in the yellow banner wipes the demo and returns to signup
+2. On the registration screen, click **▶ Start my free 14-day trial**
+3. Pick **Restaurant** or **Supermarket**, enter a business name, your name and a
+   **10-digit mobile number** (required — it is the trial account)
+4. The POS opens clean, ready for your own menu or stock. **+ Sample products**
+   loads a demo catalogue for whichever mode you're in if you'd rather browse first
+5. **Register now →** at any point carries your products and sales into a real account
 
-The demo is completely sealed off:
+What the trial is:
 
-- Storage is sandboxed — a real client's menu, sales and ZATCA invoice chain on
-  the same browser are never read or overwritten, and exiting deletes only demo data
-- Nothing reaches the cloud — no Firestore writes, no Cloud Functions, no FATOORA
-- Demo receipts are stamped **NOT A VALID TAX INVOICE** and ZATCA reporting is simulated
-- Support chat, the AI assistant, archive export and Phase 2 onboarding stay off
+- **Both modes, in full.** Restaurant (tables, dine-in, KOT) and Supermarket
+  (barcode checkout, weighed items). Switch between them any time — your products
+  and sales stay put; only the till layout changes
+- **A real account.** Everything you enter syncs to the cloud against your mobile
+  number, so yesterday's sales are still there tomorrow, reports cover the whole
+  trial, and **↩ Continue my trial** restores it onto another device
+- **Visible to the operator.** Signing up writes a `pending_activations/TRIAL-<mobile>`
+  document that appears in the admin panel's **Trials** tab with the mobile number,
+  business type and days remaining. Extend and Convert-to-paid work on it live
 
-To run a permanently-demo deployment on its own domain (e.g. `demo.restopos.store`),
-build the same repo with `VITE_DEMO_MODE=true` (see `.env.example`).
+What it is not:
+
+- Not ZATCA-onboarded: invoices are never reported to FATOORA and every receipt is
+  stamped **NOT A VALID TAX INVOICE**. Phase 2 onboarding needs a real CR and VAT number
+- Archive export and the AI assistant stay off; live chat and support tickets work
+- Trial work is kept in its own storage namespace, so a trial can never overwrite
+  another RestoPOS account on the same browser
+
+For a trial-only deployment on its own domain, build with `VITE_TRIAL_MODE=true`
+(see `.env.example`).
 
 ### Setup for New Clients
 

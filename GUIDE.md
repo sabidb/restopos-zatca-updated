@@ -143,48 +143,83 @@ keychain.
 
 This is the customer onboarding lifecycle.
 
-### Step 0 — Try the demo (optional, before any of the above)
+### Step 0 — Free 14-day trial (optional, before any of the above)
 
-The registration screen carries a **Try RestoPOS before you register** section.
-Clicking **▶ Open the free demo** starts a sandboxed session: no license key, no
-account, no admin approval. The visitor lands in the POS as Admin, running a
-sample Riyadh restaurant (*Bayt Al Mandi*) with 24 menu items, 6 categories,
-12 tables, 6 customers and roughly five weeks of trading history — so the
-Dashboard, Reports, Financials, CRM and VAT screens all have real numbers in them.
+The registration screen leads with **Start a free 14-day trial**. A prospect
+picks Restaurant or Supermarket, gives a business name, their name and a
+**10-digit mobile number** (mandatory), and lands straight in the POS as Admin
+with a clean till — no license key, no CR/VAT, no admin approval.
 
-**How the isolation works** (`src/demo.js`):
+**The mobile number is the account.** It is the Firestore doc id
+(`TRIAL-<10 digits>`), the cloud-backup key, and how the client resumes on a
+second device via **↩ Continue my trial**. One trial per number: signing up
+again with the same number resumes the running trial rather than restarting
+the clock, and a finished trial is told to register.
 
-- `main.jsx` calls `installDemoSandbox()` **before** `App.jsx` — and therefore
-  Firebase — is imported. It replaces `window.localStorage` with a shim that
-  prefixes every key with `restopos_demo_sandbox::`. Existing code is unchanged;
-  it just reads and writes an isolated namespace. A real client's menu, sales
-  and ZATCA hash chain on the same browser are never touched, and leaving the
-  demo removes only the prefixed keys.
-- `App.jsx` sets `const DEMO = isDemo()` and returns early at every cloud call
-  site: `syncKeyToFirestore`, `restoreFromFirestore`, `ensureSignedIn`,
-  `registerDeviceUid`, `invoiceStorage.archiveToFirestore` / `syncFromFirestore`,
-  the kill-switch and announcement listeners, live chat, support tickets, the
-  AI assistant, archive export and Phase 2 onboarding. A demo session issues
-  **zero** Firestore, Cloud Function and ZATCA-service requests.
-- `reportToFatoora` / `clearanceB2BInvoice` run `simulateZatcaSubmission()`
-  instead, so the FATOORA queue and VAT dashboard behave — records are flagged
-  `demo_simulated`.
-- Every printed or previewed document is stamped **DEMO RECEIPT — NOT A VALID
-  TAX INVOICE** (bilingual), so a demo receipt can never pass as a real one.
-- The demo license (`DEMO-TRIAL`) is not a real tenant and has no Firestore
-  document, so the kill-switch, subscription expiry and device allowlist
-  simply do not apply.
+**Both business modes run in full.** The trial licence carries `businessType`,
+so Supermarket mode gets barcode-first checkout and weighed items while
+Restaurant mode gets tables, dine-in and KOT. The banner's **⇄ mode** button
+switches between them mid-trial — products and sales are untouched, only the
+till layout changes, and the new mode is written back to the trial document so
+the admin panel and any other device follow.
 
-The yellow banner across the top of the app carries **What's limited?**,
-**↻ Reset** (restore the original sample business) and **Exit & register →**
-(delete the sandbox and return to registration).
+A trial starts **clean** so the client enters their own products. **+ Sample
+products** in the banner loads a catalogue for the current mode (18 restaurant
+dishes or 19 supermarket lines including weighed produce and barcodes),
+appended rather than replacing, and flagged `isSample`.
 
-**Optional: a demo-only deployment.** Building the same repo with
-`VITE_DEMO_MODE=true` makes the whole deployment a demo — useful for
-`demo.restopos.store` on a second Vercel project pointed at this repo. Set
-`VITE_DEMO_EXIT_URL=https://restopos.store` so **Register →** sends visitors to
-the real site. Because it is a different origin, that variant is isolated by the
-browser as well as by the sandbox.
+**What the operator sees.** Signup writes `pending_activations/TRIAL-<mobile>`
+with `isTrial: true`, `trialSource: "self-serve"`, `businessType`,
+`trialStartedAt` and `customExpiryDate` = start + 14 days. It appears in the
+admin panel's **Trials** tab — mobile number, business type, owner, city, days
+remaining — and is deliberately kept out of the Pending approval queue, which
+is for license activations. **Extend +7/+14/+30** and **Convert to paid** work
+on it: extend edits `customExpiryDate`, which the client's kill-switch watchdog
+picks up live; converting also flips `status` to approved so the client isn't
+locked out.
+
+No Firestore rules change was needed: a client may only create an activation
+with `status: "pending"` and `credentialsApproved: false`, which is exactly
+what the trial does. `client_data/TRIAL-<mobile>` is gated on the device UID
+being in the document's `authUids`, set at creation and topped up by
+`registerDeviceUid` on each new device.
+
+**Data retention** (`src/trial.js`):
+
+- `main.jsx` calls `installTrialWorkspace()` **before** `App.jsx` — and therefore
+  Firebase — is imported, prefixing every localStorage key with
+  `restopos_trial::<key>::`. Existing code is unchanged; it just reads and
+  writes an isolated namespace. A trial can never overwrite a real account's
+  menu, sales or ZATCA hash chain on the same browser, and two trials don't
+  collide.
+- Everything syncs to `client_data` exactly like a paid client. Monthly sales
+  archive buckets (`restopos_sales_YYYY-MM`) are synced **for trials only** —
+  a trial is capped at 14 days so the buckets stay small, and restoring them is
+  what lets a resumed trial still show its earlier days. Real clients keep the
+  old behaviour, because their archives can span years and would risk
+  Firestore's 1 MB document limit.
+- **Register now** runs `promoteTrialWorkspace()`, lifting the namespace into
+  the real one so 14 days of work survives becoming a paying client. It refuses
+  when another account already occupies the real namespace, and says so.
+
+**What a trial cannot do.** It has no CSID, so `reportToFatoora` and
+`clearanceB2BInvoice` run `simulateZatcaSubmission()` — the queue and VAT
+dashboard behave, records are flagged `trial_simulated`, nothing reaches
+FATOORA — and every printed document is stamped **TRIAL RECEIPT — NOT A VALID
+TAX INVOICE** (bilingual). Trial invoices are also kept out of the shared
+`zatca_invoices` archive, so the 5-year store holds only real tax invoices.
+Phase 2 onboarding, archive export, the paid AI assistant and the owner console
+are blocked. Live chat and support tickets stay open — trial clients are leads.
+
+**Expiry.** `customExpiryDate` is enforced by the existing kill-switch watchdog
+when online, and by a local one-minute ticker against the stored end date when
+offline, so a till left running overnight still locks on time. The client sees
+a trial-specific screen making clear nothing was deleted.
+
+**Optional: a trial-only deployment.** Building with `VITE_TRIAL_MODE=true`
+makes a whole deployment a trial — useful for `try.restopos.store` on a second
+Vercel project. Set `VITE_TRIAL_EXIT_URL=https://restopos.store` so the
+Register button sends visitors to the real site.
 
 ### Step 1 — License activation
 1. Open the app. On first run you're on the **License** screen.
