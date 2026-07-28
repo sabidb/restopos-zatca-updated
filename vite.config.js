@@ -41,6 +41,15 @@ export default defineConfig({
       workbox: {
         // Cache all app files for offline use
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+        // The SPA fallback serves index.html for any navigation the service
+        // worker doesn't recognise. Opening a real file — the Terms PDF, an
+        // exported report — is also a navigation, so without this the worker
+        // hands back the app shell and the client lands on the login screen
+        // instead of their document. Anything whose last path segment has a
+        // file extension is a real asset: let it through to the network.
+        // Safe here because the app has no client-side routes; every screen
+        // lives at "/" and is switched in state.
+        navigateFallbackDenylist: [/\/[^/?]+\.[^/?]+$/],
         // Cache strategies
         runtimeCaching: [
           {
