@@ -211,10 +211,33 @@ and is dropped, it never interrupts the till. `client_data` remains the restore
 path — this is a readable view alongside it, not a replacement.
 
 > **This needs a rules deploy.** `trials` is a new collection, and the default
-> rule denies everything not matched, so until
-> `firebase deploy --only firestore:rules` runs, every mirror write is rejected
-> and the admin panel's Trials tab shows "No activity mirrored yet". Nothing
-> else breaks — the trial itself and `client_data` backup are unaffected.
+> rule denies everything not matched, so until the rules are deployed every
+> mirror write is rejected and the admin panel's Trials tab shows "No activity
+> mirrored yet". Nothing else breaks — the trial itself and the `client_data`
+> backup are unaffected.
+>
+> Deploy by running the **Deploy Firestore Rules** GitHub Action
+> (Actions → Deploy Firestore Rules → Run workflow). It runs the rules test
+> suite first and refuses to deploy if anything fails. Locally the equivalent
+> is `firebase deploy --only firestore:rules --project restopos-db`.
+
+### Testing firestore.rules
+
+`firestore.rules` guards live tills — a wrong rule can lock a shop out
+mid-service or expose one client's data to another — so it is tested like
+code, against the real Firestore emulator:
+
+```bash
+cd rules-test && npm install && npm test
+```
+
+23 cases cover the trial collection (the owning device can read and write its
+own trial and subcollections; another signed-in device can do neither; the
+admin can read everything) and guard the existing rules against regression
+(a client cannot self-approve an activation, extend its own expiry, or read
+another account's `client_data`; secrets stay locked; unmatched paths stay
+denied). CI runs it on every push and pull request. **Add a case here whenever
+you change a rule.**
 
 **Data retention** (`src/trial.js`):
 

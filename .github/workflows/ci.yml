@@ -18,3 +18,23 @@ jobs:
         run: npm run build
       - name: Syntax-check Cloud Functions
         run: node --check functions/index.js
+
+  # Rules protect live tills, so they get tested like code — against the real
+  # Firestore emulator, on every push and pull request.
+  firestore-rules:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install
+        run: npm install
+        working-directory: rules-test
+      - name: Test firestore.rules
+        run: npm test
+        working-directory: rules-test

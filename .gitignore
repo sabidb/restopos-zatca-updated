@@ -23,3 +23,5 @@ dist-ssr
 *.sln
 *.sw?
 secrets/restopos-db-firebase-adminsdk-fbsvc-cf5a98f188.json
+# rules-test pulls in firebase-tools + the emulator; never commit them
+rules-test/node_modules

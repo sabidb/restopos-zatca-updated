@@ -1,0 +1,40 @@
+name: Deploy Firestore Rules
+
+# firestore.rules guards live tills. This runs the rules test suite first and
+# refuses to deploy if anything fails, so a bad rule can't reach production.
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # The Firestore emulator is a Java process.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install rules test dependencies
+        run: npm install
+        working-directory: rules-test
+
+      - name: Test rules against the emulator
+        run: npm test
+        working-directory: rules-test
+
+      - name: Write service account key
+        run: echo "$FIREBASE_SERVICE_ACCOUNT" > /tmp/key.json
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+
+      - name: Deploy rules
+        run: npx firebase-tools@13 deploy --only firestore:rules --project restopos-db
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: /tmp/key.json
