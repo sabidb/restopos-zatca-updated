@@ -97,6 +97,20 @@ await t('device CANNOT flip its own status to approved', () =>
   assertFails(updateDoc(doc(owner, 'pending_activations', TRIAL), { status: 'approved' })));
 await t('device CANNOT extend its own expiry', () =>
   assertFails(updateDoc(doc(owner, 'pending_activations', TRIAL), { customExpiryDate: '2099-01-01' })));
+await t('client records terms acceptance at registration', () =>
+  assertSucceeds(setDoc(doc(stranger, 'pending_activations', 'TRIAL-0577777777'), {
+    licenseKey: 'TRIAL-0577777777', status: 'pending', credentialsApproved: false,
+    authUids: [STRANGER], termsAccepted: true,
+    termsAcceptedAt: '2026-07-28T09:00:00.000Z', termsVersion: '1.0',
+    termsAcceptance: { fullName: 'Someone', electronicSignature: 'Someone' } })));
+await t('client CANNOT rewrite its own acceptance afterwards', () =>
+  assertFails(updateDoc(doc(owner, 'pending_activations', TRIAL), {
+    termsAcceptedAt: '2020-01-01T00:00:00.000Z' })));
+await t('client CANNOT withdraw its acceptance', () =>
+  assertFails(updateDoc(doc(owner, 'pending_activations', TRIAL), { termsAccepted: false })));
+await t('admin CAN correct an acceptance record', () =>
+  assertSucceeds(updateDoc(doc(admin, 'pending_activations', TRIAL), {
+    termsAccepted: true, termsVersion: '1.0' })));
 await t('admin CAN approve and set expiry', () =>
   assertSucceeds(updateDoc(doc(admin, 'pending_activations', TRIAL), {
     status: 'approved', customExpiryDate: '2026-12-31' })));

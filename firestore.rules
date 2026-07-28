@@ -48,7 +48,12 @@ service cloud.firestore {
         'credentialsApproved', 'isActive', 'status', 'passwordHash',
         'clientUsername', 'subscriptionPlan', 'customExpiryDate',
         // Brute-force lockout counters — only the Admin SDK (verifyLogin) writes these.
-        'loginFailCount', 'loginLockUntil'
+        'loginFailCount', 'loginLockUntil',
+        // Terms acceptance is a legal record: the client writes it once, at
+        // registration, and can never edit it afterwards. An acceptance its own
+        // signer could backdate or withdraw would be worthless as evidence.
+        // The admin panel can still correct it — isAdmin bypasses this check.
+        'termsAccepted', 'termsAcceptedAt', 'termsVersion', 'termsAcceptance'
       ]);
     }
 

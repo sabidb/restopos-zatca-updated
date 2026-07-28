@@ -9,6 +9,9 @@ import { isTrial, isTrialBuild, trialMeta, trialLicense, trialDaysLeft, trialExp
   setTrialBusinessType, syncTrialMeta, consumeTrialStartError,
   normalizePhone, isValidMobile, trialKeyForPhone, TRIAL_DAYS, TRIAL_LIMITS } from "./trial.js";
 import { initTrialMirror, mirrorTrialData, flushTrialMirror } from "./trialMirror.js";
+import { TERMS_VERSION, TERMS_TITLE, TERMS_DATE, TERMS_PDF_PATH, TERMS_PREAMBLE,
+  TERMS_ACKNOWLEDGMENTS, captureClientIp, buildAcceptanceRecord,
+  printAcceptanceCertificate } from "./terms.js";
 
 // ═══════════════════════════════════════════════════════════════════
 // TRIAL MODE — see src/trial.js. TRIAL is fixed for the life of the page:
@@ -2446,14 +2449,30 @@ function TrialSignup({onClose}){
   const [resumePhone,setResumePhone]=useState("");
   const [error,setError]=useState("");
   const [busy,setBusy]=useState(false);
+  const [pendingTerms,setPendingTerms]=useState(null);
   const set=(k,v)=>{setForm(f=>({...f,[k]:v}));setError("");};
   const phoneDigits=normalizePhone(form.phone);
 
-  async function handleStart(){
+  // A trial is an account, so it accepts the same agreement a registration
+  // does — page 9 binds "by registering an account", not "by paying". The
+  // details it records are simply the ones a trial has: no CR or VAT number.
+  function handleStart(){
     setError("");
     if(!form.businessName.trim())return setError("Business name is required.");
     if(!form.ownerName.trim())return setError("Your name is required.");
     if(!isValidMobile(form.phone))return setError("Enter your 10-digit mobile number (for example 0512345678). It's how your trial is saved and restored.");
+    setPendingTerms({
+      businessName:form.businessName.trim(),
+      ownerName:form.ownerName.trim(),
+      email:form.email.trim().toLowerCase(),
+      phone:phoneDigits,
+      crNumber:"",vatNumber:"",
+      accountType:"trial",
+    });
+  }
+
+  async function createTrial(termsRecord){
+    setError("");
     setBusy(true);
     const key=trialKeyForPhone(form.phone);
     try{
@@ -2499,7 +2518,12 @@ function TrialSignup({onClose}){
         authUids:[user.uid],
         deviceId:navigator.userAgent.slice(0,100),
         deviceInfo:getDeviceInfo(),
+        termsAccepted:true,
+        termsAcceptedAt:termsRecord.acceptedAt,
+        termsVersion:termsRecord.version,
+        termsAcceptance:termsRecord,
       });
+      try{localStorage.setItem("restopos_terms_acceptance",JSON.stringify(termsRecord));}catch(e){}
       beginTrial({
         key,phone:phoneDigits,
         businessName:form.businessName.trim(),
@@ -2510,6 +2534,7 @@ function TrialSignup({onClose}){
       });
     }catch(e){
       setBusy(false);
+      setPendingTerms(null);
       setError("Couldn't start the trial: "+(e.message||"unknown error")+". Check your connection and try again.");
     }
   }
@@ -2537,6 +2562,9 @@ function TrialSignup({onClose}){
       setError("Couldn't look that up: "+(e.message||"unknown error"));
     }
   }
+
+  if(pendingTerms)return<TermsAcceptance details={pendingTerms} busy={busy}
+    onBack={()=>setPendingTerms(null)} onAccept={createTrial}/>;
 
   const fieldStyle={width:"100%",padding:"12px 14px",background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:10,fontSize:14,color:"#fff",fontFamily:"inherit"};
   const labelStyle={fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.6)",display:"block",marginBottom:6,marginTop:14};
@@ -2726,14 +2754,129 @@ function TrialEndedScreen({onRegister}){
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// TERMS ACCEPTANCE GATE
+//
+// Page 9 of the Terms PDF describes this screen and the button on it. The
+// wording here is quoted from that page rather than written fresh, because
+// this is the text the client is agreeing to — it has to match the document
+// they can open from the link below it.
+// ═══════════════════════════════════════════════════════════════════
+function TermsAcceptance({details,onAccept,onBack,busy}){
+  const [ticked,setTicked]=useState(false);
+  const [working,setWorking]=useState(false);
+  const [error,setError]=useState("");
+  const signature=(details?.ownerName||details?.businessName||"").trim();
+
+  async function accept(){
+    if(!ticked)return setError("Please confirm you have read and agree to the Terms & Conditions.");
+    setError("");setWorking(true);
+    try{
+      // Best-effort: an acceptance without an IP is still a valid acceptance.
+      const ip=await captureClientIp();
+      await onAccept(buildAcceptanceRecord(details,ip));
+    }catch(e){
+      setWorking(false);
+      setError("Couldn't record your acceptance: "+(e.message||"unknown error")+". Please try again.");
+    }
+  }
+  const pending=working||busy;
+
+  return(
+    <div dir="ltr" style={{minHeight:"100vh",background:"linear-gradient(135deg,#0a1628 0%,#1A3A5C 50%,#0a2818 100%)",display:"flex",alignItems:"center",justifyContent:"center",padding:20,fontFamily:"'Plus Jakarta Sans',sans-serif"}}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');*{box-sizing:border-box;margin:0;padding:0}`}</style>
+      <div style={{width:"100%",maxWidth:600}}>
+        <div style={{textAlign:"center",marginBottom:20}}>
+          <div style={{fontSize:22,fontWeight:900,color:"#fff"}}>Terms &amp; Conditions</div>
+          <div style={{fontSize:12,color:"rgba(255,255,255,0.5)",marginTop:4}}>
+            {TERMS_TITLE} · v{TERMS_VERSION} · {TERMS_DATE}
+          </div>
+        </div>
+
+        <div style={{background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:20,padding:26,maxHeight:"78vh",overflow:"auto"}}>
+          <a href={TERMS_PDF_PATH} target="_blank" rel="noopener noreferrer"
+            style={{display:"flex",alignItems:"center",gap:12,padding:"13px 15px",background:"rgba(99,102,241,0.14)",border:"1px solid rgba(99,102,241,0.4)",borderRadius:12,textDecoration:"none",marginBottom:18}}>
+            <span style={{fontSize:20}}>📄</span>
+            <div style={{flex:1}}>
+              <div style={{fontSize:13,fontWeight:800,color:"#c7d2fe"}}>Read the full Terms &amp; Conditions</div>
+              <div style={{fontSize:11,color:"rgba(255,255,255,0.45)"}}>Opens the complete agreement — 10 pages, Saudi Arabian law</div>
+            </div>
+            <span style={{color:"rgba(199,210,254,0.6)"}}>↗</span>
+          </a>
+
+          <div style={{fontSize:12.5,color:"rgba(255,255,255,0.7)",lineHeight:1.65,marginBottom:14}}>
+            {TERMS_PREAMBLE}
+          </div>
+
+          <div style={{background:"rgba(0,0,0,0.22)",borderRadius:12,padding:"14px 16px",marginBottom:18}}>
+            {TERMS_ACKNOWLEDGMENTS.map((t,i)=>(
+              <div key={i} style={{display:"flex",gap:10,marginBottom:i===TERMS_ACKNOWLEDGMENTS.length-1?0:11}}>
+                <span style={{color:"#2ECC71",fontWeight:900,fontSize:12,flexShrink:0,fontFamily:"monospace"}}>[X]</span>
+                <span style={{fontSize:12,color:"rgba(255,255,255,0.72)",lineHeight:1.6}}>{t}</span>
+              </div>
+            ))}
+          </div>
+
+          {/* The eight fields page 9 requires. Shown before acceptance so the
+              client can see exactly what is being recorded about them. */}
+          <div style={{background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:12,padding:"14px 16px",marginBottom:18}}>
+            <div style={{fontSize:11,fontWeight:800,color:"#F0A500",marginBottom:10,letterSpacing:"0.06em"}}>WHAT GETS RECORDED</div>
+            {[["Name / signature",signature],["Business",details?.businessName],["Email",details?.email],
+              ["Phone",details?.phone],["VAT number",details?.vatNumber||"— not provided —"],
+              ["CR number",details?.crNumber||"— not provided —"],["Date &amp; time","At the moment you accept"],
+              ["IP address","Captured for the legal record"]].map(([k,v])=>(
+              <div key={k} style={{display:"flex",gap:10,marginBottom:6,fontSize:11.5}}>
+                <span style={{color:"rgba(255,255,255,0.4)",width:132,flexShrink:0}}>{k.replace("&amp;","&")}</span>
+                <span style={{color:"rgba(255,255,255,0.8)",fontWeight:600,wordBreak:"break-word"}}>{v||"—"}</span>
+              </div>
+            ))}
+          </div>
+
+          <label style={{display:"flex",gap:11,alignItems:"flex-start",padding:"13px 15px",background:ticked?"rgba(26,107,74,0.22)":"rgba(255,255,255,0.05)",border:`1.5px solid ${ticked?"#1A6B4A":"rgba(255,255,255,0.15)"}`,borderRadius:12,cursor:"pointer",marginBottom:14}}>
+            <input type="checkbox" checked={ticked} onChange={e=>{setTicked(e.target.checked);setError("");}}
+              style={{width:18,height:18,marginTop:1,flexShrink:0,cursor:"pointer",accentColor:"#1A6B4A"}}/>
+            <span style={{fontSize:12.5,color:"rgba(255,255,255,0.85)",lineHeight:1.6}}>
+              I have read and understood the full Terms &amp; Conditions and I agree to all of the above
+              on behalf of <strong style={{color:"#fff"}}>{details?.businessName||"my business"}</strong>.
+            </span>
+          </label>
+
+          {error&&<div style={{padding:"10px 12px",background:"rgba(217,64,64,0.2)",border:"1px solid rgba(217,64,64,0.4)",borderRadius:10,fontSize:12.5,color:"#ff9d9d",marginBottom:12,lineHeight:1.5}}>{error}</div>}
+
+          <button onClick={accept} disabled={pending||!ticked}
+            style={{width:"100%",padding:15,background:(pending||!ticked)?"rgba(255,255,255,0.12)":"linear-gradient(135deg,#1A6B4A,#134D36)",color:(pending||!ticked)?"rgba(255,255,255,0.4)":"#fff",border:"none",borderRadius:12,fontSize:15,fontWeight:800,cursor:(pending||!ticked)?"not-allowed":"pointer",fontFamily:"inherit"}}>
+            {pending?"Recording your acceptance…":"I Agree and Continue"}
+          </button>
+          {onBack&&(
+            <button onClick={onBack} disabled={pending}
+              style={{width:"100%",marginTop:9,padding:11,background:"transparent",color:"rgba(255,255,255,0.4)",border:"1px solid rgba(255,255,255,0.12)",borderRadius:12,fontSize:12.5,cursor:"pointer",fontFamily:"inherit"}}>
+              ← Back
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // BUSINESS REGISTRATION
 // ═══════════════════════════════════════════════════════════════════
-function BusinessRegistration({onNext,onLogin,onTryTrial}){
-  const [form,setForm]=useState({businessName:"",businessNameAr:"",ownerName:"",email:"",crNumber:"",vatNumber:"",address:"",city:"Riyadh",phone:"",businessType:"restaurant"});
-  const [isOwner,setIsOwner]=useState(null);
+// `initial` is what the client already typed. Registration now leads to the
+// terms screen, and reading an agreement before signing it is exactly the
+// moment someone presses Back — so the form has to come back filled in,
+// attached documents included, rather than making them start over.
+function BusinessRegistration({onNext,onLogin,onTryTrial,initial}){
+  const [form,setForm]=useState(()=>{
+    const blank={businessName:"",businessNameAr:"",ownerName:"",email:"",crNumber:"",vatNumber:"",address:"",city:"Riyadh",phone:"",businessType:"restaurant"};
+    if(!initial)return blank;
+    const seeded={...blank};
+    for(const k of Object.keys(blank))if(initial[k]!=null)seeded[k]=initial[k];
+    return seeded;
+  });
+  const [isOwner,setIsOwner]=useState(initial?.isOwner??null);
   const [error,setError]=useState("");
-  const [crFile,setCrFile]=useState(null);
-  const [vatFile,setVatFile]=useState(null);
+  const [crFile,setCrFile]=useState(initial?.crFile||null);
+  const [vatFile,setVatFile]=useState(initial?.vatFile||null);
   const [fileError,setFileError]=useState("");
   const set=(k,v)=>setForm(f=>({...f,[k]:v}));
 
@@ -2881,8 +3024,14 @@ function LicenseVerification({businessData,onSuccess,onBack,onLogin,onTryTrial})
       const existingSnap=await getDoc(doc(db,"pending_activations",cleanKey));
       if(!existingSnap.exists()){
         // Strip File objects before saving to Firestore — Firestore can't store them
-      const {crFile:_cf,vatFile:_vf,...safeBusinessData}=businessData;
-      await setDoc(doc(db,"pending_activations",cleanKey),{...safeBusinessData,licenseKey:cleanKey,authUids:[authUser.uid],submittedAt:new Date().toISOString(),status:"pending",isActive:true,credentialsApproved:false,forceLogout:false,subscriptionPlan:"basic",deviceId:navigator.userAgent.slice(0,100),deviceInfo:devInfo});
+      const {crFile:_cf,vatFile:_vf,termsAcceptance:_ta,...safeBusinessData}=businessData;
+      // termsAcceptance carries the eight fields page 9 of the agreement
+      // requires. Written at create, and locked against later client edits by
+      // firestore.rules — an acceptance record that its own signer can rewrite
+      // afterwards is not a record.
+      const _terms=businessData?.termsAcceptance||null;
+      await setDoc(doc(db,"pending_activations",cleanKey),{...safeBusinessData,licenseKey:cleanKey,authUids:[authUser.uid],submittedAt:new Date().toISOString(),status:"pending",isActive:true,credentialsApproved:false,forceLogout:false,subscriptionPlan:"basic",deviceId:navigator.userAgent.slice(0,100),deviceInfo:devInfo,
+        termsAccepted:!!_terms,termsAcceptedAt:_terms?.acceptedAt||null,termsVersion:_terms?.version||null,termsAcceptance:_terms});
       if(businessData.email){
         await setDoc(doc(db,"email_index",businessData.email.trim().toLowerCase()),{licenseKey:cleanKey},{merge:true});
       }
@@ -10605,6 +10754,44 @@ function Help({license: helpLicense, lang="en", onLogout}){
             <strong>Your agreement is on record.</strong> A signed copy including your name, VAT number, CR number, and acceptance timestamp was saved when you registered. Contact <strong>restopos.noreply@gmail.com</strong> if you need a copy.
           </div>
         </div>
+        {(()=>{
+          const rec=helpLicense?.termsAcceptance||LS.get("restopos_terms_acceptance");
+          if(!rec||!rec.acceptedAt)return(
+            <div style={{padding:'14px 16px',background:'#FFF6E5',border:'1px solid #F0C97A',borderRadius:10,fontSize:12.5,color:'#7A5B12',lineHeight:1.65}}>
+              <strong>No signed copy on this device.</strong> Accounts created before the
+              acceptance record was introduced have no stored copy. Email{" "}
+              <strong>restopos.noreply@gmail.com</strong> and we will confirm your agreement status.
+            </div>
+          );
+          const line=(k,v)=>(
+            <div key={k} style={{display:'flex',gap:10,padding:'7px 0',borderBottom:'1px solid #E4E9F0',fontSize:12}}>
+              <span style={{color:'#5D6D7E',width:150,flexShrink:0}}>{k}</span>
+              <span style={{fontWeight:700,wordBreak:'break-word'}}>{v||'—'}</span>
+            </div>
+          );
+          return(
+            <div style={{padding:'16px 18px',background:'#F4F7FB',border:'1px solid #D6DDE8',borderRadius:10}}>
+              <div style={{fontSize:13,fontWeight:800,color:'#1A2E4A',marginBottom:4}}>🔏 Your signed acceptance</div>
+              <div style={{fontSize:11.5,color:'#5D6D7E',marginBottom:12}}>{rec.document||`${TERMS_TITLE} v${TERMS_VERSION}`}</div>
+              {line('Electronic signature',rec.electronicSignature||rec.fullName)}
+              {line('Business',rec.businessName)}
+              {line('Email',rec.email)}
+              {line('Phone',rec.phone)}
+              {line('VAT number',rec.vatNumber||'— not provided —')}
+              {line('CR number',rec.crNumber||'— not provided —')}
+              {line('Accepted at',rec.acceptedAt?fmtDateTime(rec.acceptedAt):'—')}
+              {line('IP address',rec.ipAddress)}
+              <button onClick={()=>printAcceptanceCertificate(rec,helpLicense)}
+                style={{width:'100%',marginTop:14,padding:'12px 14px',background:'linear-gradient(135deg,#1A2E4A,#2C4A6E)',color:'#fff',border:'none',borderRadius:10,fontSize:13,fontWeight:800,cursor:'pointer',fontFamily:'inherit'}}>
+                🖨️ Download my signed copy (PDF)
+              </button>
+              <div style={{fontSize:10.5,color:'#7A8798',marginTop:8,textAlign:'center',lineHeight:1.6}}>
+                Opens your print dialog — choose “Save as PDF”. Keep it with the full
+                Terms &amp; Conditions document above.
+              </div>
+            </div>
+          );
+        })()}
       </Card>}
     </div>
   </div>);
@@ -15636,7 +15823,16 @@ export default function App(){
   const trialSignup=showTrialSignup?<TrialSignup onClose={()=>setShowTrialSignup(false)}/>:null;
   // Day 15: the trial locks, but nothing is deleted — the workspace and its
   // cloud copy both stay put, waiting for the client to register.
-  if(step==="register")return<>{trialSignup}<BusinessRegistration onNext={(data)=>{setBusinessData(data);setStep("license");}} onLogin={()=>setStep("clientLogin")} onTryTrial={tryTrial}/></>;
+  if(step==="register")return<>{trialSignup}<BusinessRegistration initial={businessData} onNext={(data)=>{setBusinessData(data);setStep("terms");}} onLogin={()=>setStep("clientLogin")} onTryTrial={tryTrial}/></>;
+  // Page 9 of the agreement puts acceptance at registration, before the account
+  // exists, and populates its fields from the registration details — so it goes
+  // between the form and licence activation, not after.
+  if(step==="terms")return<TermsAcceptance details={businessData} onBack={()=>setStep("register")}
+    onAccept={async(record)=>{
+      setBusinessData(d=>({...d,termsAcceptance:record}));
+      try{LS.set("restopos_terms_acceptance",record);}catch(e){}
+      setStep("license");
+    }}/>;
   if(step==="license")return<>{trialSignup}<LicenseVerification businessData={businessData||{businessName:"",crNumber:"",vatNumber:"",address:"",city:"",phone:""}} onSuccess={(lic)=>{setLicense(lic);setStep("setCredentials");}} onBack={()=>setStep("register")} onLogin={()=>setStep("clientLogin")} onTryTrial={tryTrial}/></>;
   if(step==="setCredentials")return<SetCredentials license={license} onDone={()=>setStep("pendingApproval")}/>;
   if(step==="pendingApproval")return<PendingApprovalScreen license={license} onApproved={()=>setStep("clientLogin")} onSwitchAccount={handleSwitchAccount}/>;
