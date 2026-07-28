@@ -1,0 +1,32 @@
+name: Deploy Firestore Indexes
+
+# Separate from the rules workflow on purpose. Rules take effect instantly;
+# indexes build in the background and a large collection can take a while, so
+# these are deployed deliberately rather than as a side effect of a rules push.
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Write service account key
+        run: echo "$FIREBASE_SERVICE_ACCOUNT" > /tmp/key.json
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+
+      - name: Deploy indexes
+        # No --force, ever. A deploy reconciles the whole index set, and --force
+        # is how you tell the CLI "delete the live indexes my file forgot".
+        # firestore.indexes.json lists every existing index, so this run is
+        # additive and the CLI has nothing to prompt about. If it ever does
+        # prompt, the file has fallen behind the project — fix the file.
+        run: npx firebase-tools@13 deploy --only firestore:indexes --project restopos-db
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: /tmp/key.json

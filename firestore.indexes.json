@@ -1,20 +1,35 @@
 {
   "//": [
-    "Composite indexes these queries need. NOT deployed by the workflow.",
+    "Composite indexes for this project. This file is now COMPLETE: it lists",
+    "both indexes that already exist in restopos-db plus the two the current",
+    "Cloud Functions need. Deploying it is therefore additive — it creates what",
+    "is missing and deletes nothing.",
     "",
-    "`firebase deploy --only firestore:indexes` reconciles the ENTIRE index set:",
-    "any index live in the project but missing from this file is deleted. The",
-    "project already has indexes predating this file, so deploying it blind would",
-    "drop them and break whatever queries depend on them.",
+    "Why that matters: `firebase deploy --only firestore:indexes` reconciles the",
+    "ENTIRE set. Any index live in the project but absent here is deleted, and",
+    "the CLI refuses non-interactively rather than do that silently. That is why",
+    "the earlier attempt failed. Never pass --force to work around it; --force",
+    "means 'yes, delete the ones I forgot'.",
     "",
-    "Before deploying indexes: open Firebase console -> Firestore -> Indexes, add",
-    "every existing composite index to this file, and only then deploy. Until that",
-    "merge is done this file is documentation, and a missing index shows up in",
-    "production as a failed export with a create-it link in the browser console."
+    "Two kinds of index are NOT listed here and must not be added:",
+    "  - single-field indexes (Firestore creates those automatically, in both",
+    "    directions). loadArchivedRange's client_data/{key}/invoices query is",
+    "    range + orderBy on `date` alone, so it is already served. A composite",
+    "    entry with one field is rejected by the CLI outright.",
+    "  - anything under fieldOverrides. The project has none; the CLI's earlier",
+    "    reconcile error named only the 2 extra indexes, and it reports missing",
+    "    field overrides in the same breath when they exist. Re-check the",
+    "    console's 'Single field' tab before deploying if that ever changes."
   ],
   "indexes": [
     {
-      "//": "zatcaChain: this tenant's chain head and recent invoices.",
+      "//": [
+        "zatcaChain: this tenant's chain head and recent invoices.",
+        "MISSING in production as of 2026-07-28 — this deploy creates it. Until",
+        "then the chain lookup fails with FAILED_PRECONDITION and a till that",
+        "was wiped or replaced restarts its ICV sequence instead of continuing",
+        "the audited one."
+      ],
       "collectionGroup": "zatca_invoices",
       "queryScope": "COLLECTION",
       "fields": [
@@ -31,8 +46,11 @@
     {
       "//": [
         "zatcaExport: a date range for one tenant, paged. invoice_number is in",
-        "the sort so the cursor is unambiguous \u2014 ordering on timestamp alone",
-        "would skip invoices sharing a second, which a busy till produces."
+        "the sort so the cursor is unambiguous — ordering on timestamp alone",
+        "would skip invoices sharing a second, which a busy till produces.",
+        "MISSING in production as of 2026-07-28. The legacy (seller_vat,",
+        "timestamp) index below does NOT cover this: adding a second sort key",
+        "changes the index the query needs."
       ],
       "collectionGroup": "zatca_invoices",
       "queryScope": "COLLECTION",
@@ -52,12 +70,48 @@
       ]
     },
     {
-      "//": "loadArchivedRange: a client's own bills across a date range.",
-      "collectionGroup": "invoices",
+      "//": [
+        "LEGACY — already live (index ID CICAgOjXh4EK). Left from the export",
+        "screen back when the browser queried zatca_invoices directly and sorted",
+        "on timestamp alone. Nothing runs that query now; it is listed here only",
+        "so a deploy does not delete it. Safe to drop from the console once the",
+        "index above has finished building."
+      ],
+      "collectionGroup": "zatca_invoices",
       "queryScope": "COLLECTION",
       "fields": [
         {
-          "fieldPath": "date",
+          "fieldPath": "seller_vat",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "//": [
+        "ORPHAN — already live (index ID CICAgJiUpoMK). No query in any of the",
+        "three repos, in any commit, filters or sorts by seller_name; it was",
+        "created by hand in the console. It serves nothing else either, because",
+        "seller_name sits between seller_vat and timestamp and an index only",
+        "answers a query when the leading fields line up with no gaps. Listed",
+        "purely so a deploy does not delete it. Safe to drop."
+      ],
+      "collectionGroup": "zatca_invoices",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "seller_vat",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "seller_name",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
           "order": "ASCENDING"
         }
       ]
