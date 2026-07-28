@@ -10574,7 +10574,7 @@ function Help({license: helpLicense, lang="en", onLogout}){
           </div>
         </div>
         <div style={{display:'flex',flexDirection:'column',gap:10,marginBottom:20}}>
-          <a href="https://restopos.store/RestoPOS_Terms_and_Conditions.pdf" target="_blank" rel="noopener noreferrer"
+          <a href="/RestoPOS_Terms_and_Conditions.pdf" target="_blank" rel="noopener noreferrer"
             style={{display:'flex',alignItems:'center',gap:12,padding:'14px 16px',background:'linear-gradient(135deg,#1A2E4A,#2C4A6E)',color:'#fff',borderRadius:10,textDecoration:'none',fontFamily:'inherit'}}>
             <span style={{fontSize:22}}>📄</span>
             <div style={{flex:1}}>
@@ -10583,7 +10583,7 @@ function Help({license: helpLicense, lang="en", onLogout}){
             </div>
             <span style={{fontSize:18,opacity:0.7}}>↗</span>
           </a>
-          <a href="https://restopos.store/RestoPOS_Terms_and_Conditions.pdf" target="_blank" rel="noopener noreferrer"
+          <a href="/RestoPOS_Terms_and_Conditions.pdf" target="_blank" rel="noopener noreferrer"
             style={{display:'flex',alignItems:'center',gap:12,padding:'14px 16px',background:'#fff',border:'1.5px solid #D6DDE8',color:'#1A2E4A',borderRadius:10,textDecoration:'none',fontFamily:'inherit'}}>
             <span style={{fontSize:22}}>⬇️</span>
             <div style={{flex:1}}>
