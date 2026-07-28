@@ -32,8 +32,10 @@ async function patch(path, obj) {
   const r = await fetch(`${BASE}/${path}?${mask}`, { method: 'PATCH', headers: H, body: JSON.stringify({ fields: fields(obj) }) });
   if (!r.ok) throw new Error(`${path}: ${r.status} ${await r.text()}`);
 }
-async function listDays(key) {
-  const r = await fetch(`${BASE}/client_data/${key}/sales_days`, { headers: H });
+// Every bill is its own document now, so the archive is listed by invoice and
+// the business days are derived from them.
+async function listBills(key) {
+  const r = await fetch(`${BASE}/client_data/${key}/invoices`, { headers: H });
   if (!r.ok) return [];
   return (await r.json()).documents || [];
 }
@@ -168,19 +170,25 @@ console.log('\n── a real sale reaches the archive ────────�
     await p.evaluate(() => { document.dispatchEvent(new Event('visibilitychange')); });
     await p.waitForTimeout(3000);
 
-    let docs = [];
+    let bills = [];
     for (let i = 0; i < 30; i++) {
-      docs = await listDays(trialKey);
-      if (docs.length >= 3) break;
+      bills = await listBills(trialKey);
+      if (bills.length >= 4) break;
       await p.waitForTimeout(1000);
     }
-    const dates = docs.map((d) => d.fields?.date?.stringValue).sort();
-    t('backfill uploads history already on the device', docs.length >= 3, `days: ${dates.join(', ') || 'none'}`);
+    const dates = [...new Set(bills.map((d) => d.fields?.date?.stringValue))].sort();
+    const ids = bills.map((d) => d.fields?.id?.stringValue);
+    t('backfill uploads history already on the device', bills.length >= 4,
+      `${bills.length} bill(s) over: ${dates.join(', ') || 'none'}`);
     t("today's sales reached the cloud", dates.includes(today), `expected ${today}`);
     t('an old month bucket reached the cloud', dates.includes('2026-05-14'));
     t('close-day archived sales reached the cloud', dates.includes('2026-05-15'));
-    const withData = docs.find((d) => (d.fields?.data?.stringValue || '').includes('INV-2026-05-14-1'));
-    t('the day document carries the actual invoice', !!withData);
+    // The point of the rewrite: a bill is retrievable on its own, under its own
+    // invoice number, rather than buried in a blob of the whole day.
+    t('each bill is its own document, keyed by invoice number',
+      ids.includes('INV-2026-05-14-1')
+      && bills.every((d) => d.name.endsWith('/' + d.fields.id.stringValue)),
+      ids.slice(0, 3).join(', '));
   }
   t('no page errors during trial + sale', errs.length === 0, errs.slice(0, 3).join(' | '));
   await p.context().close();

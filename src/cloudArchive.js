@@ -1,42 +1,42 @@
 // ═══════════════════════════════════════════════════════════════════
-// DURABLE SALES ARCHIVE — years of history, in the cloud, per client
+// DURABLE SALES ARCHIVE — every bill its own document, kept for years
 //
 // WHY THIS EXISTS
 //
 // Everything a client owned was backed up into a single Firestore document,
-// client_data/{licenseKey}, with each localStorage key stored as one long
-// JSON string field. A Firestore document is capped at 1 MiB. Two consequences
+// client_data/{licenseKey}, with each localStorage key stored as one long JSON
+// string field. A Firestore document is capped at 1 MiB. Two consequences
 // followed, and both were silent:
 //
 //   1. restopos_archived_sales was on that document's sync list, capped at
 //      50,000 records. At a few hundred bytes each that is tens of megabytes
 //      aimed at a 1 MiB limit. Once the document crossed the cap EVERY write
 //      to it failed — menu, settings, customers, all of it — and the only
-//      trace was a console warning, because the sync helper swallows errors.
-//      A client could be running for months with no working backup at all.
+//      trace was a console warning. A client could run for months believing
+//      they were backed up and have nothing.
 //
-//   2. Only the most recent 200 invoices were ever uploaded. The monthly
-//      archives existed on the device and were uploaded for trials only, so a
-//      paid client's older sales lived on exactly one machine. A lost or wiped
-//      device took the history with it, and signing in on a new device
-//      restored the last 200 invoices — under a day's trading for a busy shop.
+//   2. Only the most recent 200 invoices were ever uploaded. A paid client's
+//      older sales lived on exactly one machine.
 //
-// THE SHAPE
+// ONE DOCUMENT PER BILL
 //
 //   client_data/{licenseKey}
-//     ├── (parent doc)                  settings, menu, recent working set
-//     ├── sales_days/{YYYY-MM-DD}       one document per business day
-//     │      └── …__p2, __p3            overflow parts for very busy days
-//     └── sales_index/index             date → {n, total, vat, parts}
+//     ├── invoices/{invoiceNo}       one bill, one document
+//     └── sales_index/index          date → {n, total, vat}
 //
-// A day is the right grain. Per-invoice documents would mean a read per
-// invoice — hundreds of thousands of reads to rebuild a device. A month would
-// put a busy shop back over the 1 MiB limit. A day of 300 invoices encodes to
-// roughly 100 KB, which leaves an order of magnitude of headroom, and five
-// years is about 1,825 documents per client.
+// An earlier version of this bundled each business day into one document with
+// its invoices packed into a compact blob. That was wrong in two ways. A single
+// bill could not be fetched, inspected or produced on its own — answering "show
+// me invoice INV-1042" meant downloading and decoding the whole day — which is
+// no way to hold a tax record. And every new sale rewrote the entire day
+// document, so by evening each invoice cost a ~90 KB rewrite of a growing blob.
 //
-// The index doc means the app can show what history exists, and how big it is,
-// without reading any of it.
+// A bill is written once and never touched again. That is cheaper, it matches
+// what an invoice actually is, and it means the archive can be queried.
+//
+// The index survives because summaries should not cost a read per invoice: it
+// carries per-day totals, so "what does this client have" and "is this period
+// complete" are answered by one small document.
 //
 // RETENTION: nothing here deletes anything. Firestore has no TTL unless one is
 // configured, so history persists until someone removes it deliberately. Five
@@ -46,11 +46,9 @@
 // ═══════════════════════════════════════════════════════════════════
 
 const DEBOUNCE_MS = 8000;
-// Firestore's hard limit is 1 MiB per document. Stay well under it — the
-// encoded payload is not the only thing in the document, and a write that
-// fails because it is two bytes over loses a day of trading.
-const MAX_PART_BYTES = 700000;
-const ENCODING_VERSION = 1;
+const BATCH_LIMIT = 400;          // Firestore caps a batch at 500; leave headroom.
+const PAGE_SIZE = 1000;           // read pagination, so a wide range can't spike memory
+const FP_KEY = "restopos_archive_fingerprints";
 
 let fb = null;
 const timers = {};
@@ -60,67 +58,41 @@ let inFlight = false;
 /** Inject the app's Firestore handles — one Firebase app, one auth session. */
 export function initCloudArchive(deps) { fb = deps; }
 
-// ── Encoding ───────────────────────────────────────────────────────
-//
-// Columnar and lossless. A day's invoices share the same keys, so writing the
-// key names once and then rows of values costs far less than repeating every
-// key on every record — roughly half the bytes, which directly doubles how
-// many invoices fit in a day document.
-//
-// It is deliberately NOT a fixed field list. Sales pick up fields after they
-// are created (a ZATCA invoice number, a void or refund status), and a fixed
-// list would silently drop whichever ones nobody remembered to add.
+// ── Fingerprints ───────────────────────────────────────────────────
+// A bill never changes after it is written, but the till re-queues whole days
+// (a void, a refund, a late ZATCA number). Without a record of what has already
+// been uploaded, every cycle would rewrite every invoice of that day.
+function loadFingerprints() {
+  try { return JSON.parse(localStorage.getItem(FP_KEY) || "{}"); } catch (e) { return {}; }
+}
+function saveFingerprints(fp) {
+  try { localStorage.setItem(FP_KEY, JSON.stringify(fp)); } catch (e) {}
+}
+function fingerprint(obj) {
+  const s = JSON.stringify(obj);
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  return h.toString(36);
+}
 
-// Defensive only: there are no image fields on a sale today, and none should
-// ever arrive here. Anything that looks like embedded binary is dropped rather
-// than stored — it would blow the size budget and is not wanted in the archive.
-const isEmbeddedBinary = (v) => typeof v === "string" && v.length > 512 && /^data:/.test(v);
+// Firestore document ids may not contain "/" and may not be "." or "..".
+// Invoice numbers are shaped INV-1042, but the archive should not be one
+// unusual id away from losing a bill.
+function docIdFor(id) {
+  const clean = String(id == null ? "" : id).replace(/\//g, "_").slice(0, 1400);
+  return !clean || clean === "." || clean === ".." ? null : clean;
+}
 
-export function encodeDay(sales) {
-  const rows = Array.isArray(sales) ? sales : [];
-  const cols = [];
-  const seen = new Set();
-  for (const s of rows) {
-    for (const k of Object.keys(s || {})) {
-      if (!seen.has(k)) { seen.add(k); cols.push(k); }
-    }
+// Defensive only: no sale carries an image today and none should ever reach
+// here. Anything that looks like embedded binary is dropped rather than stored.
+const stripHeavy = (sale) => {
+  const out = {};
+  for (const [k, v] of Object.entries(sale || {})) {
+    if (typeof v === "string" && v.length > 512 && /^data:/.test(v)) continue;
+    if (v !== undefined) out[k] = v;
   }
-  const data = rows.map((s) => cols.map((c) => {
-    const v = s ? s[c] : undefined;
-    if (v === undefined) return null;
-    return isEmbeddedBinary(v) ? null : v;
-  }));
-  return { v: ENCODING_VERSION, cols, rows: data };
-}
-
-export function decodeDay(payload) {
-  if (!payload) return [];
-  // Tolerate a plain array, so a document written by any other path still reads.
-  if (Array.isArray(payload)) return payload;
-  const { cols, rows } = payload;
-  if (!Array.isArray(cols) || !Array.isArray(rows)) return [];
-  return rows.map((r) => {
-    const o = {};
-    for (let i = 0; i < cols.length; i++) if (r[i] !== null && r[i] !== undefined) o[cols[i]] = r[i];
-    return o;
-  });
-}
-
-const bytes = (s) => (typeof TextEncoder !== "undefined" ? new TextEncoder().encode(s).length : s.length * 2);
-
-/**
- * Split a day into as many documents as its size demands. Almost always one.
- * Splitting by row count rather than guessing keeps every part under budget
- * even when a few invoices carry unusually large item lists.
- */
-function splitIntoParts(sales) {
-  const whole = JSON.stringify(encodeDay(sales));
-  if (bytes(whole) <= MAX_PART_BYTES) return [{ payload: whole, sales }];
-  const mid = Math.max(1, Math.floor(sales.length / 2));
-  return [...splitIntoParts(sales.slice(0, mid)), ...splitIntoParts(sales.slice(mid))];
-}
-
-const partId = (date, i) => (i === 0 ? date : `${date}__p${i + 1}`);
+  return out;
+};
 
 const summarise = (sales) => {
   let total = 0, vat = 0, n = 0;
@@ -138,38 +110,47 @@ const summarise = (sales) => {
 
 async function writeDay(licenseKey, date, sales) {
   const { db, doc, collection, setDoc, writeBatch } = fb;
-  const parts = splitIntoParts(sales);
-  const batch = writeBatch(db);
-  parts.forEach((p, i) => {
-    const ref = doc(collection(db, "client_data", licenseKey, "sales_days"), partId(date, i));
-    const sum = summarise(p.sales);
-    batch.set(ref, {
-      date,
-      part: i + 1,
-      parts: parts.length,
-      count: p.sales.length,
-      invoiceCount: sum.n,
-      revenue: sum.total,
-      vat: sum.vat,
-      encoding: ENCODING_VERSION,
-      data: p.payload,
-      updatedAt: new Date().toISOString(),
-    });
-  });
-  await batch.commit();
+  const fps = loadFingerprints();
+  const scope = fps[licenseKey] || (fps[licenseKey] = {});
 
-  // The index lets the app list available history without reading any of it.
+  const changed = [];
+  for (const sale of sales) {
+    const id = docIdFor(sale && sale.id);
+    if (!id) continue;
+    const body = stripHeavy(sale);
+    const fp = fingerprint(body);
+    if (scope[id] === fp) continue;
+    changed.push({ id, body, fp });
+  }
+
+  for (let i = 0; i < changed.length; i += BATCH_LIMIT) {
+    const batch = writeBatch(db);
+    for (const c of changed.slice(i, i + BATCH_LIMIT)) {
+      batch.set(doc(collection(db, "client_data", licenseKey, "invoices"), c.id), {
+        ...c.body,
+        date,
+        archivedAt: new Date().toISOString(),
+      }, { merge: true });
+    }
+    await batch.commit();
+    for (const c of changed.slice(i, i + BATCH_LIMIT)) scope[c.id] = c.fp;
+    saveFingerprints(fps);
+  }
+
+  // The index answers "what history exists" and "is this period complete"
+  // without a read per invoice. Always refreshed, even when no bill changed,
+  // because a void alters the day's totals without adding a document.
   const sum = summarise(sales);
   await setDoc(doc(collection(db, "client_data", licenseKey, "sales_index"), "index"), {
     licenseKey,
-    days: { [date]: { n: sum.n, total: sum.total, vat: sum.vat, parts: parts.length } },
+    days: { [date]: { n: sum.n, total: sum.total, vat: sum.vat } },
     updatedAt: new Date().toISOString(),
   }, { merge: true });
 
-  return parts.length;
+  return changed.length;
 }
 
-/** Queue a day for upload. Debounced so a lunch rush is one write, not fifty. */
+/** Queue a day for upload. Debounced so a lunch rush is one cycle, not fifty. */
 export function archiveSalesDay(licenseKey, date, sales) {
   if (!fb || !licenseKey || !date) return;
   pending[date] = { licenseKey, sales };
@@ -183,19 +164,17 @@ export function archiveSalesDay(licenseKey, date, sales) {
     inFlight = true;
     try {
       const n = await writeDay(job.licenseKey, date, job.sales);
-      console.log(`[Archive] ${date}: ${job.sales.length} sale(s) in ${n} document(s).`);
+      if (n) console.log(`[Archive] ${date}: ${n} bill(s) uploaded.`);
     } catch (e) {
       console.warn("[Archive] failed for", date, "—", e && e.message);
-      // Put it back so the next change retries rather than losing the day.
-      pending[date] = job;
+      pending[date] = job;   // retry on the next change rather than losing the day
     } finally { inFlight = false; }
   }, DEBOUNCE_MS);
 }
 
 /** Write every pending day now — used when the tab is closing. */
 export async function flushArchive() {
-  const dates = Object.keys(pending);
-  for (const d of dates) {
+  for (const d of Object.keys(pending)) {
     const job = pending[d];
     if (!job) continue;
     delete pending[d];
@@ -220,76 +199,106 @@ export async function loadArchiveIndex(licenseKey) {
   }
 }
 
-/** Every invoice for one day, parts reassembled. */
-export async function loadArchivedDay(licenseKey, date) {
-  if (!fb || !licenseKey || !date) return [];
-  const { db, collection, query, where, getDocs } = fb;
-  try {
-    const snap = await getDocs(query(collection(db, "client_data", licenseKey, "sales_days"), where("date", "==", date)));
-    const out = [];
-    snap.docs
-      .sort((a, b) => (a.data().part || 1) - (b.data().part || 1))
-      .forEach((d) => {
-        try { out.push(...decodeDay(JSON.parse(d.data().data || "null"))); }
-        catch (e) { console.warn("[Archive] undecodable part", d.id); }
-      });
-    return out;
-  } catch (e) {
-    console.warn("[Archive] day read failed:", date, e && e.message);
-    return [];
-  }
-}
+const cleanRow = (d) => { const { archivedAt, ...rest } = d || {}; return rest; };
 
 /**
- * Every invoice between two dates (inclusive), oldest first. This is what
- * reports over an old period should call — the data does not need to be on the
- * device, and for five years of trading it could not be.
+ * Bills between two dates (inclusive), oldest first. Paginated, so a request
+ * for several years cannot pull an unbounded result set into memory at once.
  */
 export async function loadArchivedRange(licenseKey, fromDate, toDate) {
   if (!fb || !licenseKey) return [];
-  const { db, collection, query, where, orderBy, getDocs } = fb;
+  const { db, collection, query, where, orderBy, limit, startAfter, getDocs } = fb;
+  const out = [];
   try {
-    const snap = await getDocs(query(
-      collection(db, "client_data", licenseKey, "sales_days"),
-      where("date", ">=", fromDate), where("date", "<=", toDate), orderBy("date", "asc"),
-    ));
-    const byDay = {};
-    snap.docs.forEach((d) => {
-      const v = d.data();
-      (byDay[v.date] = byDay[v.date] || []).push(v);
-    });
-    const out = [];
-    Object.keys(byDay).sort().forEach((date) => {
-      byDay[date].sort((a, b) => (a.part || 1) - (b.part || 1)).forEach((v) => {
-        try { out.push(...decodeDay(JSON.parse(v.data || "null"))); } catch (e) {}
-      });
-    });
-    return out;
+    let cursor = null;
+    for (;;) {
+      const parts = [
+        collection(db, "client_data", licenseKey, "invoices"),
+        where("date", ">=", fromDate), where("date", "<=", toDate),
+        orderBy("date", "asc"),
+        ...(cursor ? [startAfter(cursor)] : []),
+        limit(PAGE_SIZE),
+      ];
+      const snap = await getDocs(query(...parts));
+      snap.docs.forEach((d) => out.push(cleanRow(d.data())));
+      if (snap.docs.length < PAGE_SIZE) break;
+      cursor = snap.docs[snap.docs.length - 1];
+    }
   } catch (e) {
     console.warn("[Archive] range read failed:", e && e.message);
-    return [];
   }
+  // Days written by the previous day-blob format, so history uploaded before
+  // this change is not stranded.
+  try { out.push(...await readLegacyRange(licenseKey, fromDate, toDate, new Set(out.map((s) => s.id)))); }
+  catch (e) {}
+  // Invoice number breaks ties: two bills rung up in the same second would
+  // otherwise come back in whatever order the pages happened to arrive, so the
+  // same report could list them differently twice running.
+  out.sort((a, b) =>
+    String(a.createdAt || a.date || "").localeCompare(String(b.createdAt || b.date || ""))
+    || String(a.id || "").localeCompare(String(b.id || "")));
+  return out;
+}
+
+/** Every bill for one day. */
+export async function loadArchivedDay(licenseKey, date) {
+  return loadArchivedRange(licenseKey, date, date);
+}
+
+/** A single bill, by invoice number — the lookup the day-blob format could not do. */
+export async function loadArchivedInvoice(licenseKey, invoiceNo) {
+  if (!fb || !licenseKey) return null;
+  try {
+    const { db, doc, collection, getDoc } = fb;
+    const id = docIdFor(invoiceNo);
+    if (!id) return null;
+    const snap = await getDoc(doc(collection(db, "client_data", licenseKey, "invoices"), id));
+    return snap.exists() ? cleanRow(snap.data()) : null;
+  } catch (e) { return null; }
+}
+
+// ── Legacy day-blob compatibility ──────────────────────────────────
+// Read-only. Nothing writes this shape any more; it exists so a client who
+// uploaded under the previous format still sees their history.
+function decodeLegacy(payload) {
+  if (!payload) return [];
+  if (Array.isArray(payload)) return payload;
+  const { cols, rows } = payload;
+  if (!Array.isArray(cols) || !Array.isArray(rows)) return [];
+  return rows.map((r) => {
+    const o = {};
+    for (let i = 0; i < cols.length; i++) if (r[i] !== null && r[i] !== undefined) o[cols[i]] = r[i];
+    return o;
+  });
+}
+
+async function readLegacyRange(licenseKey, fromDate, toDate, seen) {
+  const { db, collection, query, where, orderBy, getDocs } = fb;
+  const snap = await getDocs(query(
+    collection(db, "client_data", licenseKey, "sales_days"),
+    where("date", ">=", fromDate), where("date", "<=", toDate), orderBy("date", "asc"),
+  ));
+  const out = [];
+  snap.docs
+    .sort((a, b) => (a.data().part || 1) - (b.data().part || 1))
+    .forEach((d) => {
+      try {
+        for (const s of decodeLegacy(JSON.parse(d.data().data || "null"))) {
+          if (s && s.id && !seen.has(s.id)) { seen.add(s.id); out.push(s); }
+        }
+      } catch (e) {}
+    });
+  return out;
 }
 
 // ── Backfilling what is already on the device ──────────────────────
 
 /**
- * Upload history that predates this archive existing.
- *
- * Without this, an existing client upgrading to this version would sit on
- * months of sales that never reach the cloud: days are only queued when a sale
- * changes them, so a shop's back catalogue would upload one day at a time, and
- * only for days that happened to see new activity. Everything before that would
- * still live on exactly one machine — the situation this whole module exists to
- * end.
- *
- * It reads every local source of sales, groups by business day, and queues the
- * days the cloud is missing or has a different count for. Days that already
- * match are skipped, so on a settled device this costs one index read and
- * nothing else.
- *
- * Capped per run, oldest first, so a client with years of local history uploads
- * steadily across sessions instead of firing thousands of writes at one boot.
+ * Upload history that predates this archive existing, so an upgrading client
+ * does not sit on months of sales that never leave their machine. It compares
+ * against the cloud index first, so a device already in step costs one read.
+ * Capped per run, oldest first, so years of local history upload steadily
+ * across sessions rather than firing thousands of writes at one boot.
  */
 const BACKFILL_DAYS_PER_RUN = 45;
 
@@ -298,7 +307,6 @@ export async function backfillArchive(licenseKey) {
   let index = {};
   try { index = await loadArchiveIndex(licenseKey); } catch (e) { return { queued: 0, remaining: 0 }; }
 
-  // Every place a sale can be sitting on this device.
   const sources = [];
   try { sources.push(JSON.parse(localStorage.getItem("restopos_sales") || "[]")); } catch (e) {}
   try { sources.push(JSON.parse(localStorage.getItem("restopos_archived_sales") || "[]")); } catch (e) {}
@@ -339,39 +347,40 @@ export async function backfillArchive(licenseKey) {
 // localStorage is a few megabytes. Five years of invoices is hundreds. So a
 // new device gets the recent window locally — enough to work offline and to
 // answer "what did we take yesterday" instantly — and anything older is read
-// from the cloud on demand. Trying to pull it all down would fail on quota
-// partway through and leave a mess.
+// from the cloud on demand. Pulling it all down would fail on quota partway
+// through and leave a mess.
 const RESTORE_DAYS = 120;
 const RESTORE_BUDGET_BYTES = 3000000;
+const bytes = (s) => (typeof TextEncoder !== "undefined" ? new TextEncoder().encode(s).length : s.length * 2);
 
-/**
- * Rebuild the device's monthly sales buckets from the cloud. Returns what it
- * managed to restore and what it deliberately left in the cloud, so the caller
- * can tell the client the truth about where their history is.
- */
 export async function restoreArchiveToDevice(licenseKey, { days = RESTORE_DAYS } = {}) {
   if (!fb || !licenseKey) return { days: 0, sales: 0, older: 0, truncated: false };
   const index = await loadArchiveIndex(licenseKey);
-  const allDates = Object.keys(index).sort();               // oldest → newest
+  const allDates = Object.keys(index).sort();
   if (!allDates.length) return { days: 0, sales: 0, older: 0, truncated: false };
 
   const wanted = allDates.slice(-days);
   const older = allDates.length - wanted.length;
+
+  // One range query rather than a query per day: the same rows, far fewer
+  // round trips on a device that may be on a phone connection.
+  const rows = await loadArchivedRange(licenseKey, wanted[0], wanted[wanted.length - 1]);
+
+  const byDate = {};
+  for (const s of rows) if (s && s.date) (byDate[s.date] = byDate[s.date] || []).push(s);
+
   const byMonth = {};
   let used = 0, restoredSales = 0, restoredDays = 0, truncated = false;
-
   // Newest first, so if the budget runs out the client keeps the days they are
   // most likely to look at rather than whatever happened to come first.
-  for (const date of [...wanted].reverse()) {
-    const sales = await loadArchivedDay(licenseKey, date);
-    if (!sales.length) continue;
+  for (const date of Object.keys(byDate).sort().reverse()) {
+    const sales = byDate[date];
     const size = bytes(JSON.stringify(sales));
     if (used + size > RESTORE_BUDGET_BYTES) { truncated = true; break; }
     used += size;
     restoredSales += sales.length;
     restoredDays += 1;
-    const month = date.slice(0, 7);
-    (byMonth[month] = byMonth[month] || []).push(...sales);
+    (byMonth[date.slice(0, 7)] = byMonth[date.slice(0, 7)] || []).push(...sales);
   }
 
   for (const [month, sales] of Object.entries(byMonth)) {
@@ -383,14 +392,13 @@ export async function restoreArchiveToDevice(licenseKey, { days = RESTORE_DAYS }
       merged.sort((a, b) => String(a.createdAt || a.date || "").localeCompare(String(b.createdAt || b.date || "")));
       localStorage.setItem(key, JSON.stringify(merged));
     } catch (e) {
-      // Out of quota — stop rather than half-writing more months.
       console.warn("[Archive] restore stopped at", month, "—", e && e.message);
       truncated = true;
       break;
     }
   }
 
-  console.log(`[Archive] restored ${restoredSales} sale(s) across ${restoredDays} day(s);`,
+  console.log(`[Archive] restored ${restoredSales} bill(s) across ${restoredDays} day(s);`,
     `${older} older day(s) remain in the cloud.`);
   return { days: restoredDays, sales: restoredSales, older, truncated };
 }

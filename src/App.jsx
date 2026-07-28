@@ -64,7 +64,7 @@ const verifyLoginFn = httpsCallable(functions, "verifyLogin");
 if (TRIAL) initTrialMirror({ db, doc, collection, setDoc, writeBatch });
 // Every client's sales history, one document per business day, kept for years.
 // Must also come after db exists.
-initCloudArchive({ db, doc, collection, setDoc, getDoc, getDocs, query, where, orderBy, writeBatch });
+initCloudArchive({ db, doc, collection, setDoc, getDoc, getDocs, query, where, orderBy, limit, startAfter, writeBatch });
 // ⚠️ TEMPORARY DEBUG HOOK — remove once the auth/registration issue is confirmed fixed.
 if (typeof window !== "undefined") {
   window.__restoposDebug = { auth, db, registerDeviceUid: null };

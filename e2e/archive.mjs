@@ -14,7 +14,7 @@
 // ═══════════════════════════════════════════════════════════════════
 import { initializeTestEnvironment, assertFails, assertSucceeds } from '@firebase/rules-unit-testing';
 import {
-  doc, collection, setDoc, getDoc, getDocs, query, where, orderBy, writeBatch,
+  doc, collection, setDoc, getDoc, getDocs, query, where, orderBy, limit, startAfter, writeBatch,
 } from 'firebase/firestore';
 import fs from 'fs';
 
@@ -47,7 +47,7 @@ const db = env.authenticatedContext(DEVICE).firestore();
 const strangerDb = env.authenticatedContext('someone-else').firestore();
 
 const archive = await import('../src/cloudArchive.js');
-archive.initCloudArchive({ db, doc, collection, setDoc, getDoc, getDocs, query, where, orderBy, writeBatch });
+archive.initCloudArchive({ db, doc, collection, setDoc, getDoc, getDocs, query, where, orderBy, limit, startAfter, writeBatch });
 
 let pass = 0, fail = 0;
 async function t(name, fn) {
@@ -70,19 +70,36 @@ const mkSale = (date, i) => ({
   zatcaInvoiceNumber: `INV-${String(i).padStart(6, '0')}`,   // added after the sale
 });
 
-console.log('\n── encoding ───────────────────────────────────────────');
-await t('round-trips a day losslessly, including late-added fields', () => {
-  const sales = [mkSale('2026-07-01', 1), { ...mkSale('2026-07-01', 2), status: 'voided', voidReason: 'mistake' }];
-  const back = archive.decodeDay(archive.encodeDay(sales));
-  eq(JSON.stringify(back), JSON.stringify(sales), 'round-trip');
+console.log('\n── one document per bill ──────────────────────────────');
+await t('a bill is stored under its own invoice number', async () => {
+  const sale = mkSale('2026-07-01', 7);
+  archive.archiveSalesDay(KEY, '2026-07-01', [sale]);
+  await archive.flushArchive();
+  const one = await archive.loadArchivedInvoice(KEY, sale.id);
+  if (!one) throw new Error('invoice not found by its own number');
+  eq(one.id, sale.id, 'invoice number');
+  eq(JSON.stringify(one.items), JSON.stringify(sale.items), 'items');
 });
-await t('columnar encoding is materially smaller than raw JSON', () => {
-  const sales = Array.from({ length: 300 }, (_, i) => mkSale('2026-07-01', i));
-  const raw = JSON.stringify(sales).length;
-  const enc = JSON.stringify(archive.encodeDay(sales)).length;
-  const saved = Math.round((1 - enc / raw) * 100);
-  console.log(`       300 sales: ${(raw / 1024).toFixed(0)} KB raw → ${(enc / 1024).toFixed(0)} KB encoded (${saved}% smaller)`);
-  if (enc >= raw) throw new Error('encoding did not shrink the payload');
+await t('a bill survives the round trip unchanged, late fields included', async () => {
+  const sale = { ...mkSale('2026-07-01', 8), status: 'voided', voidReason: 'mistake' };
+  archive.archiveSalesDay(KEY, '2026-07-01', [sale]);
+  await archive.flushArchive();
+  const back = await archive.loadArchivedInvoice(KEY, sale.id);
+  for (const k of Object.keys(sale)) {
+    if (JSON.stringify(back[k]) !== JSON.stringify(sale[k])) throw new Error(`field ${k} changed`);
+  }
+});
+await t('an unchanged day is not rewritten on the next cycle', async () => {
+  const sales = Array.from({ length: 20 }, (_, i) => mkSale('2026-07-05', i));
+  archive.archiveSalesDay(KEY, '2026-07-05', sales);
+  await archive.flushArchive();
+  const before = (await getDocs(collection(db, 'client_data', KEY, 'invoices'))).docs
+    .filter((d) => d.data().date === '2026-07-05').map((d) => d.data().archivedAt).sort();
+  archive.archiveSalesDay(KEY, '2026-07-05', sales);
+  await archive.flushArchive();
+  const after = (await getDocs(collection(db, 'client_data', KEY, 'invoices'))).docs
+    .filter((d) => d.data().date === '2026-07-05').map((d) => d.data().archivedAt).sort();
+  eq(JSON.stringify(after), JSON.stringify(before), 'archivedAt stamps (a rewrite would change them)');
 });
 
 console.log('\n── writing and reading ────────────────────────────────');
@@ -92,31 +109,33 @@ await t('a busy day (300 sales) round-trips through Firestore', async () => {
   await archive.flushArchive();
   const back = await archive.loadArchivedDay(KEY, '2026-07-02');
   eq(back.length, 300, 'sales returned');
-  eq(back[7].id, sales[7].id, 'invoice identity');
-  eq(JSON.stringify(back[7].items), JSON.stringify(sales[7].items), 'items');
+  // By identity, not position: several of these share a createdAt second, so
+  // position carries no meaning.
+  const one = back.find((s) => s.id === sales[7].id);
+  if (!one) throw new Error('invoice ' + sales[7].id + ' missing');
+  eq(JSON.stringify(one.items), JSON.stringify(sales[7].items), 'items');
 });
 
-await t('a day too large for one document is split and rejoined', async () => {
-  // ~4,000 invoices is far past what one 1 MiB document can hold — the exact
-  // wall the old single-document design hit, silently.
+await t('a day far past any single-document limit stores fine', async () => {
+  // 4,000 invoices in one day would have blown the 1 MiB document cap under
+  // any scheme that bundles a day together. As separate documents it is
+  // simply 4,000 documents.
   const sales = Array.from({ length: 4000 }, (_, i) => mkSale('2026-07-03', i));
   archive.archiveSalesDay(KEY, '2026-07-03', sales);
   await archive.flushArchive();
-  const snap = await getDocs(query(collection(db, 'client_data', KEY, 'sales_days'), where('date', '==', '2026-07-03')));
-  console.log(`       4,000 sales stored across ${snap.docs.length} document(s)`);
-  if (snap.docs.length < 2) throw new Error('expected the day to be split into parts');
   const back = await archive.loadArchivedDay(KEY, '2026-07-03');
-  eq(back.length, 4000, 'every sale came back');
-  eq(back[3999].id, sales[3999].id, 'last invoice intact');
+  eq(back.length, 4000, 'every bill came back');
+  eq(new Set(back.map((s) => s.id)).size, 4000, 'distinct invoice numbers');
+  if (!back.some((s) => s.id === sales[3999].id)) throw new Error('last invoice missing');
 });
 
-await t('re-archiving a day replaces it rather than duplicating', async () => {
+await t('adding a bill to a day does not duplicate the others', async () => {
   const sales = Array.from({ length: 5 }, (_, i) => mkSale('2026-07-04', i));
   archive.archiveSalesDay(KEY, '2026-07-04', sales);
   await archive.flushArchive();
   archive.archiveSalesDay(KEY, '2026-07-04', [...sales, mkSale('2026-07-04', 99)]);
   await archive.flushArchive();
-  eq((await archive.loadArchivedDay(KEY, '2026-07-04')).length, 6, 'sales after re-archive');
+  eq((await archive.loadArchivedDay(KEY, '2026-07-04')).length, 6, 'bills after re-archive');
 });
 
 await t('a date range reads back in order', async () => {
@@ -165,12 +184,13 @@ await t('the owning device still can', () =>
 
 console.log('\n── five-year projection ───────────────────────────────');
 {
-  const oneDay = JSON.stringify(archive.encodeDay(Array.from({ length: 300 }, (_, i) => mkSale('2026-07-01', i))));
-  const perDay = Buffer.byteLength(oneDay);
-  const days = 365 * 5;
-  console.log(`  at 300 invoices/day: ${(perDay / 1024).toFixed(0)} KB per day document`);
-  console.log(`  5 years = ${days.toLocaleString()} documents, ${(perDay * days / 1024 / 1024).toFixed(0)} MB per client`);
-  console.log(`  headroom per document: ${(1048576 / perDay).toFixed(1)}× before the 1 MiB limit`);
+  const one = JSON.stringify(mkSale('2026-07-01', 1));
+  const per = Buffer.byteLength(one);
+  const perDay = 300, days = 365 * 5;
+  console.log(`  one bill ≈ ${per} bytes as its own document`);
+  console.log(`  at ${perDay} bills/day: ${(per * perDay / 1024).toFixed(0)} KB/day, ` +
+    `${(per * perDay * days / 1024 / 1024).toFixed(0)} MB over 5 years`);
+  console.log(`  5 years = ${(perDay * days).toLocaleString()} documents — each written once, never rewritten`);
 }
 
 await env.cleanup();
