@@ -1,0 +1,45 @@
+{
+  "//": [
+    "Composite indexes Firestore cannot infer. Deployed by the Deploy Firestore",
+    "Rules workflow alongside firestore.rules.",
+    "",
+    "The emulator does NOT enforce these — it answers any query happily — so a",
+    "missing index only shows up in production, as a failed export on a client's",
+    "screen. That is exactly why they are declared here rather than created by",
+    "hand from a console link when something breaks."
+  ],
+  "indexes": [
+    {
+      "//": "zatcaChain: this tenant's chain head and recent invoices.",
+      "collectionGroup": "zatca_invoices",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "seller_vat", "order": "ASCENDING" },
+        { "fieldPath": "icv", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "//": [
+        "zatcaExport: a date range for one tenant, paged. invoice_number is in",
+        "the sort so the cursor is unambiguous — ordering on timestamp alone",
+        "would skip invoices sharing a second, which a busy till produces."
+      ],
+      "collectionGroup": "zatca_invoices",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "seller_vat", "order": "ASCENDING" },
+        { "fieldPath": "timestamp", "order": "ASCENDING" },
+        { "fieldPath": "invoice_number", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "//": "loadArchivedRange: a client's own bills across a date range.",
+      "collectionGroup": "invoices",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "date", "order": "ASCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

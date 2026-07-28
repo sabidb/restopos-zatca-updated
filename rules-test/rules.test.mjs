@@ -165,8 +165,17 @@ await t('config/announcement: signed-in reads, only admin writes', async () => {
   await assertFails(setDoc(doc(owner, 'config', 'announcement'), { text: 'nope' }));
   await assertSucceeds(setDoc(doc(admin, 'config', 'announcement'), { text: 'ok' }));
 });
-await t('zatca_invoices still writable by a signed-in till', () =>
-  assertSucceeds(setDoc(doc(owner, 'zatca_invoices', 'INV-000001'), { seller_vat: '3000' })));
+// zatca_invoices is shared by every tenant and a rule cannot scope a query to
+// one, so it is closed outright — the zatcaArchive / zatcaChain / zatcaExport
+// functions are the only way in, and they derive the seller VAT from the
+// caller's own account rather than from the request.
+await t('zatca_invoices is closed to clients entirely', async () => {
+  await assertFails(setDoc(doc(owner, 'zatca_invoices', 'INV-000001'), { seller_vat: '3000' }));
+  await assertFails(getDoc(doc(owner, 'zatca_invoices', 'INV-000001')));
+  await assertFails(getDocs(collection(owner, 'zatca_invoices')));
+});
+await t('and closed to the admin panel too (it has no reason to read it)', () =>
+  assertFails(getDocs(collection(admin, 'zatca_invoices'))));
 await t('anything unmatched is still denied', () =>
   assertFails(setDoc(doc(owner, 'some_new_collection', 'x'), { a: 1 })));
 
@@ -224,20 +233,10 @@ await t('a returning client CAN repoint their own email to a new owned key', () 
   assertSucceeds(setDoc(doc(owner, 'email_index', 'victim@example.com'),
     { licenseKey: TRIAL }, { merge: true })));
 
-await t('stranger CANNOT rewrite an archived invoice hash chain', async () => {
+await t('an archived invoice cannot be altered by any client', async () => {
   await assertFails(updateDoc(doc(stranger, 'zatca_invoices', 'INV-CHAIN'), { invoice_hash: 'forged' }));
-  await assertFails(updateDoc(doc(stranger, 'zatca_invoices', 'INV-CHAIN'), { total: 1 }));
-  await assertFails(updateDoc(doc(stranger, 'zatca_invoices', 'INV-CHAIN'), { icv: 1 }));
+  await assertFails(updateDoc(doc(owner, 'zatca_invoices', 'INV-CHAIN'), { total: 1 }));
 });
-await t('re-archiving the same invoice still succeeds (idempotent)', () =>
-  assertSucceeds(setDoc(doc(owner, 'zatca_invoices', 'INV-CHAIN'), {
-    invoice_number: 'INV-CHAIN', seller_vat: '300000000000003', total: 115,
-    vat_amount: 15, icv: 42, invoice_hash: 'abc123', prev_invoice_hash: 'zzz999',
-    archived_at: 'later',
-  }, { merge: true })));
-await t('a clearance update may add fields to an invoice', () =>
-  assertSucceeds(updateDoc(doc(owner, 'zatca_invoices', 'INV-CHAIN'), {
-    zatca_status: 'CLEARED', cleared_at: 'now' })));
 
 await t('stranger CANNOT read another client support chat', async () => {
   await assertFails(getDoc(doc(stranger, 'live_chats', 'chat_REALCLIENT')));
@@ -264,10 +263,10 @@ await t('admin panel CAN still list its console collections', async () => {
 });
 await t('stranger CANNOT list the support chat rooms', () =>
   assertFails(getDocs(collection(stranger, 'live_chats'))));
-// The till restores its ZATCA hash chain with a collection query, so this
-// list has to keep working — rules cannot express "only your own VAT".
-await t('a till CAN still query the invoice archive', () =>
-  assertSucceeds(getDocs(collection(owner, 'zatca_invoices'))));
+await t('no signed-in stranger can reach another shop invoices', async () => {
+  await assertFails(getDocs(collection(stranger, 'zatca_invoices')));
+  await assertFails(getDoc(doc(stranger, 'zatca_invoices', 'INV-CHAIN')));
+});
 
 await env.cleanup();
 console.log(`\n${fail === 0 ? '✅ ALL PASSED' : '❌ FAILURES'} — ${pass} passed, ${fail} failed\n`);

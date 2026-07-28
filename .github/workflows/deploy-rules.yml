@@ -34,7 +34,7 @@ jobs:
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
 
-      - name: Deploy rules
-        run: npx firebase-tools@13 deploy --only firestore:rules --project restopos-db
+      - name: Deploy rules and indexes
+        run: npx firebase-tools@13 deploy --only firestore:rules,firestore:indexes --project restopos-db
         env:
           GOOGLE_APPLICATION_CREDENTIALS: /tmp/key.json

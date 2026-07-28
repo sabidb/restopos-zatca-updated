@@ -92,18 +92,6 @@ service cloud.firestore {
       ]);
     }
 
-    // A ZATCA invoice is a tax record in a hash chain: each one commits to the
-    // previous invoice's hash, so altering an archived invoice breaks the chain
-    // and the audit trail with it. Re-archiving the same invoice is fine (the
-    // values are identical, so they don't count as changed) and clearance
-    // updates may add fields — but these may never be rewritten.
-    function zatcaChainIntact() {
-      return !request.resource.data.diff(resource.data).affectedKeys().hasAny([
-        'invoice_number', 'uuid', 'seller_vat', 'invoice_hash',
-        'prev_invoice_hash', 'icv', 'total', 'vat_amount', 'timestamp'
-      ]);
-    }
-
     // ── HARD-LOCKED SECRETS ────────────────────────────────────────────────
     // Anthropic API key, ZATCA EGS private keys/certs, manager PIN hashes and
     // the branch→client linking. Only reachable via the Admin SDK.
@@ -211,16 +199,22 @@ service cloud.firestore {
     // No per-owner field is guaranteed on these docs, so gate on auth. They
     // contain no secrets (signatures/hashes are public artifacts on receipts).
     //
-    // `list` has to stay open to a signed-in till: restoring the hash chain
-    // queries this collection by seller_vat, and rules cannot inspect a query's
-    // where-clauses, so there is no way to express "only your own VAT" here.
-    // The write side is where the value is, and it is locked: an archived
-    // invoice's chain fields can never be rewritten by a client.
-    match /zatca_invoices/{invoiceNumber} {
-      allow read, create: if isSignedIn();
-      allow update: if isAdmin() || (isSignedIn() && zatcaChainIntact());
-      allow delete: if isAdmin();
-    }
+    // CLOSED to clients. This is one collection shared by every tenant, and a
+    // rule cannot inspect a query — it sees "someone wants invoices", not whose.
+    // So reads had to be open to any signed-in caller, and the app signs devices
+    // in anonymously: in practice anyone who opened the site could read every
+    // shop's invoices, buyer names and totals included.
+    //
+    // The zatcaArchive / zatcaChain / zatcaExport functions are the only way in
+    // now. They run on the Admin SDK, which bypasses these rules, and they scope
+    // every query to the seller VAT on the CALLER'S OWN account document rather
+    // than to a VAT number supplied in the request — a caller that could name
+    // its own VAT could still read anyone's, which would leave the hole exactly
+    // where it was.
+    //
+    // Writes are closed for the same reason: a client that could write directly
+    // could file invoices under another shop's number.
+    match /zatca_invoices/{invoiceNumber} { allow read, write: if false; }
 
     // ── trials (readable mirror of a self-serve trial's activity) ──────────
     // client_data holds each localStorage key as one long JSON string: perfect

@@ -438,3 +438,143 @@ export const resetPasswordWithOtp = onCall({ cors: true, region: "us-central1" }
   });
   return { ok: true };
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// ZATCA INVOICE ARCHIVE
+//
+// zatca_invoices is one collection shared by every client, and the till used
+// to read and write it directly. Firestore rules cannot inspect a query — they
+// see "someone wants invoices", not which ones — so the collection had to be
+// readable by any signed-in caller, and the app signs devices in anonymously.
+// In practice that meant anyone who opened the site could read every shop's
+// invoices: totals, VAT, buyer names, the lot.
+//
+// These three functions are the only way in now, and the collection is closed
+// in the rules. The seller VAT they scope every query to is read from the
+// CALLER'S OWN ACCOUNT DOCUMENT, never from the request — a client that could
+// name its own VAT number could still read anyone it liked, which would leave
+// the hole exactly where it was.
+//
+// Writes go through here too. A client that could write directly could create
+// invoices under another shop's number, and blocking reads while allowing
+// writes would leave that open.
+// ═══════════════════════════════════════════════════════════════════
+
+const ZATCA_MAX_PAGE = 500;
+
+// One tenant's invoice number, made unique across the shared collection.
+// "/" is the one character a Firestore document id may not contain.
+const archiveDocId = (sellerVat, invoiceNumber) =>
+  `${String(sellerVat).replace(/\//g, "_")}__${String(invoiceNumber).replace(/\//g, "_")}`.slice(0, 1400);
+
+/**
+ * Establish that the caller owns this licence, and return the account. Two
+ * kinds of caller are legitimate: a logged-in client, whose custom token has
+ * uid == the licence key, and a device on the licence's authUids allowlist
+ * (the till before anyone has logged in, restoring its own chain).
+ */
+async function requireLicense(req, licenseKey) {
+  if (!req.auth) throw new HttpsError("unauthenticated", "Sign-in required.");
+  const key = String(licenseKey || "").trim().toUpperCase();
+  if (!key) throw new HttpsError("invalid-argument", "licenseKey is required.");
+  const snap = await db.collection("pending_activations").doc(key).get();
+  if (!snap.exists) throw new HttpsError("not-found", "Account not found.");
+  const data = snap.data() || {};
+  const owns = req.auth.uid === key || (Array.isArray(data.authUids) && data.authUids.includes(req.auth.uid));
+  if (!owns) throw new HttpsError("permission-denied", "Not authorized for this license.");
+  return { key, data };
+}
+
+// The tenant's VAT, taken from the account rather than the caller's word for it.
+function sellerVatOf(data) {
+  const vat = String(data.vatNumber || "").trim();
+  if (!vat) throw new HttpsError("failed-precondition", "This account has no VAT number, so its invoice archive cannot be scoped.");
+  return vat;
+}
+
+/** Archive one invoice. Upserts by invoice number so later clearance updates merge. */
+export const zatcaArchive = onCall({ cors: true, region: "us-central1" }, async (req) => {
+  const { licenseKey, invoice, extra } = req.data || {};
+  const { data } = await requireLicense(req, licenseKey);
+  const sellerVat = sellerVatOf(data);
+  if (!invoice || !invoice.invoice_number) throw new HttpsError("invalid-argument", "invoice.invoice_number is required.");
+  // An invoice may only be filed under the VAT of the account filing it.
+  if (String(invoice.seller_vat || "").trim() !== sellerVat) {
+    throw new HttpsError("permission-denied", "This invoice's seller VAT does not belong to this account.");
+  }
+  // The document id is scoped to the tenant, and must be.
+  //
+  // Invoice numbers come from a per-shop counter that starts at 1000, so EVERY
+  // client generates INV-1001, INV-1002 and so on. Keyed on the invoice number
+  // alone — as this collection was — the second shop to reach INV-1001 silently
+  // overwrote the first shop's invoice in the permanent five-year archive. Not
+  // a collision that might happen: one that happens to every pair of clients.
+  //
+  // Queries here filter on seller_vat and order by icv or timestamp, none of
+  // which touch the document id, so older documents keyed the old way are still
+  // returned normally. Only the upsert key changes.
+  await db.collection("zatca_invoices").doc(archiveDocId(sellerVat, invoice.invoice_number)).set({
+    ...invoice, ...(extra && typeof extra === "object" ? extra : {}),
+    seller_vat: sellerVat,
+    archived_at: new Date().toISOString(),
+  }, { merge: true });
+  return { ok: true };
+});
+
+/**
+ * The head of this tenant's hash chain, plus the most recent invoices to
+ * repopulate the till's local cache. This is what lets a wiped or replaced
+ * device pick the ICV sequence back up instead of restarting it — which would
+ * break the chain ZATCA audits.
+ */
+export const zatcaChain = onCall({ cors: true, region: "us-central1" }, async (req) => {
+  const { licenseKey, limit } = req.data || {};
+  const { data } = await requireLicense(req, licenseKey);
+  const sellerVat = sellerVatOf(data);
+  const n = Math.min(Math.max(parseInt(limit, 10) || 50, 1), ZATCA_MAX_PAGE);
+  const snap = await db.collection("zatca_invoices")
+    .where("seller_vat", "==", sellerVat).orderBy("icv", "desc").limit(n).get();
+  const recent = snap.docs.map((d) => d.data());
+  const latest = recent[0] || null;
+  return {
+    latestIcv: latest ? (latest.icv || 0) : 0,
+    latestHash: latest ? (latest.invoice_hash || "") : "",
+    recent,
+  };
+});
+
+/**
+ * A page of this tenant's archive for the export screen. Ordered by timestamp
+ * then invoice number so the cursor is unambiguous — ordering on timestamp
+ * alone would skip invoices that share a second, which for a busy till is not
+ * a hypothetical.
+ */
+export const zatcaExport = onCall({ cors: true, region: "us-central1" }, async (req) => {
+  const { licenseKey, from, to, cursor, pageSize, countOnly } = req.data || {};
+  const { data } = await requireLicense(req, licenseKey);
+  const sellerVat = sellerVatOf(data);
+  if (!from || !to) throw new HttpsError("invalid-argument", "from and to are required (YYYY-MM-DD).");
+  const fromTs = new Date(from + "T00:00:00.000Z").toISOString();
+  const toTs = new Date(to + "T23:59:59.999Z").toISOString();
+
+  let q = db.collection("zatca_invoices")
+    .where("seller_vat", "==", sellerVat)
+    .where("timestamp", ">=", fromTs).where("timestamp", "<=", toTs)
+    .orderBy("timestamp", "asc").orderBy("invoice_number", "asc");
+
+  if (countOnly) {
+    const agg = await q.count().get();
+    return { count: agg.data().count };
+  }
+  if (cursor && cursor.timestamp) q = q.startAfter(cursor.timestamp, cursor.invoiceNumber || "");
+  const n = Math.min(Math.max(parseInt(pageSize, 10) || 200, 1), ZATCA_MAX_PAGE);
+  const snap = await q.limit(n).get();
+  const invoices = snap.docs.map((d) => d.data());
+  const last = invoices[invoices.length - 1];
+  return {
+    invoices,
+    nextCursor: invoices.length === n && last
+      ? { timestamp: last.timestamp, invoiceNumber: last.invoice_number }
+      : null,
+  };
+});

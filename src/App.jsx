@@ -59,6 +59,17 @@ if (import.meta.env.VITE_USE_EMULATORS) {
 }
 const functions = getFunctions(firebaseApp);
 const verifyLoginFn = httpsCallable(functions, "verifyLogin");
+// The ZATCA archive is a shared collection and is now closed to clients in the
+// rules — Firestore cannot scope a query by tenant, so anyone signed in could
+// read every shop's invoices. These three are the only way in, and they take
+// the seller VAT from the caller's own account rather than from the request.
+const zatcaArchiveFn = httpsCallable(functions, "zatcaArchive");
+const zatcaChainFn = httpsCallable(functions, "zatcaChain");
+const zatcaExportFn = httpsCallable(functions, "zatcaExport");
+const currentLicenseKey = () => {
+  try { return (JSON.parse(localStorage.getItem("restopos_license_v2") || "{}").licenseKey || "").trim().toUpperCase(); }
+  catch (e) { return ""; }
+};
 // Hand the trial mirror this app's Firestore handles — one Firebase app, one
 // auth session. Must come after db exists, not next to the TRIAL flag above.
 if (TRIAL) initTrialMirror({ db, doc, collection, setDoc, writeBatch });
@@ -226,6 +237,9 @@ function generateUBLXML(invoice) {
 // ═══════════════════════════════════════════════════════════════════
 const ZATCA_COUNTER_KEY = "zatca_icv_v2";
 const ZATCA_STORAGE_KEY = "zatca_invoices_v2";
+// Invoices that could not be filed to the permanent archive yet (offline, or the
+// call failed). Retried on reconnect — a lost one is a lost tax record.
+const ZATCA_ARCHIVE_PENDING_KEY = "zatca_archive_pending";
 const ZATCA_LAST_HASH_KEY = "zatca_last_hash_v2";
 const ZATCA_QUEUE_KEY = "zatca_queue_v2";
 // localStorage is just the fast local cache (Firestore "zatca_invoices" is the permanent
@@ -251,9 +265,50 @@ const invoiceStorage = {
   // into the SAME Firestore document instead of creating a duplicate archive entry per invoice.
   async archiveToFirestore(inv, extra={}) {
     if(TRIAL)return; // a trial has no real VAT number — keep it out of the 5-year archive
+    const licenseKey=currentLicenseKey();
+    if(!licenseKey)return;
     try{
-      await setDoc(doc(db,"zatca_invoices",inv.invoice_number),{...inv,...extra,archived_at:new Date().toISOString()},{merge:true});
-    }catch(e){ console.warn("[ZATCA] Firestore archive failed:",e.message); }
+      await zatcaArchiveFn({licenseKey,invoice:inv,extra});
+      this.drainPendingArchive();
+    }catch(e){
+      // A direct Firestore write used to ride the SDK's offline queue and land
+      // on its own when the connection came back. A callable has no such queue,
+      // so losing this would quietly lose a tax record. Hold it and retry.
+      console.warn("[ZATCA] archive deferred:",e.message);
+      this.queuePendingArchive(inv,extra);
+    }
+  },
+  // ── Offline archive queue ────────────────────────────────────────
+  queuePendingArchive(inv, extra){
+    try{
+      const q=JSON.parse(localStorage.getItem(ZATCA_ARCHIVE_PENDING_KEY)||"[]")
+        .filter(x=>x.inv?.invoice_number!==inv.invoice_number);
+      q.push({inv,extra,queuedAt:new Date().toISOString()});
+      localStorage.setItem(ZATCA_ARCHIVE_PENDING_KEY,JSON.stringify(q.slice(-500)));
+    }catch(e){}
+  },
+  pendingArchiveCount(){
+    try{return JSON.parse(localStorage.getItem(ZATCA_ARCHIVE_PENDING_KEY)||"[]").length;}catch(e){return 0;}
+  },
+  // Retried on reconnect and at app load. Stops at the first failure so a
+  // still-offline device doesn't burn through the whole queue pointlessly.
+  async drainPendingArchive(){
+    if(TRIAL)return 0;
+    const licenseKey=currentLicenseKey();
+    if(!licenseKey)return 0;
+    let q=[];
+    try{q=JSON.parse(localStorage.getItem(ZATCA_ARCHIVE_PENDING_KEY)||"[]");}catch(e){return 0;}
+    if(!q.length)return 0;
+    let sent=0;
+    while(q.length){
+      const item=q[0];
+      try{ await zatcaArchiveFn({licenseKey,invoice:item.inv,extra:item.extra||{}}); }
+      catch(e){ break; }
+      q.shift();sent++;
+      try{localStorage.setItem(ZATCA_ARCHIVE_PENDING_KEY,JSON.stringify(q));}catch(e){}
+    }
+    if(sent)console.log(`[ZATCA] ${sent} deferred invoice(s) archived.`);
+    return sent;
   },
   getAll() { try{return JSON.parse(localStorage.getItem(ZATCA_STORAGE_KEY)||"[]");}catch{return [];} },
   getOne(n) { return this.getAll().find(i=>i.invoice_number===n)||null; },
@@ -263,33 +318,35 @@ const invoiceStorage = {
   // brand-new device, so the sequential ICV/hash chain never resets or breaks.
   async syncFromFirestore(sellerVat) {
     if(TRIAL)return; // never pull a real tenant's invoice chain into a trial
-    if(!sellerVat)return; // can't safely restore without knowing which tenant this is
+    const licenseKey=currentLicenseKey();
+    if(!licenseKey)return;
     try{
-      // 1) Find the true latest invoice (by ICV) to restore the counter + hash chain head.
-      //    Scoped to THIS tenant's seller_vat — never mix counters across businesses.
-      const latestSnap = await getDocs(query(collection(db,"zatca_invoices"),where("seller_vat","==",sellerVat),orderBy("icv","desc"),limit(1)));
-      if(!latestSnap.empty){
-        const latest = latestSnap.docs[0].data();
-        const localCounter = parseInt(localStorage.getItem(ZATCA_COUNTER_KEY)||"1000",10);
-        if((latest.icv||0) > localCounter){
-          localStorage.setItem(ZATCA_COUNTER_KEY,String(latest.icv));
-          localStorage.setItem(ZATCA_LAST_HASH_KEY,latest.invoice_hash||"");
-        }
+      // One call. The seller VAT is no longer sent — the function reads it from
+      // this account, which is what stops a caller naming someone else's.
+      const res = await zatcaChainFn({licenseKey,limit:ZATCA_LOCAL_CACHE_LIMIT});
+      const {latestIcv,latestHash,recent} = res.data||{};
+
+      // 1) Restore the counter + hash chain head, so a wiped or replaced device
+      //    picks the ICV sequence back up instead of restarting it.
+      const localCounter = parseInt(localStorage.getItem(ZATCA_COUNTER_KEY)||"1000",10);
+      if((latestIcv||0) > localCounter){
+        localStorage.setItem(ZATCA_COUNTER_KEY,String(latestIcv));
+        localStorage.setItem(ZATCA_LAST_HASH_KEY,latestHash||"");
       }
-      // 2) Pull the most recent invoices to repopulate the local fast cache, merging with
-      //    whatever already survives in localStorage (Firestore data wins on conflict since
-      //    it may carry signed_xml/zatca_reported updates the local copy doesn't have yet).
-      const recentSnap = await getDocs(query(collection(db,"zatca_invoices"),where("seller_vat","==",sellerVat),orderBy("icv","desc"),limit(ZATCA_LOCAL_CACHE_LIMIT)));
-      if(!recentSnap.empty){
-        const remote = recentSnap.docs.map(d=>d.data());
+      // 2) Repopulate the local fast cache, merging with whatever survives
+      //    locally (the server copy wins, since it may carry signed_xml or
+      //    reported/cleared updates the local copy has not seen).
+      if(Array.isArray(recent)&&recent.length){
         const local = this.getAll();
         const byNumber = new Map(local.map(i=>[i.invoice_number,i]));
-        for(const r of remote){ byNumber.set(r.invoice_number,{...byNumber.get(r.invoice_number),...r}); }
+        for(const r of recent){ byNumber.set(r.invoice_number,{...byNumber.get(r.invoice_number),...r}); }
         const merged = Array.from(byNumber.values()).sort((a,b)=>(b.icv||0)-(a.icv||0));
         localStorage.setItem(ZATCA_STORAGE_KEY,JSON.stringify(merged.slice(0,ZATCA_LOCAL_CACHE_LIMIT)));
       }
       try{window.dispatchEvent(new Event("restopos-invoice"));}catch(e){}
-    }catch(e){ console.warn("[ZATCA] Firestore sync failed:",e.message); }
+      // Anything that could not be filed while offline goes now.
+      this.drainPendingArchive();
+    }catch(e){ console.warn("[ZATCA] chain sync failed:",e.message); }
   }
 };
 
@@ -10299,13 +10356,10 @@ function ArchiveExportPanel({license,lang="en"}){
     if(!sellerVat){setError("No VAT number found on this license — can't scope an export.");return;}
     setEstimating(true);setError("");setEstimate(null);
     try{
-      const q=query(collection(db,"zatca_invoices"),...rangeFilters(),orderBy("timestamp","asc"));
-      const snap=await getCountFromServer(q);
-      setEstimate(snap.data().count);
+      const res=await zatcaExportFn({licenseKey:currentLicenseKey(),from,to,countOnly:true});
+      setEstimate(res.data?.count??0);
     }catch(e){
-      // Most likely cause: the composite Firestore index (seller_vat + timestamp) hasn't
-      // been created yet. Firestore's error includes a direct console link to create it.
-      setError("Couldn't count invoices — "+(e.message||"unknown error")+". If this mentions a missing index, open the link in your browser console once to auto-create it.");
+      setError("Couldn't count invoices — "+(e.message||"unknown error"));
     }
     setEstimating(false);
   }
@@ -10322,11 +10376,11 @@ function ArchiveExportPanel({license,lang="en"}){
     try{
       while(true){
         if(cancelRef.current)break;
-        const constraints=[...rangeFilters(),orderBy("timestamp","asc"),...(lastDoc?[startAfter(lastDoc)]:[]),limit(ARCHIVE_PAGE_SIZE)];
-        const snap=await getDocs(query(collection(db,"zatca_invoices"),...constraints));
-        if(snap.empty)break;
-        for(const d of snap.docs){
-          const inv=d.data();
+        const res=await zatcaExportFn({licenseKey:currentLicenseKey(),from,to,
+          cursor:lastDoc,pageSize:ARCHIVE_PAGE_SIZE});
+        const pageInvoices=res.data?.invoices||[];
+        if(!pageInvoices.length)break;
+        for(const inv of pageInvoices){
           if(csvRows)csvRows.push(archiveCsvRow(inv));
           if(xmlBatch){
             xmlBatch.push({name:`${inv.invoice_number}.xml`,content:inv.signed_xml||generateUBLXML(inv)});
@@ -10336,10 +10390,13 @@ function ArchiveExportPanel({license,lang="en"}){
             }
           }
         }
-        fetched+=snap.docs.length;
-        lastDoc=snap.docs[snap.docs.length-1];
+        fetched+=pageInvoices.length;
+        // The cursor is (timestamp, invoice number) rather than a document
+        // snapshot, because it now crosses a function boundary and has to
+        // survive being serialised.
+        lastDoc=res.data?.nextCursor||null;
         setProgress(fetched);
-        if(snap.docs.length<ARCHIVE_PAGE_SIZE)break; // last page reached
+        if(!lastDoc)break; // last page reached
       }
       if(cancelRef.current){setRunning(false);setDoneMsg("Export cancelled — "+fetched+" invoices were fetched before stopping.");return;}
       if(csvRows&&csvRows.length>1){
@@ -13100,7 +13157,13 @@ function useOfflineSync(){
     let prev=navigator.onLine;
     const setStatus=(v)=>{
       setIsOnline(v);
-      if(v&&!prev){setJustCameOnline(true);setTimeout(()=>setJustCameOnline(false),5000);}
+      if(v&&!prev){
+        setJustCameOnline(true);setTimeout(()=>setJustCameOnline(false),5000);
+        // Invoices rung up while offline could not reach the permanent archive:
+        // a callable has no equivalent of the Firestore SDK's offline queue, so
+        // they were held locally. File them now.
+        invoiceStorage.drainPendingArchive().catch(()=>{});
+      }
       prev=v;
     };
     const goOnline=()=>setStatus(true);

@@ -9,7 +9,8 @@
     "archive": "node archive.mjs",
     "reports": "node reports.mjs",
     "loginflow": "node loginflow.mjs",
-    "deviceapproval": "node deviceapproval.mjs"
+    "deviceapproval": "node deviceapproval.mjs",
+    "zatca": "node zatca.mjs"
   },
   "devDependencies": {
     "playwright": "^1.49.0",
