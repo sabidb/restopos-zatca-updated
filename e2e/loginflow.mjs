@@ -66,6 +66,15 @@ console.log('\n── boot ─────────────────�
   const body = await p.locator('body').innerText();
   t('boots with no page errors', errs.length === 0, errs.slice(0, 3).join(' | '));
   t('renders something (not a blank page)', body.trim().length > 40, `${body.trim().length} chars`);
+  // index.html used to hardcode lang="ar" dir="rtl" while the app's own default
+  // language is English, so every pre-login screen laid English out backwards.
+  const doc = await p.evaluate(() => ({ dir: document.documentElement.dir, lang: document.documentElement.lang }));
+  t('document reads left-to-right for English', doc.dir === 'ltr' && doc.lang === 'en', JSON.stringify(doc));
+  const fieldDir = await p.evaluate(() => {
+    const el = document.querySelector('input[placeholder="Mohammed Al-Rashid"]');
+    return el ? getComputedStyle(el.closest('div')).direction : 'no-field';
+  });
+  t('registration fields are not mirrored', fieldDir === 'ltr', fieldDir);
   await p.screenshot({ path: SP + '/70-boot.png' });
   await p.context().close();
 }

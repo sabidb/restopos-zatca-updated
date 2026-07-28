@@ -53,7 +53,14 @@ service cloud.firestore {
         // registration, and can never edit it afterwards. An acceptance its own
         // signer could backdate or withdraw would be worthless as evidence.
         // The admin panel can still correct it — isAdmin bypasses this check.
-        'termsAccepted', 'termsAcceptedAt', 'termsVersion', 'termsAcceptance'
+        'termsAccepted', 'termsAcceptedAt', 'termsVersion', 'termsAcceptance',
+        // Which devices may sign in. This was NOT protected, so any signed-in
+        // device could write itself onto the allowlist and walk straight past
+        // the approval gate — a gate enforced only by the browser is no gate at
+        // all. verifyLogin settles it on the Admin SDK now, which bypasses
+        // these rules; a client may still add itself to pendingDevices (below)
+        // to ask, it just cannot answer.
+        'approvedDevices'
       ]);
     }
 

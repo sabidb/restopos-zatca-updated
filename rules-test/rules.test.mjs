@@ -91,6 +91,18 @@ await t('client creates a trial activation (status pending, not approved)', () =
 await t('client CANNOT self-create an approved account', () =>
   assertFails(setDoc(doc(stranger, 'pending_activations', 'CHEAT1'), {
     status: 'approved', credentialsApproved: true })));
+// The device approval gate was enforced only in the browser: approvedDevices
+// was writable by any signed-in device, so a device could put itself on the
+// allowlist and walk past the gate. verifyLogin settles it on the Admin SDK now.
+await t('device CANNOT approve itself', () =>
+  assertFails(updateDoc(doc(owner, 'pending_activations', TRIAL), {
+    approvedDevices: [{ id: 'sneaky-device', label: 'mine' }] })));
+await t('device CAN still ASK, by joining pendingDevices', () =>
+  assertSucceeds(updateDoc(doc(owner, 'pending_activations', TRIAL), {
+    pendingDevices: [{ id: 'device-2', label: 'Windows · Chrome' }] })));
+await t('admin CAN approve a device', () =>
+  assertSucceeds(updateDoc(doc(admin, 'pending_activations', TRIAL), {
+    approvedDevices: [{ id: 'device-2', label: 'Windows · Chrome' }], pendingDevices: [] })));
 await t('device may add itself to authUids', () =>
   assertSucceeds(updateDoc(doc(owner, 'pending_activations', TRIAL), { authUids: [DEVICE, 'new-device'] })));
 await t('device CANNOT flip its own status to approved', () =>

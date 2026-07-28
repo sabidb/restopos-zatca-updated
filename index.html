@@ -1,5 +1,16 @@
 <!DOCTYPE html>
-<html lang="ar" dir="rtl">
+<!--
+  The app's default language is English (getLang() falls back to "en"), so the
+  document must start that way too. This said lang="ar" dir="rtl", which meant
+  every screen rendered before React set its own direction — registration,
+  licence activation, the terms gate, login — laid English out right-to-left.
+  Punctuation jumped to the wrong side and labels sat against the wrong edge,
+  on precisely the screens a prospect sees first.
+
+  App.jsx keeps this in step with the chosen language, so Arabic still gets a
+  properly right-to-left document.
+-->
+<html lang="en" dir="ltr">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />

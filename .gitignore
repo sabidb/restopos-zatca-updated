@@ -27,3 +27,4 @@ secrets/restopos-db-firebase-adminsdk-fbsvc-cf5a98f188.json
 rules-test/node_modules
 # e2e pulls in playwright; same reasoning
 e2e/node_modules
+functions/node_modules

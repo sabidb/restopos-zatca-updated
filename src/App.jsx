@@ -1385,7 +1385,8 @@ function ClientLogin({license,onSuccess,onForgotPassword,onBack,onTryTrial}){
           const enteredUser=username.trim().toLowerCase();
           let result;
           try{
-            const res=await withTimeout(verifyLoginFn({licenseKey:licKey,username:enteredUser,password}),8000,"login verify");
+            const res=await withTimeout(verifyLoginFn({licenseKey:licKey,username:enteredUser,password,
+              deviceId:getDeviceId(),deviceLabel:getDeviceLabel()}),8000,"login verify");
             result=res.data;
           }catch(fnErr){
             const msg=fnErr?.message||"Login failed.";
@@ -1403,6 +1404,14 @@ function ClientLogin({license,onSuccess,onForgotPassword,onBack,onTryTrial}){
               setError("⚠️ Couldn't reach the server to verify your login. Check your internet. Error: "+msg);
             }
             setLoading(false);diagnosed=true;return;
+          }
+          // The server decides whether this device may sign in, and returns no
+          // token when it may not — the browser is not trusted to enforce that.
+          // The first device on an account is approved automatically; every one
+          // after it waits here until the admin says yes.
+          if(result?.deviceStatus==="pending"){
+            clearFailedAttempts();
+            setWaitingApproval(true);setLoading(false);return;
           }
           // ✅ Server verified everything — sign in with the issued custom token.
           try{
@@ -1424,19 +1433,10 @@ function ClientLogin({license,onSuccess,onForgotPassword,onBack,onTryTrial}){
             setError("⚠️ Login verified, but the server rejected the write (Firestore rules). Device approval can't be requested. Error: "+wErr.message);
             setLoading(false);diagnosed=true;return;
           }
-          // Device approval gate for this new device. An "error" here means the
-          // device check itself couldn't complete — not that the device was
-          // refused. The offline path lets those through and this one used to
-          // block them, so the same failure had opposite outcomes depending on
-          // which branch you came down. Both now let a caller through who has
-          // already proved their password, because a till that cannot open
-          // during service is worse than a device registering late. The kill
-          // switch still governs the session either way.
-          const devState=await checkOrRequestDevice();
-          if(devState==="pending"){setWaitingApproval(true);setLoading(false);return;}
-          if(devState==="error"){
-            console.warn("[DeviceApproval] gate returned 'error' after a verified login — proceeding; device will register on the next attempt.");
-          }
+          // No client-side device check here any more. verifyLogin settled it
+          // server-side before issuing the token — reaching this line means the
+          // device is approved, and asking the browser to check again could
+          // only ever disagree with the answer that actually counts.
           onSuccess();
           setLoading(false);
           return;
@@ -15642,6 +15642,17 @@ export default function App(){
   const pwaInstall=usePWAInstall();
   const [lang,setLang]=useState(()=>getLang());
   function handleLangChange(l){setLangStore(l);setLang(l);}
+  // Keep the document itself in step with the chosen language. The app shell
+  // sets `dir` on its own wrapper, but the screens shown before that shell
+  // exists — registration, licence activation, the terms gate, login — inherit
+  // from <html>, which is why they had to be individually pinned to ltr and
+  // why anything nobody remembered to pin came out backwards.
+  useEffect(()=>{
+    try{
+      document.documentElement.lang=lang;
+      document.documentElement.dir=dir(lang);
+    }catch(e){}
+  },[lang]);
   const [viewport,setViewport]=useState({w:window.innerWidth,h:window.innerHeight,dpr:window.devicePixelRatio||1});
   useEffect(()=>{const fn=()=>setViewport({w:window.innerWidth,h:window.innerHeight,dpr:window.devicePixelRatio||1});window.addEventListener("resize",fn);return()=>window.removeEventListener("resize",fn);},[]);
   const viewportMode=viewport.w>=1024?"DESKTOP_EXPANDED":viewport.w>=640?"TABLET_CONSTRAINED":"MOBILE_FLUID";

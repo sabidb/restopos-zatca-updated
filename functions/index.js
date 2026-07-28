@@ -79,8 +79,60 @@ function callerIp(req) {
   return raw?.ip || "unknown";
 }
 
+// ── Device approval, decided here and nowhere else ────────────────────────
+//
+// This gate used to live entirely in the browser: the client read
+// approvedDevices, decided for itself whether it was on the list, and could
+// write itself onto it — Firestore rules never protected that field. A gate
+// enforced only by the code an attacker controls is not a gate. Stolen
+// credentials walked straight through it.
+//
+// It is now settled server-side, on the Admin SDK, as part of verifying the
+// password, and approvedDevices is admin-only in the rules.
+//
+// The FIRST device is approved automatically. Requiring an approval before
+// anyone can use the account they just paid for meant a client registering at
+// two in the morning could not open their till until the owner woke up — for
+// no security benefit, because a licence with no approved devices has nothing
+// to protect yet. Every device after that waits.
+const devId = (d) => (typeof d === "string" ? d : d && d.id);
+
+async function settleDevice(ref, data, key, deviceId, deviceLabel) {
+  const approved = Array.isArray(data.approvedDevices) ? data.approvedDevices : [];
+  if (!deviceId) return { status: "approved" }; // older client build; don't lock it out
+  if (approved.some((d) => devId(d) === deviceId)) return { status: "approved" };
+
+  const now = new Date().toISOString();
+  if (approved.length === 0) {
+    await ref.update({
+      approvedDevices: [{ id: deviceId, label: deviceLabel || "First device", approvedAt: now, firstDevice: true }],
+      lastDeviceApprovedAt: now,
+    });
+    return { status: "approved", first: true };
+  }
+
+  const pending = Array.isArray(data.pendingDevices) ? data.pendingDevices : [];
+  if (!pending.some((d) => devId(d) === deviceId)) {
+    await ref.update({
+      pendingDevices: [...pending, { id: deviceId, label: deviceLabel || "Unknown device", requestedAt: now }],
+      lastDeviceRequestAt: now,
+    });
+    // A durable line in the admin panel's Activity tab, so a request is still
+    // visible after the badge has been cleared or missed.
+    await db.collection("activity_log").add({
+      action: "DEVICE_LOGIN_REQUEST",
+      user: data.businessName || key,
+      details: `New device "${deviceLabel || "Unknown device"}" tried to sign in to ${key} and is waiting for approval.`,
+      licenseKey: key,
+      deviceId,
+      timestamp: now,
+    }).catch(() => {});
+  }
+  return { status: "pending" };
+}
+
 export const verifyLogin = onCall({ cors: true, region: "us-central1" }, async (req) => {
-  const { licenseKey, username, password } = req.data || {};
+  const { licenseKey, username, password, deviceId, deviceLabel } = req.data || {};
   if (!licenseKey || !username || !password) {
     throw new HttpsError("invalid-argument", "Missing credentials.");
   }
@@ -164,6 +216,14 @@ export const verifyLogin = onCall({ cors: true, region: "us-central1" }, async (
     throw new HttpsError("permission-denied", "This account has been deactivated.");
   }
 
+  // Password is right and the account is live. Now: is this device allowed?
+  // An unapproved device gets NO token — issuing one and relying on the browser
+  // to show a waiting screen would hand it real read access to the account.
+  const device = await settleDevice(ref, data, key, String(deviceId || "").slice(0, 100), String(deviceLabel || "").slice(0, 60));
+  if (device.status === "pending") {
+    return { deviceStatus: "pending", businessName: data.businessName || "" };
+  }
+
   const token = await getAuth().createCustomToken(key, { licenseKey: key, username: enteredUser });
   // NOTE: passwordHash and clientUsername are deliberately NOT returned — the
   // client must never receive credential-derived secrets.
@@ -177,7 +237,9 @@ export const verifyLogin = onCall({ cors: true, region: "us-central1" }, async (
     address: data.address || "",
     phone: data.phone || "",
     businessType: data.businessType || "restaurant",
-    credentialsApproved: data.credentialsApproved || false
+    credentialsApproved: data.credentialsApproved || false,
+    deviceStatus: "approved",
+    firstDevice: !!device.first,
   };
 });
 
