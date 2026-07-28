@@ -9,6 +9,7 @@ import { isTrial, isTrialBuild, trialMeta, trialLicense, trialDaysLeft, trialExp
   setTrialBusinessType, syncTrialMeta, consumeTrialStartError,
   normalizePhone, isValidMobile, trialKeyForPhone, TRIAL_DAYS, TRIAL_LIMITS } from "./trial.js";
 import { initTrialMirror, mirrorTrialData, flushTrialMirror } from "./trialMirror.js";
+import { initCloudArchive, archiveSalesDay, flushArchive, restoreArchiveToDevice, backfillArchive, loadArchiveIndex, loadArchivedRange } from "./cloudArchive.js";
 import { TERMS_VERSION, TERMS_TITLE, TERMS_DATE, TERMS_PDF_PATH, TERMS_PREAMBLE,
   TERMS_ACKNOWLEDGMENTS, captureClientIp, buildAcceptanceRecord,
   printAcceptanceCertificate } from "./terms.js";
@@ -61,6 +62,9 @@ const verifyLoginFn = httpsCallable(functions, "verifyLogin");
 // Hand the trial mirror this app's Firestore handles — one Firebase app, one
 // auth session. Must come after db exists, not next to the TRIAL flag above.
 if (TRIAL) initTrialMirror({ db, doc, collection, setDoc, writeBatch });
+// Every client's sales history, one document per business day, kept for years.
+// Must also come after db exists.
+initCloudArchive({ db, doc, collection, setDoc, getDoc, getDocs, query, where, orderBy, writeBatch });
 // ⚠️ TEMPORARY DEBUG HOOK — remove once the auth/registration issue is confirmed fixed.
 if (typeof window !== "undefined") {
   window.__restoposDebug = { auth, db, registerDeviceUid: null };
@@ -822,7 +826,13 @@ const SYNC_KEYS=[
   "restopos_shifts","restopos_users","restopos_pins",
   "restopos_invoice_format","restopos_invoice_template",
   "restopos_kitchen_printer","restopos_daylog","restopos_closed_days",
-  "restopos_customers","restopos_archived_sales","restopos_sales",
+  // restopos_archived_sales is deliberately NOT here. It is capped at 50,000
+  // records — tens of megabytes — and this whole list goes into ONE Firestore
+  // document with a 1 MiB limit. Once it crossed that cap every write to the
+  // document failed, so a client's menu, settings and customers silently
+  // stopped backing up too. Sales history now lives in the sales_days
+  // subcollection (cloudArchive.js), which is built to hold years of it.
+  "restopos_customers","restopos_sales",
   "restopos_vno","restopos_kot","restopos_daily_token","restopos_gift_cards","restopos_quotations",
   "restopos_draft_format","restopos_kot_format","restopos_dashboard_config","restopos_draft_invoices","restopos_saved_invoices",
   "restopos_client_creds", // ← needed so login works on new/other devices
@@ -836,19 +846,38 @@ function debouncedSync(licenseKey,key,data){
   _syncTimers[key]=setTimeout(()=>syncKeyToFirestore(licenseKey,key,data),3000);
 }
 
+// Everything below lands in ONE Firestore document, which is capped at 1 MiB.
+// A single key that grows without limit therefore takes down the backup of
+// every OTHER key with it, and the only symptom is a console warning nobody
+// reads. Refuse the oversized key instead, loudly, and keep the rest working.
+const MAX_SYNC_FIELD_BYTES=350000;
+const _oversizeWarned=new Set();
 async function syncKeyToFirestore(licenseKey,key,data){
   if(!licenseKey)return;
   try{
+    const json=JSON.stringify(data);
+    const size=new TextEncoder().encode(json).length;
+    if(size>MAX_SYNC_FIELD_BYTES){
+      if(!_oversizeWarned.has(key)){
+        _oversizeWarned.add(key);
+        console.error(`[Sync] REFUSING to sync "${key}": ${(size/1024).toFixed(0)} KB exceeds the `+
+          `${(MAX_SYNC_FIELD_BYTES/1024).toFixed(0)} KB per-key budget. Syncing it would push `+
+          `client_data/${licenseKey} past Firestore's 1 MiB document limit and stop ALL backup `+
+          `for this client. If this key needs cloud storage it belongs in a subcollection.`);
+      }
+      return;
+    }
     const docRef=doc(db,"client_data",licenseKey);
     // Use setDoc with merge so we don't overwrite other keys
     await setDoc(docRef,{
-      [key]:JSON.stringify(data),
+      [key]:json,
       [`${key}_updatedAt`]:new Date().toISOString(),
       licenseKey,
       lastSyncAt:new Date().toISOString(),
     },{merge:true});
   }catch(e){
-    console.warn("[Sync] Failed to sync",key,":",e.message);
+    // Louder than a warning: this is the client's backup failing.
+    console.error("[Sync] Failed to sync",key,":",e.message);
   }
 }
 
@@ -896,6 +925,27 @@ async function restoreFromFirestore(licenseKey){
   }catch(e){
     console.warn("[Sync] Restore failed:",e.message);
     return false;
+  }
+}
+
+// Push the affected business days into the cloud archive.
+//
+// A day document must hold ALL of that day's invoices, and a sale can be in
+// either the recent working set or an already-rolled-over monthly bucket, so
+// both are merged before the day is queued. The archive itself debounces, so
+// calling this on every change costs one write per day, not one per sale.
+function queueDaysToArchive(licenseKey,working,dates){
+  if(!licenseKey||!dates||!dates.length)return;
+  for(const date of new Set(dates)){
+    if(!date)continue;
+    let bucket=[];
+    try{bucket=JSON.parse(localStorage.getItem(`restopos_sales_${date.slice(0,7)}`)||"[]");}catch(e){}
+    const seen=new Set();const all=[];
+    for(const sale of [...bucket,...(working||[])]){
+      if(!sale||sale.date!==date||seen.has(sale.id))continue;
+      seen.add(sale.id);all.push(sale);
+    }
+    if(all.length)archiveSalesDay(licenseKey,date,all);
   }
 }
 
@@ -1195,8 +1245,30 @@ function ClientLogin({license,onSuccess,onForgotPassword,onBack,onTryTrial}){
   const needLicense=!savedLicense?.licenseKey;
   const [licenseKeyInput,setLicenseKeyInput]=useState("");
 
+  // Local attempt counter. This is a courtesy, not a security control — the
+  // real throttle is per-IP in the verifyLogin function, which a browser
+  // cannot influence. It exists so someone mistyping gets told immediately
+  // instead of waiting on a round trip. It used to be read at startup and
+  // cleared on success but never once incremented, so it looked like a
+  // protection that did nothing at all.
   const [loginAttempts,setLoginAttempts]=useState(()=>parseInt(sessionStorage.getItem("restopos_login_attempts")||"0"));
   const [lockUntil,setLockUntil]=useState(()=>parseInt(sessionStorage.getItem("restopos_lock_until")||"0"));
+  const LOCAL_MAX_ATTEMPTS=8, LOCAL_LOCK_MS=15*60*1000;
+  function noteFailedAttempt(){
+    const n=loginAttempts+1;
+    setLoginAttempts(n);
+    sessionStorage.setItem("restopos_login_attempts",String(n));
+    if(n>=LOCAL_MAX_ATTEMPTS){
+      const until=Date.now()+LOCAL_LOCK_MS;
+      setLockUntil(until);
+      sessionStorage.setItem("restopos_lock_until",String(until));
+    }
+  }
+  function clearFailedAttempts(){
+    setLoginAttempts(0);setLockUntil(0);
+    sessionStorage.removeItem("restopos_login_attempts");
+    sessionStorage.removeItem("restopos_lock_until");
+  }
 
   // ── Device approval helpers ────────────────────────────────────────
   // Wraps any promise so a stalled Firestore/network call can't freeze the
@@ -1280,8 +1352,7 @@ function ClientLogin({license,onSuccess,onForgotPassword,onBack,onTryTrial}){
       // longer relies on any server password hash being stored on the device.
       const localOk=await localCredsMatch(creds,username,password);
       if(localOk&&creds?.approved===true&&creds?.active!==false){
-        sessionStorage.removeItem("restopos_login_attempts");
-        sessionStorage.removeItem("restopos_lock_until");
+        clearFailedAttempts();
         try{
           const savedLic=LS.get("restopos_license_v2");
           if(savedLic?.licenseKey){
@@ -1318,6 +1389,10 @@ function ClientLogin({license,onSuccess,onForgotPassword,onBack,onTryTrial}){
             result=res.data;
           }catch(fnErr){
             const msg=fnErr?.message||"Login failed.";
+            // Only a rejected credential counts as an attempt. Approval and
+            // deactivation refusals are not guesses, and a network failure is
+            // not the user's doing — neither should push them toward a lock.
+            if(fnErr?.code==="functions/unauthenticated")noteFailedAttempt();
             if(fnErr?.code==="functions/permission-denied"){
               setError("⛔ "+msg);
             }else if(fnErr?.code==="functions/unauthenticated"){
@@ -1341,8 +1416,7 @@ function ClientLogin({license,onSuccess,onForgotPassword,onBack,onTryTrial}){
           if(!savedLic?.licenseKey){
             LS.set("restopos_license_v2",{licenseKey:licKey,businessName:result.businessName||"",crNumber:result.crNumber||"",vatNumber:result.vatNumber||"",email:result.email||"",city:result.city||"",address:result.address||"",phone:result.phone||"",businessType:result.businessType||"restaurant"});
           }
-          sessionStorage.removeItem("restopos_login_attempts");
-          sessionStorage.removeItem("restopos_lock_until");
+          clearFailedAttempts();
           try{
             await withTimeout(updateDoc(doc(db,"pending_activations",licKey),{forceLogout:false}),8000,"reset");
           }catch(wErr){
@@ -1350,12 +1424,18 @@ function ClientLogin({license,onSuccess,onForgotPassword,onBack,onTryTrial}){
             setError("⚠️ Login verified, but the server rejected the write (Firestore rules). Device approval can't be requested. Error: "+wErr.message);
             setLoading(false);diagnosed=true;return;
           }
-          // Device approval gate for this new device.
+          // Device approval gate for this new device. An "error" here means the
+          // device check itself couldn't complete — not that the device was
+          // refused. The offline path lets those through and this one used to
+          // block them, so the same failure had opposite outcomes depending on
+          // which branch you came down. Both now let a caller through who has
+          // already proved their password, because a till that cannot open
+          // during service is worse than a device registering late. The kill
+          // switch still governs the session either way.
           const devState=await checkOrRequestDevice();
           if(devState==="pending"){setWaitingApproval(true);setLoading(false);return;}
           if(devState==="error"){
-            setError("⚠️ Couldn't register this device for approval (server/rules error). Please try again or contact support.");
-            setLoading(false);diagnosed=true;return;
+            console.warn("[DeviceApproval] gate returned 'error' after a verified login — proceeding; device will register on the next attempt.");
           }
           onSuccess();
           setLoading(false);
@@ -8255,6 +8335,13 @@ ${_brandingHTML({...REPORT_DEFAULTS,...(LS.get("restopos_report_format")||{})})}
     const existingIds=new Set(archivedSales.map(s=>s.id));
     const newToArchive=periodSales.filter(s=>!existingIds.has(s.id));
     LS.set("restopos_archived_sales",[...archivedSales,...newToArchive].slice(-50000));
+    // restopos_archived_sales is device-only — it is far too large to sync into
+    // client_data, which is exactly what used to break the whole backup. Push
+    // this period into the day archive explicitly, or these sales would exist
+    // on this machine and nowhere else, and Close Day is precisely the moment
+    // they leave the working set.
+    const _lkClose=LS.get("restopos_license_v2")?.licenseKey;
+    if(_lkClose)queueDaysToArchive(_lkClose,periodSales,periodSales.map(s=>s.date));
 
     // Clear the active sales that fell within this period (they're archived now).
     const periodIds=new Set(periodSales.map(s=>s.id));
@@ -15389,6 +15476,10 @@ export default function App(){
   },[]);
   const [announcementBanner,setAnnouncementBanner]=useState(()=>{try{return LS.get("restopos_announcement")||"";}catch{return "";}});
   const [adminNotification,setAdminNotification]=useState(null);
+  // What the cloud archive put back on a new device, and what it deliberately
+  // left in the cloud. Shown once so the client can see their history survived
+  // rather than assuming the older months are gone.
+  const [archiveRestore,setArchiveRestore]=useState(null);
   const pwaInstall=usePWAInstall();
   const [lang,setLang]=useState(()=>getLang());
   function handleLangChange(l){setLangStore(l);setLang(l);}
@@ -15549,7 +15640,19 @@ export default function App(){
       // second device from its mobile number.
       registerDeviceUid(savedLic.licenseKey,savedLic.vatNumber)
         .then(()=>restoreFromFirestore(savedLic.licenseKey))
-        .then(restored=>{
+        .then(async(restored)=>{
+        // Sales history comes from the day archive, not the parent document —
+        // the parent only ever carried the recent working set. This pulls the
+        // recent months onto the device; older years stay in the cloud and are
+        // read on demand, because localStorage is a few megabytes and years of
+        // invoices are hundreds.
+        try{
+          const r=await restoreArchiveToDevice(savedLic.licenseKey);
+          if(r.days){
+            setArchiveRestore(r);
+            console.log(`[Sync] ${r.sales} sale(s) over ${r.days} day(s) restored; ${r.older} older day(s) available in the cloud.`);
+          }
+        }catch(e){console.warn("[Sync] archive restore failed:",e.message);}
         if(restored){
           // Reload state from localStorage after restore
           _setItems(LS.get("restopos_items")||[]);
@@ -15573,6 +15676,17 @@ export default function App(){
         });
       },5000); // 5s delay so app loads first
     }
+
+    // Push any sales history that predates this archive existing, on EVERY
+    // boot rather than inside one of the branches above. The branch test is
+    // "does this device have a menu yet", which says nothing about whether its
+    // sales have ever been uploaded — a shop that has not built its menu still
+    // takes money, and days are otherwise only queued when a sale changes them.
+    // The backfill compares against the cloud index first, so on a device
+    // that is already in step it costs one read and does nothing.
+    setTimeout(()=>{
+      backfillArchive(savedLic.licenseKey).catch(e=>console.warn("[Archive] backfill failed:",e.message));
+    },9000);
   },[]);
 
   // REAL-TIME KILL-SWITCH WATCHDOG
@@ -15634,13 +15748,23 @@ export default function App(){
         // till running, and which field an admin path happens to write is not
         // something the kill switch should depend on.
         accountVerdictRef.current="deactivated";decide();
-      }else if(data.passwordResetByAdmin===true&&data.credentialsApproved===false){
-        // The admin cleared this client's password. Their current session must
-        // end, or a reset does nothing until they happen to log out. Gated on
-        // the explicit admin flag so a client still working through initial
-        // registration — where credentialsApproved is legitimately false — is
-        // not bounced out of its own signup.
-        accountVerdictRef.current="forceLogout";decide();
+      }else if(data.passwordResetByAdmin===true&&data.credentialsSet===false){
+        // The admin cleared this client's password. Send them to set a new one
+        // rather than to a login screen that can only ever reject them: with no
+        // passwordHash left on the server there is nothing to log in against,
+        // and there was no other route back — an admin password reset stranded
+        // the client unless they happened to have a working reset email.
+        //
+        // They prove ownership without a password because their device UID is
+        // on the licence's authUids allowlist, which is exactly what
+        // setClientCredentials checks. The stale offline verifier is cleared
+        // too, or the old password would still unlock this device.
+        // Gated on credentialsSet rather than credentialsApproved so a client
+        // working through initial registration — where approval is legitimately
+        // still false — is not dragged out of its own signup.
+        try{LS.del("restopos_client_creds");}catch(e){}
+        accountVerdictRef.current=null;decide();
+        setStep("setCredentials");
       }else{
         accountVerdictRef.current=null;decide();
         // Sync subscriptionPlan, phone, ownerName from Firestore into local license
@@ -15736,11 +15860,18 @@ export default function App(){
         }catch(e){/* storage full — skip archiving this batch */}
       });
       LS.set("restopos_sales",recent);
-      const lic2=LS.get("restopos_license_v2")?.licenseKey;if(lic2){debouncedSync(lic2,"restopos_sales",recent);}
+      const lic2=LS.get("restopos_license_v2")?.licenseKey;
+      if(lic2){
+        debouncedSync(lic2,"restopos_sales",recent);
+        // Both the days that just rolled into monthly buckets and the days
+        // still in the working set — the archive is the only durable copy.
+        queueDaysToArchive(lic2,n,[...toArchive.map(s=>s.date),...recent.map(s=>s.date)]);
+      }
       return recent;
     }
     LS.set("restopos_sales",n);
-    const lic3=LS.get("restopos_license_v2")?.licenseKey;if(lic3){debouncedSync(lic3,"restopos_sales",n);}
+    const lic3=LS.get("restopos_license_v2")?.licenseKey;
+    if(lic3){debouncedSync(lic3,"restopos_sales",n);queueDaysToArchive(lic3,n,n.map(s=>s.date));}
     return n;
   });}
   // Helper: load sales from a specific month archive
@@ -15793,11 +15924,20 @@ export default function App(){
     mirrorTrialData(trialSnapshot());
   },[trialSnapshot]);
   useEffect(()=>{
-    if(!TRIAL)return;
-    // Catch the last few sales of a shift before the tab goes away.
-    const onHide=()=>{ if(document.visibilityState==="hidden")flushTrialMirror(trialSnapshot()); };
+    // Catch the last few sales of a shift before the tab goes away. The archive
+    // debounce is 8 seconds, so closing the till right after the final invoice
+    // of the night is exactly when a day would otherwise be lost.
+    const onHide=()=>{
+      if(document.visibilityState!=="hidden")return;
+      flushArchive();
+      if(TRIAL)flushTrialMirror(trialSnapshot());
+    };
     document.addEventListener("visibilitychange",onHide);
-    return()=>document.removeEventListener("visibilitychange",onHide);
+    window.addEventListener("pagehide",onHide);
+    return()=>{
+      document.removeEventListener("visibilitychange",onHide);
+      window.removeEventListener("pagehide",onHide);
+    };
   },[trialSnapshot]);
   function setItems(v){_setItems(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_items",n);const _lic_setItems=LS.get("restopos_license_v2")?.licenseKey;if(_lic_setItems)debouncedSync(_lic_setItems,"restopos_items",n);if(n.length!==p.length)logActivity(n.length>p.length?"ITEM_ADDED":"ITEM_DELETED",{after:{itemCount:n.length}},currentUser?.role||"System");return n;});}
   function setTables(v){_setTables(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_tables",n);const lic=LS.get("restopos_license_v2")?.licenseKey;if(lic)debouncedSync(lic,"restopos_tables",n);return n;});}
@@ -15986,6 +16126,16 @@ export default function App(){
           <div style={{background:"linear-gradient(135deg,#F0A500,#e09000)",color:"#fff",padding:"9px 16px",marginBottom:14,borderRadius:10,display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,boxShadow:"0 2px 12px rgba(240,165,0,0.25)"}}>
             <span style={{fontSize:12,fontWeight:700}}>📢 {announcementBanner}</span>
             <button onClick={()=>setAnnouncementBanner("")} style={{background:"rgba(255,255,255,0.2)",border:"none",borderRadius:6,color:"#fff",fontSize:14,cursor:"pointer",padding:"2px 8px",fontFamily:"inherit",fontWeight:700,flexShrink:0}}>×</button>
+          </div>
+        )}
+        {archiveRestore&&(
+          <div style={{position:"fixed",bottom:18,right:18,zIndex:9500,maxWidth:340,background:"#0F2340",border:"1px solid rgba(46,204,113,0.45)",borderRadius:14,padding:"14px 16px",boxShadow:"0 12px 34px rgba(0,0,0,0.45)"}}>
+            <div style={{fontSize:13,fontWeight:800,color:"#7FFAB5",marginBottom:6}}>☁️ History restored</div>
+            <div style={{fontSize:12,color:"rgba(255,255,255,0.72)",lineHeight:1.6}}>
+              {archiveRestore.sales.toLocaleString()} sale{archiveRestore.sales===1?"":"s"} across {archiveRestore.days} day{archiveRestore.days===1?"":"s"} are on this device.
+              {archiveRestore.older>0&&<> Another {archiveRestore.older.toLocaleString()} day{archiveRestore.older===1?"":"s"} of older history is safe in the cloud and opens from Reports.</>}
+            </div>
+            <button onClick={()=>setArchiveRestore(null)} style={{marginTop:10,padding:"7px 14px",background:"rgba(255,255,255,0.08)",color:"rgba(255,255,255,0.75)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:9,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>Got it</button>
           </div>
         )}
         {adminNotification&&(

@@ -122,13 +122,16 @@ await p.screenshot({path:SP+'/82-forcelogout.png'});
 await patch(`pending_activations/${KEY}`,{forceLogout:false});
 await waitFor(async()=>!(await sessionEnded()));
 
-// ══ Admin password reset must end the session too ══
-await patch(`pending_activations/${KEY}`,{passwordResetByAdmin:true,credentialsApproved:false});
-el=await waitFor(sessionEnded,'password reset');
-console.log('7. ADMIN PASSWORD RESET ends session: ', el>=0?`✅ in ${el}ms`:'❌ never ended');
+// ══ Admin password reset sends the client somewhere they can recover ══
+// Not to a login screen: the reset clears passwordHash, so logging in is no
+// longer possible and the client would be stranded. They go to Create Login,
+// proving ownership through the device's place on the licence allowlist.
+await patch(`pending_activations/${KEY}`,{passwordResetByAdmin:true,credentialsSet:false,credentialsApproved:false});
+el=await waitFor(async()=>/Create Login|Set a username/i.test(await txt()),'password reset');
+console.log('7. ADMIN PASSWORD RESET → Create Login:', el>=0?`✅ in ${el}ms`:'❌ never got there');
 
-await patch(`pending_activations/${KEY}`,{passwordResetByAdmin:false,credentialsApproved:true});
-await waitFor(async()=>!(await sessionEnded()));
+await patch(`pending_activations/${KEY}`,{passwordResetByAdmin:false,credentialsSet:true,credentialsApproved:true});
+await p.reload({waitUntil:'domcontentloaded'});await p.waitForTimeout(3000);
 
 // ══ Both verdicts at once: clearing one must not unlock the other ══
 await patch(`licenses/${KEY}`,{active:false});

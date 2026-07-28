@@ -114,6 +114,9 @@ service cloud.firestore {
     match /activity_log/{doc}      { allow read, write: if isAdmin(); }
     // Password-reset OTP hashes — written/verified only by the Admin SDK.
     match /password_resets/{key}   { allow read, write: if false; }
+    // Per-IP login throttle counters, written only by verifyLogin. A client
+    // that could read or clear these could erase its own lockout.
+    match /login_throttle/{id}     { allow read, write: if false; }
 
     // ── pending_activations ────────────────────────────────────────────────
     // Self-serve 14-day trials live here too, keyed TRIAL-<10-digit mobile>
@@ -229,10 +232,18 @@ service cloud.firestore {
       }
     }
 
-    // ── client_data (sales rollups; manager function reads via Admin SDK) ───
+    // ── client_data (the client's own backup; manager fn reads via Admin SDK) ──
     // Doc id is the license key, so we can gate on license ownership directly.
+    //
+    // The parent document holds settings, menu and the recent working set. The
+    // sales_days subcollection holds one document per business day and is what
+    // makes multi-year history possible at all: a Firestore document is capped
+    // at 1 MiB, so years of invoices can never live in the parent.
     match /client_data/{licenseKey} {
       allow read, write: if isAdmin() || ownsLicenseKey(licenseKey);
+      match /{document=**} {
+        allow read, write: if isAdmin() || ownsLicenseKey(licenseKey);
+      }
     }
 
     // ── live support chat (room id = chat_<licenseKey>) ────────────────────

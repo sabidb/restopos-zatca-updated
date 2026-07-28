@@ -120,6 +120,30 @@ await t('owner reads/writes its own client_data', async () => {
 });
 await t('stranger CANNOT read another account client_data', () =>
   assertFails(getDoc(doc(stranger, 'client_data', TRIAL))));
+// Years of sales live in a subcollection because a Firestore document is
+// capped at 1 MiB. The parent rule does not reach subcollections on its own,
+// so without an explicit match the archive would be denied outright.
+await t('owner reads/writes its own sales_days archive', async () => {
+  await assertSucceeds(setDoc(doc(owner, 'client_data', TRIAL, 'sales_days', '2026-07-28'),
+    { date: '2026-07-28', count: 2, data: '{"v":1,"cols":["id"],"rows":[["INV-1"],["INV-2"]]}' }));
+  await assertSucceeds(getDoc(doc(owner, 'client_data', TRIAL, 'sales_days', '2026-07-28')));
+  await assertSucceeds(getDocs(collection(owner, 'client_data', TRIAL, 'sales_days')));
+  await assertSucceeds(setDoc(doc(owner, 'client_data', TRIAL, 'sales_index', 'index'),
+    { days: { '2026-07-28': { n: 2, total: 230 } } }, { merge: true }));
+});
+await t('stranger CANNOT read another shop years of sales', async () => {
+  await assertFails(getDoc(doc(stranger, 'client_data', TRIAL, 'sales_days', '2026-07-28')));
+  await assertFails(getDocs(collection(stranger, 'client_data', TRIAL, 'sales_days')));
+  await assertFails(setDoc(doc(stranger, 'client_data', TRIAL, 'sales_days', '2026-07-28'), { data: 'x' }));
+});
+await t('admin CAN read a client sales archive', () =>
+  assertSucceeds(getDocs(collection(admin, 'client_data', TRIAL, 'sales_days'))));
+// A client that could clear its own throttle row could erase its own lockout.
+await t('login_throttle is unreachable from any client', async () => {
+  await assertFails(getDoc(doc(owner, 'login_throttle', `${TRIAL}__abc`)));
+  await assertFails(setDoc(doc(owner, 'login_throttle', `${TRIAL}__abc`), { fails: 0 }));
+  await assertFails(getDoc(doc(admin, 'login_throttle', `${TRIAL}__abc`)));
+});
 await t('locked secrets stay locked (config/ai, zatca_egs)', async () => {
   await assertFails(getDoc(doc(owner, 'config', 'ai')));
   await assertFails(getDoc(doc(admin, 'zatca_egs', TRIAL)));

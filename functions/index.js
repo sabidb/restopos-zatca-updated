@@ -50,6 +50,35 @@ async function verifyPassword(password, storedHash) {
   return { ok, needsUpgrade: ok };
 }
 
+// Brute-force throttling is per CALLER, not per account.
+//
+// Locking the account itself turned the protection into a weapon: anyone who
+// knew a licence key (they follow a guessable RESTO+7 format and are not
+// treated as secrets) could send eight wrong passwords and take a real shop
+// offline for fifteen minutes, repeatedly, without ever knowing a credential.
+// A till that cannot open is a worse outcome than a slow brute force.
+//
+// So the hard lock now applies to the caller's IP against one account, and the
+// account itself is never locked — a legitimate client at the counter can
+// always keep trying. Brute force is held off by three things instead: bcrypt
+// at cost 12 (~0.25s per guess), the per-IP lock, and a delay that grows with
+// consecutive account-wide failures and is capped low enough to be invisible
+// to someone simply mistyping.
+const MAX_IP_ATTEMPTS = 8;
+const IP_LOCK_MS = 15 * 60 * 1000;
+const THROTTLE_TTL_MS = 60 * 60 * 1000;
+const MAX_ACCOUNT_DELAY_MS = 2000;
+
+const ipHash = (ip) => crypto.createHash("sha256").update(String(ip || "unknown")).digest("hex").slice(0, 32);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function callerIp(req) {
+  const raw = req.rawRequest;
+  const fwd = raw?.headers?.["x-forwarded-for"];
+  if (typeof fwd === "string" && fwd) return fwd.split(",")[0].trim();
+  return raw?.ip || "unknown";
+}
+
 export const verifyLogin = onCall({ cors: true, region: "us-central1" }, async (req) => {
   const { licenseKey, username, password } = req.data || {};
   if (!licenseKey || !username || !password) {
@@ -59,32 +88,40 @@ export const verifyLogin = onCall({ cors: true, region: "us-central1" }, async (
   const enteredUser = String(username).trim().toLowerCase();
 
   const ref = db.collection("pending_activations").doc(key);
+  const throttleRef = db.collection("login_throttle").doc(`${key}__${ipHash(callerIp(req))}`);
 
-  // Server-side brute-force protection: lock the account after too many failed
-  // logins. The transaction COMMITS the counter and returns a verdict — it never
-  // throws (throwing inside runTransaction would roll back the very increment
-  // that records the failed attempt). Password verification (bcrypt) runs inside
-  // so the counter and the check are atomic.
-  const MAX_ATTEMPTS = 8;
-  const LOCK_MS = 15 * 60 * 1000;
+  // Per-IP gate, checked before anything else so a locked-out attacker never
+  // reaches the (deliberately expensive) bcrypt comparison.
+  const throttleSnap = await throttleRef.get();
+  const throttle = throttleSnap.exists ? throttleSnap.data() : {};
+  const nowMs = Date.now();
+  if ((throttle.lockUntil || 0) > nowMs) {
+    const mins = Math.ceil((throttle.lockUntil - nowMs) / 60000);
+    throw new HttpsError("resource-exhausted",
+      `Too many failed attempts from this device. Try again in ${mins} minute${mins > 1 ? "s" : ""}.`);
+  }
+
+  // A slow answer for an account that has been failing, so repeated guessing
+  // costs real time. Capped at 2s: a client who mistyped once waits ~0.25s.
+  const priorFails = Math.max(0, Number(throttle.fails) || 0);
+  if (priorFails > 0) await sleep(Math.min(250 * priorFails, MAX_ACCOUNT_DELAY_MS));
+
+  // The transaction COMMITS the counter and returns a verdict — it never throws
+  // (throwing inside runTransaction would roll back the very increment that
+  // records the failed attempt). Password verification (bcrypt) runs inside so
+  // the counter and the check are atomic.
   const verdict = await db.runTransaction(async (tx) => {
     const snap = await tx.get(ref);
     if (!snap.exists) return { status: "invalid" };
     const data = snap.data();
     if (!data.clientUsername || !data.passwordHash) return { status: "no-creds" };
 
-    const now = Date.now();
-    if ((data.loginLockUntil || 0) > now) {
-      return { status: "locked", mins: Math.ceil((data.loginLockUntil - now) / 60000) };
-    }
-
     const userMatch = enteredUser === data.clientUsername;
     const pw = userMatch ? await verifyPassword(password, data.passwordHash) : { ok: false, needsUpgrade: false };
     if (!userMatch || !pw.ok) {
-      const fails = (data.loginFailCount || 0) + 1;
-      tx.update(ref, fails >= MAX_ATTEMPTS
-        ? { loginFailCount: 0, loginLockUntil: now + LOCK_MS }
-        : { loginFailCount: fails });
+      // loginFailCount is kept purely so the admin panel can show that an
+      // account is being probed. It no longer gates anything.
+      tx.update(ref, { loginFailCount: (data.loginFailCount || 0) + 1, lastFailedLoginAt: new Date().toISOString() });
       return { status: "invalid" };
     }
 
@@ -96,9 +133,20 @@ export const verifyLogin = onCall({ cors: true, region: "us-central1" }, async (
     return { status: "ok", data };
   });
 
-  if (verdict.status === "locked") {
-    throw new HttpsError("resource-exhausted", `Too many failed attempts. Try again in ${verdict.mins} minute${verdict.mins > 1 ? "s" : ""}.`);
+  if (verdict.status === "ok") {
+    if (throttleSnap.exists) await throttleRef.delete().catch(() => {});
+  } else if (verdict.status === "invalid") {
+    const fails = priorFails + 1;
+    await throttleRef.set({
+      licenseKey: key,
+      fails: fails >= MAX_IP_ATTEMPTS ? 0 : fails,
+      lockUntil: fails >= MAX_IP_ATTEMPTS ? nowMs + IP_LOCK_MS : 0,
+      // So a cleanup job (or a TTL policy on this field) can reap stale rows.
+      expiresAt: nowMs + THROTTLE_TTL_MS,
+      updatedAt: new Date().toISOString(),
+    }, { merge: true }).catch(() => {});
   }
+
   if (verdict.status === "no-creds") {
     throw new HttpsError("unauthenticated", "This account has no login credentials set yet.");
   }
