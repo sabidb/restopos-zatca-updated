@@ -402,3 +402,143 @@ export async function restoreArchiveToDevice(licenseKey, { days = RESTORE_DAYS }
     `${older} older day(s) remain in the cloud.`);
   return { days: restoredDays, sales: restoredSales, older, truncated };
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// CLOSED DAYS — one document per trading session
+//
+// A session is Open Day → Close Day, not a calendar date. A shop that starts
+// billing at 2pm and taps Close Day at 5am the next morning traded ONE
+// session across two dates, and handleCloseDay already models it that way:
+// the period is everything since the previous close.
+//
+// These summaries used to ride inside client_data/{key} as the
+// restopos_closed_days field — the single document Firestore caps at 1 MiB,
+// shared with the menu, settings, customers and the recent working set. A
+// close record measures 424 bytes and the local list holds 1,000 of them, so
+// a shop closing daily reaches 414 KB of that budget in under three years.
+// The per-key sync guard refuses anything over 350 KB, which it would have
+// crossed at around 850 closes — a bit over two years. Past that point those
+// clients' close history had quietly stopped backing up altogether. The guard
+// did its job and kept the rest of the backup alive; the history itself was
+// going nowhere. (Measured, not estimated: see e2e/sessions.mjs.)
+//
+// One document per session removes the ceiling entirely, and the day log
+// rides along inside the session that produced it rather than being a second
+// unbounded key.
+// ═══════════════════════════════════════════════════════════════════
+
+const CLOSED_FP_KEY = "restopos_closed_days_fp";
+
+/** Stable, sortable, collision-free id for one close. */
+function closeIdOf(summary) {
+  const stamp = String(summary?.closeTime || summary?.closedAt || summary?.date || "");
+  const clean = stamp.replace(/[:.\/]/g, "-").slice(0, 120);
+  return clean || null;
+}
+
+function loadClosedFingerprints() {
+  try { return JSON.parse(localStorage.getItem(CLOSED_FP_KEY) || "{}"); } catch (e) { return {}; }
+}
+
+/**
+ * Write every session this device holds that the cloud has not confirmed.
+ *
+ * Runs on boot and after each close. Fingerprinted, so re-running it is free —
+ * which is what makes it both the migration for existing clients and the
+ * retry for a close that happened while the till was offline. No separate
+ * queue: the local list IS the queue, and it is already durable.
+ */
+export async function syncClosedDays(licenseKey, sessions, dayLog) {
+  if (!fb || !licenseKey || !Array.isArray(sessions) || !sessions.length) return 0;
+  const { db, doc, collection, writeBatch } = fb;
+  const fps = loadClosedFingerprints();
+  const scope = fps[licenseKey] || (fps[licenseKey] = {});
+
+  const changed = [];
+  for (const s of sessions) {
+    const id = closeIdOf(s);
+    if (!id) continue;
+    // The per-date log entries this session produced. Carried here so the
+    // calendar view can be rebuilt on a new device without a second key.
+    const days = {};
+    if (dayLog) {
+      for (const [date, entry] of Object.entries(dayLog)) {
+        if (entry && entry.partOfClose === s.date) days[date] = entry;
+      }
+    }
+    const body = { summary: s, days, closeTime: s.closeTime || s.closedAt || s.date || "", date: s.date || "" };
+    const fp = fingerprint(body);
+    if (scope[id] === fp) continue;
+    changed.push({ id, body, fp });
+  }
+  if (!changed.length) return 0;
+
+  for (let i = 0; i < changed.length; i += BATCH_LIMIT) {
+    const slice = changed.slice(i, i + BATCH_LIMIT);
+    const batch = writeBatch(db);
+    for (const c of slice) {
+      batch.set(doc(collection(db, "client_data", licenseKey, "closed_days"), c.id), c.body, { merge: true });
+    }
+    await batch.commit();
+    // Recorded per batch, not at the end: a till that loses its connection
+    // half-way keeps credit for the sessions that did land.
+    for (const c of slice) scope[c.id] = c.fp;
+    try { localStorage.setItem(CLOSED_FP_KEY, JSON.stringify(fps)); } catch (e) {}
+  }
+  console.log(`[Sessions] ${changed.length} trading session(s) backed up.`);
+  return changed.length;
+}
+
+/**
+ * Every session the cloud holds, newest first. Ordered on closeTime, which is
+ * a single field and therefore served by the automatic index — no composite
+ * to deploy before this works.
+ */
+export async function loadClosedDays(licenseKey, max = 1000) {
+  if (!fb || !licenseKey) return { sessions: [], dayLog: {} };
+  const { db, collection, query, orderBy, limit, getDocs } = fb;
+  const sessions = [], dayLog = {};
+  try {
+    const snap = await getDocs(query(
+      collection(db, "client_data", licenseKey, "closed_days"),
+      orderBy("closeTime", "desc"), limit(max),
+    ));
+    snap.docs.forEach((d) => {
+      const v = d.data() || {};
+      if (v.summary) sessions.push(v.summary);
+      if (v.days) Object.assign(dayLog, v.days);
+    });
+  } catch (e) {
+    console.warn("[Sessions] read failed:", e && e.message);
+  }
+  return { sessions, dayLog };
+}
+
+/**
+ * Merge the cloud's sessions into this device, newest wins on a tie.
+ *
+ * Used when a client signs in on a replacement till: the close history is
+ * what Reports and the day calendar are built from, and without it the new
+ * device looks like a brand-new shop.
+ */
+export async function restoreClosedDays(licenseKey) {
+  const { sessions, dayLog } = await loadClosedDays(licenseKey);
+  if (!sessions.length) return 0;
+  try {
+    const local = JSON.parse(localStorage.getItem("restopos_closed_days") || "[]");
+    const byId = new Map();
+    for (const s of sessions) byId.set(closeIdOf(s), s);
+    for (const s of local) byId.set(closeIdOf(s), s);   // local wins — it is the newer writer
+    const merged = Array.from(byId.values())
+      .sort((a, b) => String(b.closeTime || b.closedAt || b.date || "").localeCompare(String(a.closeTime || a.closedAt || a.date || "")));
+    localStorage.setItem("restopos_closed_days", JSON.stringify(merged.slice(0, 1000)));
+
+    const localLog = JSON.parse(localStorage.getItem("restopos_daylog") || "{}");
+    localStorage.setItem("restopos_daylog", JSON.stringify({ ...dayLog, ...localLog }));
+    console.log(`[Sessions] restored ${sessions.length} session(s) from the cloud.`);
+    return sessions.length;
+  } catch (e) {
+    console.warn("[Sessions] restore failed:", e && e.message);
+    return 0;
+  }
+}

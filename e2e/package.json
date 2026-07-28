@@ -11,7 +11,8 @@
     "loginflow": "node loginflow.mjs",
     "deviceapproval": "node deviceapproval.mjs",
     "zatca": "node zatca.mjs",
-    "archivegap": "node archivegap.mjs"
+    "archivegap": "node archivegap.mjs",
+    "sessions": "node sessions.mjs"
   },
   "devDependencies": {
     "playwright": "^1.49.0",

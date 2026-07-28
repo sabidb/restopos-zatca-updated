@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback, Component } from "react";
 import { initializeApp } from "firebase/app";
-import { getFirestore, collection, query, where, getDocs, updateDoc, doc, addDoc, getDoc, onSnapshot, setDoc, deleteDoc, orderBy, limit, startAfter, arrayUnion, writeBatch , connectFirestoreEmulator } from "firebase/firestore";
+import { getFirestore, collection, query, where, getDocs, updateDoc, doc, addDoc, getDoc, onSnapshot, setDoc, deleteDoc, orderBy, limit, startAfter, arrayUnion, writeBatch, deleteField, connectFirestoreEmulator } from "firebase/firestore";
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken, connectAuthEmulator } from "firebase/auth";
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { getFunctions, httpsCallable } from "firebase/functions";
@@ -9,7 +9,8 @@ import { isTrial, isTrialBuild, trialMeta, trialLicense, trialDaysLeft, trialExp
   setTrialBusinessType, syncTrialMeta, consumeTrialStartError,
   normalizePhone, isValidMobile, trialKeyForPhone, TRIAL_DAYS, TRIAL_LIMITS } from "./trial.js";
 import { initTrialMirror, mirrorTrialData, flushTrialMirror } from "./trialMirror.js";
-import { initCloudArchive, archiveSalesDay, flushArchive, restoreArchiveToDevice, backfillArchive, loadArchiveIndex, loadArchivedRange } from "./cloudArchive.js";
+import { initCloudArchive, archiveSalesDay, flushArchive, restoreArchiveToDevice, backfillArchive, loadArchiveIndex, loadArchivedRange,
+  syncClosedDays, restoreClosedDays, loadClosedDays } from "./cloudArchive.js";
 import { TERMS_VERSION, TERMS_TITLE, TERMS_DATE, TERMS_PDF_PATH, TERMS_PREAMBLE,
   TERMS_ACKNOWLEDGMENTS, captureClientIp, buildAcceptanceRecord,
   printAcceptanceCertificate } from "./terms.js";
@@ -82,7 +83,8 @@ initCloudArchive({ db, doc, collection, setDoc, getDoc, getDocs, query, where, o
 // and are any of its invoices still missing from the permanent archive. Reading
 // state only; every function exposed here is one the app calls itself anyway.
 if (typeof window !== "undefined") {
-  window.__restoposDebug = { auth, db, registerDeviceUid: null, invoiceStorage: null };
+  window.__restoposDebug = { auth, db, registerDeviceUid: null, invoiceStorage: null,
+    sessions: { syncClosedDays, restoreClosedDays, loadClosedDays } };
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1032,7 +1034,16 @@ const SYNC_KEYS=[
   "restopos_tables","restopos_promos","restopos_expenses",
   "restopos_shifts","restopos_users","restopos_pins",
   "restopos_invoice_format","restopos_invoice_template",
-  "restopos_kitchen_printer","restopos_daylog","restopos_closed_days",
+  "restopos_kitchen_printer",
+  // restopos_closed_days and restopos_daylog are deliberately NOT here.
+  // Both grow forever — one entry per trading session and one per calendar
+  // date — inside the single 1 MiB document. A close record measures 424
+  // bytes and the list holds 1,000, so a shop closing daily reaches 414 KB of
+  // that budget in under three years and crosses the 350 KB per-key guard at
+  // around 850 closes, after which it stopped syncing. They live in the
+  // closed_days
+  // subcollection now (cloudArchive.js), one document per session, with the
+  // day log carried inside the session that produced it.
   // restopos_archived_sales is deliberately NOT here. It is capped at 50,000
   // records — tens of megabytes — and this whole list goes into ONE Firestore
   // document with a 1 MiB limit. Once it crossed that cap every write to the
@@ -1088,6 +1099,38 @@ async function syncKeyToFirestore(licenseKey,key,data){
   }
 }
 
+// Sessions and the day log used to be two of the SYNC_KEYS, so existing
+// clients still have them sitting in client_data/{key} as JSON strings. Once
+// they are safely in the closed_days subcollection, delete the fields — that
+// is the point of the move, and leaving them behind would keep ~450 KB of a
+// 1 MiB budget spoken for.
+const LEGACY_SESSION_KEYS=["restopos_closed_days","restopos_daylog"];
+async function reclaimLegacySessionFields(licenseKey){
+  if(!licenseKey)return;
+  try{
+    const ref=doc(db,"client_data",licenseKey);
+    const snap=await getDoc(ref);
+    if(!snap.exists())return;
+    const data=snap.data();
+    const present=LEGACY_SESSION_KEYS.filter(k=>data[k]!==undefined);
+    if(!present.length)return;
+    // Only after the subcollection actually holds at least as much as the
+    // field did. Deleting first and discovering the write failed afterwards
+    // would destroy the client's close history.
+    let legacyCount=0;
+    try{legacyCount=(JSON.parse(data.restopos_closed_days||"[]")||[]).length;}catch(e){}
+    const {sessions}=await loadClosedDays(licenseKey);
+    if(sessions.length<legacyCount){
+      console.warn(`[Sessions] keeping the legacy field: ${sessions.length} in the subcollection vs ${legacyCount} in the document.`);
+      return;
+    }
+    const patch={};
+    for(const k of present){patch[k]=deleteField();patch[`${k}_updatedAt`]=deleteField();}
+    await setDoc(ref,patch,{merge:true});
+    console.log(`[Sessions] reclaimed ${present.join(", ")} from the shared document.`);
+  }catch(e){console.warn("[Sessions] reclaim skipped:",e.message);}
+}
+
 async function restoreFromFirestore(licenseKey){
   if(!licenseKey)return false;
   try{
@@ -1099,7 +1142,13 @@ async function restoreFromFirestore(licenseKey){
     // SYNC_KEYS is a fixed list, but monthly sales archives are dynamic
     // (restopos_sales_YYYY-MM). Restore whichever ones the cloud holds so a
     // resumed device can still show earlier days, not just the recent 200.
-    const keysToRestore=[...SYNC_KEYS,...Object.keys(data).filter(k=>/^restopos_sales_\d{4}-\d{2}$/.test(k))];
+    // LEGACY_SESSION_KEYS are no longer synced, but clients who have not
+    // migrated yet still have them in the document, and a replacement till
+    // needs them restored before syncClosedDays can move them into the
+    // subcollection. Drop out of this list once reclaimLegacySessionFields
+    // has cleared them.
+    const keysToRestore=[...SYNC_KEYS,...LEGACY_SESSION_KEYS,
+      ...Object.keys(data).filter(k=>/^restopos_sales_\d{4}-\d{2}$/.test(k))];
     keysToRestore.forEach(key=>{
       if(data[key]){
         try{
@@ -8665,6 +8714,15 @@ ${_brandingHTML({...REPORT_DEFAULTS,...(LS.get("restopos_report_format")||{})})}
     const updatedClosed=[summary,...closedDays.filter(d=>d.date!==lastDate).slice(0,999)];
     LS.set("restopos_closed_days",updatedClosed);
 
+    // Back the session up as its own document. Not awaited and not allowed to
+    // throw: a till with no connection must still be able to close its day,
+    // and the local list is durable, so the boot sync picks this up next time.
+    const _lkSession=LS.get("restopos_license_v2")?.licenseKey;
+    if(_lkSession){
+      syncClosedDays(_lkSession,[summary],log)
+        .catch(e=>console.warn("[Sessions] close not backed up yet:",e.message));
+    }
+
     // Archive every sale in the period (idempotent).
     const archivedSales=LS.get("restopos_archived_sales")||[];
     const existingIds=new Set(archivedSales.map(s=>s.id));
@@ -16064,6 +16122,23 @@ export default function App(){
     setTimeout(()=>{
       backfillArchive(savedLic.licenseKey).catch(e=>console.warn("[Archive] backfill failed:",e.message));
     },9000);
+
+    // Trading sessions, on every boot and in both directions.
+    //
+    // Pull first, so a replacement till gets the shop's close history instead
+    // of looking like a brand-new business; then push whatever this device
+    // holds that the cloud has not confirmed. The push is fingerprinted, so it
+    // is simultaneously the migration for clients whose sessions are still
+    // inside the old 1 MiB document, the retry for a close made while offline,
+    // and a no-op for a device already in step.
+    setTimeout(async()=>{
+      const lk=savedLic.licenseKey;
+      try{
+        await restoreClosedDays(lk);
+        await syncClosedDays(lk,LS.get("restopos_closed_days")||[],LS.get("restopos_daylog")||{});
+        await reclaimLegacySessionFields(lk);
+      }catch(e){console.warn("[Sessions] sync failed:",e.message);}
+    },11000);
   },[]);
 
   // REAL-TIME KILL-SWITCH WATCHDOG
