@@ -131,6 +131,23 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    // ── trials (readable mirror of a self-serve trial's activity) ──────────
+    // client_data holds each localStorage key as one long JSON string: perfect
+    // for restoring a device, unreadable in the console. `trials` carries the
+    // same information as real documents — a usage summary on the parent, then
+    // sales / products / customers as subcollections — so a trial can actually
+    // be browsed and queried.
+    //
+    // Doc id is the trial key (TRIAL-<10-digit mobile>), which is also the
+    // pending_activations id, so ownership is the same check as everywhere
+    // else: the device UID must be on that account's authUids.
+    match /trials/{trialKey} {
+      allow read, write: if isAdmin() || ownsLicenseKey(trialKey);
+      match /{document=**} {
+        allow read, write: if isAdmin() || ownsLicenseKey(trialKey);
+      }
+    }
+
     // ── client_data (sales rollups; manager function reads via Admin SDK) ───
     // Doc id is the license key, so we can gate on license ownership directly.
     match /client_data/{licenseKey} {

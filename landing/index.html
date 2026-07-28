@@ -18,9 +18,8 @@
 /* ══════════════════════════════════════════════════════════════════
    RestoPOS landing page — restopos.store
 
-   ⚠️  ONE THING TO SET: APP_URL in the script at the bottom of this
-   file. It is where "Try Now" sends people, and it must point at the
-   deployed POS app (restopos-zatca-updated).
+   Try Now sends people to APP_URL — set at the bottom of this file.
+   restopos.store serves this page; the app lives at app.restopos.store.
    ══════════════════════════════════════════════════════════════════ */
 
 /* ── Tokens ──────────────────────────────────────────────────────
@@ -540,10 +539,13 @@ footer{border-top:1px solid var(--line); padding:38px 0 46px; color:var(--muted)
 
 <script>
 /* ══════════════════════════════════════════════════════════════
-   ⚠️  SET THIS. Where "Try Now" sends people — the deployed POS
-   app (the restopos-zatca-updated project). Once app.restopos.store
-   points at that Vercel project, this value is right; until then,
-   put the project's *.vercel.app URL here.
+   Where "Try Now" sends people: the RestoPOS app itself.
+
+   restopos.store serves THIS page, so the app lives on a subdomain of
+   the same domain — subdomains are free, nothing extra to buy. Point
+   app.restopos.store at the restopos-zatca-updated Vercel project and
+   this value is correct as-is. To test before the DNS record exists,
+   temporarily swap in that project's *.vercel.app URL.
    ══════════════════════════════════════════════════════════════ */
 var APP_URL = "https://app.restopos.store";
 

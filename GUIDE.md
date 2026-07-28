@@ -184,6 +184,37 @@ what the trial does. `client_data/TRIAL-<mobile>` is gated on the device UID
 being in the document's `authUids`, set at creation and topped up by
 `registerDeviceUid` on each new device.
 
+**Seeing trial data in Firebase** (`src/trialMirror.js`). `client_data/{key}`
+stores each localStorage key as one long JSON *string* — it restores a device
+perfectly and is unreadable in the console. So a trial also mirrors itself into
+a `trials` collection as real documents:
+
+```
+trials/TRIAL-05xxxxxxxx            ← usage summary (read this one)
+  ├── sales/{INV-1042}             ← every invoice, one document each
+  ├── products/{itemId}            ← their catalogue
+  └── customers/{customerId}       ← their CRM
+```
+
+The summary carries who signed up (mobile, business, owner, city, mode), where
+they are in the 14 days (`daysUsed`, `daysLeft`, `expired`) and what they have
+actually done: `productCount`, `invoiceCount`, `revenueTotal`, `vatTotal`,
+`averageOrder`, `activeDays`, `firstSaleAt`/`lastSaleAt`, `salesByDay`,
+`paymentMix`, `topProducts` and `lastActiveAt` — enough to tell a live trial
+from an abandoned one at a glance.
+
+Writes are debounced (6 s), diffed against a per-row fingerprint so unchanged
+rows are never rewritten, batched under Firestore's 500-op cap, and flushed
+when the tab is hidden. Every path is best-effort: a failed mirror write logs
+and is dropped, it never interrupts the till. `client_data` remains the restore
+path — this is a readable view alongside it, not a replacement.
+
+> **This needs a rules deploy.** `trials` is a new collection, and the default
+> rule denies everything not matched, so until
+> `firebase deploy --only firestore:rules` runs, every mirror write is rejected
+> and the admin panel's Trials tab shows "No activity mirrored yet". Nothing
+> else breaks — the trial itself and `client_data` backup are unaffected.
+
 **Data retention** (`src/trial.js`):
 
 - `main.jsx` calls `installTrialWorkspace()` **before** `App.jsx` — and therefore
@@ -215,6 +246,11 @@ are blocked. Live chat and support tickets stay open — trial clients are leads
 when online, and by a local one-minute ticker against the stored end date when
 offline, so a till left running overnight still locks on time. The client sees
 a trial-specific screen making clear nothing was deleted.
+
+**In the admin panel.** The Trials tab shows each trial's usage inline —
+products, invoices, revenue, VAT, active days, last seen — and **🔍 View their
+data** opens their actual invoices and catalogue, read straight from the
+`trials` subcollections.
 
 **Optional: a trial-only deployment.** Building with `VITE_TRIAL_MODE=true`
 makes a whole deployment a trial — useful for `try.restopos.store` on a second

@@ -4,30 +4,38 @@ A single self-contained `index.html`. No build step, no dependencies, no
 external requests: fonts are system stacks and the receipt QR is drawn on a
 canvas, so the page renders identically offline and behind any CSP.
 
-## The one thing to set
+## The layout
 
-`APP_URL` at the top of the `<script>` block in `index.html`. It is where
-every **Try Now** button sends people, and it must point at the deployed POS
-app (the `restopos-zatca-updated` project).
+You own one domain, `restopos.store`. **Subdomains of it are free** — they are
+DNS records on a domain you already pay for, not separate purchases. So:
 
-```js
-var APP_URL = "https://app.restopos.store";
-```
+| Address | Serves | Vercel project |
+|---|---|---|
+| `restopos.store` (and `www`) | **this landing page** | the landing project (`resto-pos-landing`) |
+| `app.restopos.store` | **the POS app** | `restopos-zatca-updated` |
 
-## Deploying to restopos.store
+Someone searching "restopos.store" lands here. **Try Now** — in the sticky
+header, the hero and the closing block — sends them to `app.restopos.store`,
+which is the app, where they start the free 14-day trial.
 
-`restopos.store` currently serves the POS app itself, so putting the landing
-page on that domain means giving the app a home of its own first.
+## Setting it up
 
-1. **Give the app its own hostname.** In the existing Vercel project for
-   `restopos-zatca-updated`, add the domain `app.restopos.store` (or keep its
-   `*.vercel.app` URL and use that). Confirm the app loads there.
-2. **Point `APP_URL` at it** in `index.html`.
-3. **Create a second Vercel project** from this repository with
-   **Root Directory** set to `landing`, framework preset **Other**, no build
-   command. Assign `restopos.store` (and `www`) to it.
-4. Leave the app project's domain in place until step 3 is live, so there is
-   no window where neither serves.
+Do these in order, so there is never a window where nothing serves.
+
+1. **Give the app its subdomain.** Vercel → the `restopos-zatca-updated`
+   project → Settings → Domains → add `app.restopos.store`. Vercel shows a CNAME
+   record; add it at your registrar. Wait until `https://app.restopos.store`
+   loads the POS, then confirm it works.
+2. **Check `APP_URL`.** It is already `https://app.restopos.store` — the
+   constant at the top of the `<script>` block in `index.html`. Only change it
+   if you gave the app a different address.
+3. **Point the domain at this page.** Vercel → the landing project → Settings →
+   Domains → add `restopos.store` and `www.restopos.store`. If they are
+   currently attached to the app's project, remove them there first — a domain
+   can only belong to one project.
+
+Deploying this folder as its own Vercel project: **Root Directory** `landing`,
+framework preset **Other**, no build command, no install command.
 
 ## Existing installs keep working
 

@@ -138,6 +138,11 @@ What the trial is:
 - **Visible to the operator.** Signing up writes a `pending_activations/TRIAL-<mobile>`
   document that appears in the admin panel's **Trials** tab with the mobile number,
   business type and days remaining. Extend and Convert-to-paid work on it live
+- **Fully readable in Firebase.** Everything the trial does is mirrored into a
+  `trials/TRIAL-<mobile>` document — usage summary on the parent, with their
+  `sales`, `products` and `customers` as subcollections — so it can be browsed in
+  the Firebase console and in the admin panel's **View their data** view.
+  *(Needs `firebase deploy --only firestore:rules` once, for the new collection.)*
 
 What it is not:
 

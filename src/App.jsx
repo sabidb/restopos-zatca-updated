@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback, Component } from "react";
 import { initializeApp } from "firebase/app";
-import { getFirestore, collection, query, where, getDocs, updateDoc, doc, addDoc, getDoc, onSnapshot, setDoc, deleteDoc, orderBy, limit, startAfter, getCountFromServer, arrayUnion } from "firebase/firestore";
+import { getFirestore, collection, query, where, getDocs, updateDoc, doc, addDoc, getDoc, onSnapshot, setDoc, deleteDoc, orderBy, limit, startAfter, getCountFromServer, arrayUnion, writeBatch } from "firebase/firestore";
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "firebase/auth";
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { getFunctions, httpsCallable } from "firebase/functions";
@@ -8,6 +8,7 @@ import { isTrial, isTrialBuild, trialMeta, trialLicense, trialDaysLeft, trialExp
   beginTrial, leaveTrial, endTrialAndErase, resetTrialData, promoteTrialWorkspace,
   setTrialBusinessType, syncTrialMeta, loadSampleMenu, consumeTrialStartError,
   normalizePhone, isValidMobile, trialKeyForPhone, TRIAL_DAYS, TRIAL_LIMITS } from "./trial.js";
+import { initTrialMirror, mirrorTrialData, flushTrialMirror } from "./trialMirror.js";
 
 // ═══════════════════════════════════════════════════════════════════
 // TRIAL MODE — see src/trial.js. TRIAL is fixed for the life of the page:
@@ -44,6 +45,9 @@ const storage = getStorage(firebaseApp);
 const auth = getAuth(firebaseApp);
 const functions = getFunctions(firebaseApp);
 const verifyLoginFn = httpsCallable(functions, "verifyLogin");
+// Hand the trial mirror this app's Firestore handles — one Firebase app, one
+// auth session. Must come after db exists, not next to the TRIAL flag above.
+if (TRIAL) initTrialMirror({ db, doc, collection, setDoc, writeBatch });
 // ⚠️ TEMPORARY DEBUG HOOK — remove once the auth/registration issue is confirmed fixed.
 if (typeof window !== "undefined") {
   window.__restoposDebug = { auth, db, registerDeviceUid: null };
@@ -15202,6 +15206,7 @@ export default function App(){
     const id=setInterval(()=>setTrialOver(trialExpired()),60000);
     return()=>clearInterval(id);
   },[]);
+
   
   // Offline sync state
   const {isOnline,syncQueue,justCameOnline}=useOfflineSync();
@@ -15521,6 +15526,29 @@ export default function App(){
     const deduped=archived.filter(s=>{if(seen.has(s.id))return false;seen.add(s.id);return true;});
     return[...sales,...deduped].sort((a,b)=>b.date.localeCompare(a.date)||b.id.localeCompare(a.id));
   },[sales,salesVersion]);
+  // ── TRIAL DATA MIRROR ──────────────────────────────────────────────
+  // Push a readable copy of everything this trial does into Firebase, so the
+  // operator can browse it in the console instead of squinting at the JSON
+  // blobs in client_data. Debounced inside the mirror; best-effort throughout.
+  const trialSnapshot=useCallback(()=>({
+    meta:trialMeta(),
+    license:LS.get("restopos_license_v2"),
+    sales:allSales,
+    items,
+    customers:LS.get("restopos_customers")||[],
+    appVersion:APP_VERSION,
+  }),[allSales,items]);
+  useEffect(()=>{
+    if(!TRIAL)return;
+    mirrorTrialData(trialSnapshot());
+  },[trialSnapshot]);
+  useEffect(()=>{
+    if(!TRIAL)return;
+    // Catch the last few sales of a shift before the tab goes away.
+    const onHide=()=>{ if(document.visibilityState==="hidden")flushTrialMirror(trialSnapshot()); };
+    document.addEventListener("visibilitychange",onHide);
+    return()=>document.removeEventListener("visibilitychange",onHide);
+  },[trialSnapshot]);
   function setItems(v){_setItems(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_items",n);const _lic_setItems=LS.get("restopos_license_v2")?.licenseKey;if(_lic_setItems)debouncedSync(_lic_setItems,"restopos_items",n);if(n.length!==p.length)logActivity(n.length>p.length?"ITEM_ADDED":"ITEM_DELETED",{after:{itemCount:n.length}},currentUser?.role||"System");return n;});}
   function setTables(v){_setTables(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_tables",n);const lic=LS.get("restopos_license_v2")?.licenseKey;if(lic)debouncedSync(lic,"restopos_tables",n);return n;});}
   function setUsers(v){_setUsers(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_users",n);if(n.length!==p.length)logActivity(n.length>p.length?"USER_ADDED":"USER_DELETED",{after:{userCount:n.length}},currentUser?.role||"System");return n;});}
