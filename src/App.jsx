@@ -244,6 +244,10 @@ const ZATCA_STORAGE_KEY = "zatca_invoices_v2";
 // Invoices that could not be filed to the permanent archive yet (offline, or the
 // call failed). Retried on reconnect — a lost one is a lost tax record.
 const ZATCA_ARCHIVE_PENDING_KEY = "zatca_archive_pending";
+// Set once this device has re-filed its whole local history into the archive,
+// repairing whatever the cross-shop overwrite bug destroyed. See
+// invoiceStorage.reconcileArchiveOnce.
+const ZATCA_RECONCILED_KEY = "zatca_archive_reconciled_v1";
 // Invoice numbers confirmed to be in the permanent archive. Without this there
 // is no way to tell a local invoice that was filed from one that never was —
 // and the gap that matters is the upgrade itself: a till running the previous
@@ -297,12 +301,20 @@ const invoiceStorage = {
     }
   },
   // ── Offline archive queue ────────────────────────────────────────
+  // Holds invoice NUMBERS, not copies of the invoices. The full invoice is
+  // already in the local cache; storing it twice meant the queue hit the
+  // localStorage ceiling long before the cache did, which is why it used to be
+  // capped at 500. A shop that trades through a day-long internet shutdown can
+  // ring up more than 500 bills, and past that the oldest fell off the queue
+  // and never reached the archive. Numbers are ~10 bytes each, so the queue can
+  // now match the cache and no realistic outage overflows it.
   queuePendingArchive(inv, extra){
     try{
+      const n=inv?.invoice_number; if(!n)return;
       const q=JSON.parse(localStorage.getItem(ZATCA_ARCHIVE_PENDING_KEY)||"[]")
-        .filter(x=>x.inv?.invoice_number!==inv.invoice_number);
-      q.push({inv,extra,queuedAt:new Date().toISOString()});
-      localStorage.setItem(ZATCA_ARCHIVE_PENDING_KEY,JSON.stringify(q.slice(-500)));
+        .filter(x=>(x.n||x.inv?.invoice_number)!==n);
+      q.push({n,extra,queuedAt:new Date().toISOString()});
+      localStorage.setItem(ZATCA_ARCHIVE_PENDING_KEY,JSON.stringify(q.slice(-ZATCA_LOCAL_CACHE_LIMIT)));
     }catch(e){}
   },
   // ── Which invoices are known to be filed ────────────────────────
@@ -355,17 +367,30 @@ const invoiceStorage = {
     let q=[];
     try{q=JSON.parse(localStorage.getItem(ZATCA_ARCHIVE_PENDING_KEY)||"[]");}catch(e){return 0;}
     if(!q.length)return 0;
+    // The queue stores numbers; the bodies come from the local cache. Entries
+    // written by an older build carry the whole invoice inline, so honour both.
+    const byNumber=new Map(this.getAll().filter(i=>i&&i.invoice_number).map(i=>[i.invoice_number,i]));
+    const resolve=(x)=>x?.inv||byNumber.get(x?.n)||null;
+    const unresolved=q.filter(x=>!resolve(x)).length;
+    if(unresolved){
+      // The invoice aged out of the 5,000-entry cache before it could be filed.
+      // Nothing left to send, and keeping it would block the queue forever.
+      console.warn(`[ZATCA] ${unresolved} queued invoice(s) no longer in the local cache — dropped.`);
+      q=q.filter(x=>resolve(x));
+      try{localStorage.setItem(ZATCA_ARCHIVE_PENDING_KEY,JSON.stringify(q));}catch(e){}
+    }
     let sent=0;
     // In batches: a till that traded through a long outage can have hundreds
     // queued, and one round trip each would take minutes.
     while(q.length){
       const chunk=q.slice(0,ZATCA_BATCH_SIZE);
+      const invoices=chunk.map(resolve);
       try{
-        const res=await zatcaArchiveBatchFn({licenseKey,invoices:chunk.map(x=>x.inv)});
+        const res=await zatcaArchiveBatchFn({licenseKey,invoices});
         // Anything the server refused — a VAT that is not this account's — is
         // dropped rather than retried forever. Retrying cannot make it valid.
         const refused=new Set((res.data?.rejected||[]).map(r=>r.invoice_number));
-        this.markArchived(chunk.map(x=>x.inv.invoice_number).filter(n=>!refused.has(n)));
+        this.markArchived(invoices.map(i=>i.invoice_number).filter(n=>!refused.has(n)));
         if(refused.size)console.warn(`[ZATCA] ${refused.size} invoice(s) refused by the archive and dropped.`);
       }catch(e){ break; }
       q=q.slice(chunk.length);sent+=chunk.length;
@@ -383,8 +408,11 @@ const invoiceStorage = {
    * its own browser. This puts it back under that shop's own key, leaving the
    * other shop's copy alone.
    *
-   * Deliberately manual — it is a one-off repair, not something to run on every
-   * boot. From a till: window.__restoposDebug.invoiceStorage.reconcileArchive()
+   * Runs itself once per device (see reconcileArchiveOnce) and can be re-run by
+   * hand from a till: window.__restoposDebug.invoiceStorage.reconcileArchive()
+   *
+   * Safe to repeat. Every write is an upsert keyed on <VAT>__<invoice number>,
+   * so re-filing an invoice that is already there changes nothing.
    */
   async reconcileArchive(){
     if(TRIAL)return{filed:0};
@@ -395,6 +423,24 @@ const invoiceStorage = {
     const filed=await this.drainPendingArchive();
     console.log(`[ZATCA] reconciliation filed ${filed} of ${all.length}.`);
     return{filed,total:all.length,stillPending:this.pendingArchiveCount()};
+  },
+  /**
+   * The repair, run once per device, automatically.
+   *
+   * Asking every shop to open a browser console was never going to happen, and
+   * the invoices lost to the overwrite bug only exist on the till that rang
+   * them up — so the repair has to go where they are. The flag is set only
+   * after everything queued has actually been accepted; a till that is offline
+   * or half-way through simply tries again on the next boot.
+   */
+  async reconcileArchiveOnce(){
+    if(TRIAL)return;
+    if(!currentLicenseKey())return;
+    try{ if(localStorage.getItem(ZATCA_RECONCILED_KEY))return; }catch(e){ return; }
+    const res=await this.reconcileArchive();
+    if(res&&!res.stillPending){
+      try{localStorage.setItem(ZATCA_RECONCILED_KEY,new Date().toISOString());}catch(e){}
+    }
   },
   getAll() { try{return JSON.parse(localStorage.getItem(ZATCA_STORAGE_KEY)||"[]");}catch{return [];} },
   getOne(n) { return this.getAll().find(i=>i.invoice_number===n)||null; },
@@ -432,12 +478,23 @@ const invoiceStorage = {
       try{window.dispatchEvent(new Event("restopos-invoice"));}catch(e){}
       // Whatever the server just returned is, by definition, filed.
       if(Array.isArray(recent))this.markArchived(recent.map(r=>r.invoice_number));
-      // Then anything this device holds that the archive has never confirmed —
+    }catch(e){ console.warn("[ZATCA] chain sync failed:",e.message); }
+
+    // Deliberately outside the block above. Reading the chain is a network call
+    // and can fail — no signal, or a missing index, which is exactly what was
+    // happening. When it did, everything below was skipped along with it, so a
+    // till that had traded offline never drained its backlog on startup. The
+    // recovery work does not depend on that call having succeeded, and the
+    // whole point of it is to run on the boot after something went wrong.
+    try{
+      // Anything this device holds that the archive has never confirmed —
       // invoices rung up offline, and invoices written by the previous build
       // straight to Firestore in the window before that door was closed.
       this.backfillArchiveGaps();
       await this.drainPendingArchive();
-    }catch(e){ console.warn("[ZATCA] chain sync failed:",e.message); }
+      // One-off: re-file everything, repairing invoices lost to the overwrite bug.
+      await this.reconcileArchiveOnce();
+    }catch(e){ console.warn("[ZATCA] archive recovery failed:",e.message); }
   }
 };
 

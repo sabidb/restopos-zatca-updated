@@ -100,6 +100,54 @@ const bounded = await p.evaluate(() => {
 });
 t('a huge local cache does not trigger a call storm', bounded === 300, `queued ${bounded} of 1,200`);
 
+// ── trading through a long internet shutdown ───────────────────────
+// The queue used to hold copies of the invoices and was capped at 500 to keep
+// localStorage from filling. A shop that keeps selling through a day-long
+// outage goes past that, and the oldest bills fell off the queue and never
+// reached the permanent archive. It holds numbers now, so the cap can match
+// the cache.
+const outage = await p.evaluate(() => {
+  const st = window.__restoposDebug.invoiceStorage;
+  const many = Array.from({ length: 900 }, (_, i) => ({
+    invoice_number: 'INV-' + (7000 + i), icv: i, seller_vat: '300111111100003',
+    timestamp: '2026-06-01T12:00:00.000Z', total: 100, vat_amount: 15,
+    items: [{ name: 'Chicken Mandi', qty: 1, price: 85 }],
+  }));
+  localStorage.setItem('zatca_invoices_v2', JSON.stringify(many));
+  localStorage.setItem('zatca_archive_pending', '[]');
+  // Offline, so every bill is held rather than filed.
+  for (const inv of many) st.queuePendingArchive(inv, {});
+  const q = JSON.parse(localStorage.getItem('zatca_archive_pending') || '[]');
+  return {
+    pending: st.pendingArchiveCount(),
+    oldestKept: q[0] && (q[0].n || q[0].inv?.invoice_number),
+    bytes: (localStorage.getItem('zatca_archive_pending') || '').length,
+  };
+});
+t('900 bills rung up offline are all still queued', outage.pending === 900, `pending ${outage.pending}`);
+t('and the FIRST one is still there, not dropped',
+  outage.oldestKept === 'INV-7000', `oldest ${outage.oldestKept}`);
+t('the queue stays small enough for localStorage',
+  outage.bytes < 100000, `${Math.round(outage.bytes / 1024)} KiB for 900`);
+
+// The repair has to reach shops that will never open a browser console, so it
+// runs itself — once, and only after everything queued has been accepted.
+const repair = await p.evaluate(async () => {
+  const st = window.__restoposDebug.invoiceStorage;
+  localStorage.removeItem('zatca_archive_reconciled_v1');
+  localStorage.setItem('zatca_archive_pending', '[]');
+  localStorage.setItem('zatca_invoices_v2', JSON.stringify([{
+    invoice_number: 'INV-9001', icv: 1, seller_vat: '300111111100003',
+    timestamp: '2026-06-01T12:00:00.000Z', total: 100, vat_amount: 15, items: [],
+  }]));
+  // No licence key on this device, so the repair must decline rather than run.
+  const before = localStorage.getItem('zatca_archive_reconciled_v1');
+  await st.reconcileArchiveOnce();
+  return { flagBefore: before, flagAfter: localStorage.getItem('zatca_archive_reconciled_v1') };
+});
+t('the repair does not mark itself done when it could not run',
+  !repair.flagBefore && !repair.flagAfter, `flag ${repair.flagAfter || '(unset)'}`);
+
 t('no page errors', errs.length === 0, errs.slice(0, 3).join(' | '));
 await b.close();
 console.log(`\n${fail === 0 ? '✅ ALL PASSED' : '❌ FAILURES'} — ${pass} passed, ${fail} failed\n`);
