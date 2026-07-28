@@ -123,8 +123,9 @@ A prospective client can run the whole system for two weeks before signing up:
 2. On the registration screen, click **▶ Start my free 14-day trial**
 3. Pick **Restaurant** or **Supermarket**, enter a business name, your name and a
    **10-digit mobile number** (required — it is the trial account)
-4. The POS opens clean, ready for your own menu or stock. **+ Sample products**
-   loads a demo catalogue for whichever mode you're in if you'd rather browse first
+4. The POS opens **completely empty** — no demo data, nothing fake. Add your own
+   products and start billing. (To see a stocked system first, the landing page has
+   a preview gallery of real screenshots.)
 5. **Register now →** at any point carries your products and sales into a real account
 
 What the trial is:

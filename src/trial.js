@@ -46,7 +46,14 @@ const PREFIX_ROOT = "restopos_trial::";
 const BUILD_IS_TRIAL = String(import.meta.env.VITE_TRIAL_MODE || "") === "true";
 const TRIAL_EXIT_URL = import.meta.env.VITE_TRIAL_EXIT_URL || "";
 
-/** What the visitor is told up front, and what the banner repeats. */
+/**
+ * What the visitor is told up front, and what the banner repeats.
+ *
+ * Note there is deliberately no sample/demo data inside a trial: the till
+ * starts empty and the first thing in it is the client's own menu. Prospects
+ * who want to see a stocked system look at the preview gallery on the landing
+ * page instead, where it is clearly labelled as a sample business.
+ */
 export const TRIAL_LIMITS = [
   "Invoices are not reported to ZATCA — receipts are marked \"not a valid tax invoice\"",
   "ZATCA Phase 2 onboarding needs a real CR and VAT number, so it stays switched off",
@@ -326,97 +333,4 @@ export function syncTrialMeta(patch) {
   _meta = { ..._meta, ...patch };
   try { real.setItem(META_KEY, JSON.stringify(_meta)); } catch (e) {}
   return _meta;
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// OPTIONAL SAMPLE MENUS
-// A trial starts clean — the point is for the client to enter their own
-// products. These are one click away for anyone who just wants a stocked
-// screen to look at, and are clearly labelled as samples.
-// ═══════════════════════════════════════════════════════════════════
-
-export const SAMPLE_MENUS = {
-  restaurant: {
-    categories: ["Mandi & Rice", "Grills", "Appetizers", "Sides", "Drinks", "Desserts"],
-    items: [
-      ["Chicken Mandi (Half)", "مندي دجاج نص", "Mandi & Rice", 27, 12, 60],
-      ["Chicken Mandi (Full)", "مندي دجاج كامل", "Mandi & Rice", 49, 22, 40],
-      ["Lamb Mandi (Half)", "مندي لحم نص", "Mandi & Rice", 58, 30, 25],
-      ["Chicken Kabsa", "كبسة دجاج", "Mandi & Rice", 32, 14, 45],
-      ["Biryani Rice", "رز برياني", "Mandi & Rice", 18, 6, 50],
-      ["Mixed Grill Platter", "مشاوي مشكلة", "Grills", 72, 34, 20],
-      ["Shish Tawook", "شيش طاووق", "Grills", 38, 17, 30],
-      ["Lamb Kofta", "كفتة لحم", "Grills", 42, 19, 28],
-      ["Hummus", "حمص", "Appetizers", 14, 4, 60],
-      ["Mutabbal", "متبل", "Appetizers", 15, 5, 50],
-      ["Fattoush Salad", "سلطة فتوش", "Appetizers", 19, 6, 40],
-      ["French Fries", "بطاطس مقلية", "Sides", 11, 3, 120],
-      ["Arabic Bread", "خبز عربي", "Sides", 4, 1, 200],
-      ["Soft Drink Can", "مشروب غازي", "Drinks", 6, 2, 200],
-      ["Fresh Lemon Mint", "ليمون بالنعناع", "Drinks", 16, 4, 60],
-      ["Saudi Coffee Pot", "دلة قهوة عربية", "Drinks", 22, 6, 35],
-      ["Umm Ali", "أم علي", "Desserts", 20, 7, 25],
-      ["Kunafa", "كنافة", "Desserts", 24, 9, 20],
-    ],
-  },
-  supermarket: {
-    categories: ["Bakery", "Dairy & Eggs", "Produce", "Pantry", "Beverages", "Household"],
-    // Trailing flag marks a weighed item — supermarket mode prices those per kg.
-    items: [
-      ["Arabic Bread 6pc", "خبز عربي", "Bakery", 4, 1.5, 200, "6281000110016"],
-      ["Croissant", "كرواسون", "Bakery", 3.5, 1.2, 80, "6281000110023"],
-      ["Fresh Milk 1L", "حليب طازج", "Dairy & Eggs", 7, 4.5, 120, "6281000110030"],
-      ["Laban 1L", "لبن", "Dairy & Eggs", 6.5, 4, 100, "6281000110047"],
-      ["Eggs 30pc Tray", "بيض ٣٠ حبة", "Dairy & Eggs", 19, 13, 60, "6281000110054"],
-      ["Halloumi Cheese 250g", "جبن حلومي", "Dairy & Eggs", 18, 11, 45, "6281000110061"],
-      ["Tomatoes", "طماطم", "Produce", 6.5, 3.5, 0, "", true],
-      ["Cucumber", "خيار", "Produce", 5.5, 3, 0, "", true],
-      ["Bananas", "موز", "Produce", 8, 5, 0, "", true],
-      ["Potatoes", "بطاطس", "Produce", 4.5, 2.5, 0, "", true],
-      ["Basmati Rice 5kg", "رز بسمتي", "Pantry", 62, 45, 40, "6281000110078"],
-      ["Sunflower Oil 1.8L", "زيت دوار الشمس", "Pantry", 24, 17, 50, "6281000110085"],
-      ["White Sugar 2kg", "سكر أبيض", "Pantry", 13, 9, 70, "6281000110092"],
-      ["Dates 1kg", "تمر", "Pantry", 32, 20, 35, "6281000110108"],
-      ["Water 600ml x12", "مياه ١٢ حبة", "Beverages", 9, 5.5, 90, "6281000110115"],
-      ["Soft Drink Can", "مشروب غازي", "Beverages", 3, 1.8, 240, "6281000110122"],
-      ["Orange Juice 1L", "عصير برتقال", "Beverages", 11, 7, 60, "6281000110139"],
-      ["Dish Soap 750ml", "صابون أطباق", "Household", 12, 7.5, 55, "6281000110146"],
-      ["Tissue Box", "مناديل", "Household", 7, 4, 100, "6281000110153"],
-    ],
-  },
-};
-
-/**
- * Write a sample catalogue into the current workspace. Appends to whatever the
- * client has already entered rather than replacing it.
- * Returns the number of items added.
- */
-export function loadSampleMenu(businessType) {
-  const mode = businessType === "supermarket" ? "supermarket" : "restaurant";
-  const sample = SAMPLE_MENUS[mode];
-  const get = (k, fb) => { try { const v = window.localStorage.getItem(k); return v ? JSON.parse(v) : fb; } catch (e) { return fb; } };
-  const set = (k, v) => { try { window.localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
-
-  const existing = get("restopos_items", []) || [];
-  const haveNames = new Set(existing.map((i) => String(i.name || "").toLowerCase()));
-  const base = Date.now();
-  const added = sample.items
-    .filter(([name]) => !haveNames.has(String(name).toLowerCase()))
-    .map(([name, nameAr, category, price, cost, stock, barcode, weighed], i) => ({
-      id: base + i,
-      name, nameAr, category,
-      price, cost, stock: stock || 0,
-      active: true,
-      barcode: barcode || "",
-      weighed: !!weighed,
-      isSample: true,
-    }));
-
-  const cats = get("restopos_categories", []) || [];
-  const mergedCats = [...cats];
-  sample.categories.forEach((c) => { if (!mergedCats.includes(c)) mergedCats.push(c); });
-
-  set("restopos_categories", mergedCats);
-  set("restopos_items", [...existing, ...added]);
-  return added.length;
 }

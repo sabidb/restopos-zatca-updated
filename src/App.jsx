@@ -6,7 +6,7 @@ import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { isTrial, isTrialBuild, trialMeta, trialLicense, trialDaysLeft, trialExpired,
   beginTrial, leaveTrial, endTrialAndErase, resetTrialData, promoteTrialWorkspace,
-  setTrialBusinessType, syncTrialMeta, loadSampleMenu, consumeTrialStartError,
+  setTrialBusinessType, syncTrialMeta, consumeTrialStartError,
   normalizePhone, isValidMobile, trialKeyForPhone, TRIAL_DAYS, TRIAL_LIMITS } from "./trial.js";
 import { initTrialMirror, mirrorTrialData, flushTrialMirror } from "./trialMirror.js";
 
@@ -2644,7 +2644,6 @@ function TrialSignup({onClose}){
 function TrialBanner({license,onModeChange,onRegister}){
   const meta=trialMeta()||{};
   const [showInfo,setShowInfo]=useState(false);
-  const [sampleMsg,setSampleMsg]=useState("");
   const days=trialDaysLeft();
   const mode=getBusinessType(license);
   const urgent=days<=3;
@@ -2657,21 +2656,15 @@ function TrialBanner({license,onModeChange,onRegister}){
     if(!window.confirm(`Switch this trial to ${next==="supermarket"?"Supermarket":"Restaurant"} mode?\n\nYour products and sales stay exactly as they are — only the till layout changes.`))return;
     onModeChange(next);
   }
-  function addSamples(){
-    const n=loadSampleMenu(mode);
-    setSampleMsg(n>0?`✓ Added ${n} sample ${mode==="supermarket"?"products":"menu items"} — edit or delete them freely.`:"Sample products are already loaded.");
-    setTimeout(()=>window.location.reload(),900);
-  }
 
   return(
     <>
       <div style={{display:"flex",alignItems:"center",gap:10,padding:"6px 12px",background:bg,color:fg,flexShrink:0,fontSize:12,fontWeight:700,flexWrap:"wrap"}}>
         <span>🎁 FREE TRIAL · {days===0?"last day":`${days} day${days===1?"":"s"} left`}</span>
         <span style={{fontWeight:500,opacity:0.85}}>
-          {sampleMsg||`${meta.businessName||"Your business"} · ${mode==="supermarket"?"Supermarket":"Restaurant"} mode · saved to ${meta.phone||"your mobile"}`}
+          {`${meta.businessName||"Your business"} · ${mode==="supermarket"?"Supermarket":"Restaurant"} mode · saved to ${meta.phone||"your mobile"}`}
         </span>
         <div style={{marginLeft:"auto",display:"flex",gap:8,flexWrap:"wrap"}}>
-          <button onClick={addSamples} style={chip}>+ Sample products</button>
           <button onClick={switchMode} style={chip}>⇄ {mode==="supermarket"?"Restaurant":"Supermarket"} mode</button>
           <button onClick={()=>setShowInfo(true)} style={chip}>What's limited?</button>
           <button onClick={onRegister}

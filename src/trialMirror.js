@@ -85,7 +85,6 @@ function productDoc(i) {
     name: str(i.name), nameAr: str(i.nameAr), category: str(i.category),
     price: num(i.price), cost: num(i.cost), stock: Number(i.stock) || 0,
     barcode: str(i.barcode), weighed: !!i.weighed, active: i.active !== false,
-    fromSampleCatalogue: !!i.isSample,
   };
 }
 

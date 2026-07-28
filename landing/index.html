@@ -249,6 +249,51 @@ section{padding:clamp(56px,8vw,96px) 0}
 .feat p{font-size:.9375rem; color:var(--text-mid)}
 .feat .eyebrow{display:block; margin-bottom:10px}
 
+/* ── Preview gallery: real screenshots of the real app ───────── */
+.shots{display:grid; grid-template-columns:230px 1fr; gap:22px; align-items:start}
+@media (max-width:900px){ .shots{grid-template-columns:1fr; gap:16px} }
+.shot-nav{display:flex; flex-direction:column; gap:4px}
+@media (max-width:900px){
+  .shot-nav{flex-direction:row; overflow-x:auto; gap:6px; padding-bottom:6px; scrollbar-width:thin}
+}
+.shot-tab{
+  display:flex; align-items:center; gap:9px; width:100%;
+  padding:11px 13px; border-radius:10px; cursor:pointer; text-align:left;
+  border:1px solid transparent; background:transparent; color:var(--text-mid);
+  font:inherit; font-size:.875rem; font-weight:600; white-space:nowrap;
+  transition:background .15s ease, color .15s ease, border-color .15s ease;
+}
+.shot-tab:hover{background:color-mix(in srgb,var(--brand) 8%,transparent); color:var(--text)}
+.shot-tab[aria-selected="true"]{
+  background:var(--surface); border-color:var(--line); color:var(--text);
+  box-shadow:inset 3px 0 0 var(--brand);
+}
+@media (max-width:900px){ .shot-tab[aria-selected="true"]{box-shadow:inset 0 -3px 0 var(--brand)} }
+.shot-tab i{font-style:normal; font-size:15px; line-height:1}
+.shot-stage{min-width:0}
+.shot-frame{
+  background:var(--surface); border:1px solid var(--line); border-radius:14px;
+  overflow:hidden; box-shadow:0 24px 50px -30px rgba(0,0,0,.5);
+}
+/* Window chrome, so a flat screenshot reads as an application. */
+.shot-chrome{
+  display:flex; align-items:center; gap:7px; padding:9px 13px;
+  border-bottom:1px solid var(--line); background:var(--bg-alt);
+}
+.shot-chrome b{width:9px; height:9px; border-radius:50%; background:var(--line); flex:none}
+.shot-chrome span{
+  margin-inline-start:8px; font-family:var(--mono); font-size:.6875rem; color:var(--muted);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.shot-frame img{display:block; width:100%; height:auto}
+.shot-cap{margin-top:14px; display:flex; gap:14px; align-items:flex-start; flex-wrap:wrap}
+.shot-cap h3{font-size:1.0625rem; margin-bottom:4px}
+.shot-cap p{font-size:.9375rem; color:var(--text-mid); max-width:60ch}
+.shot-note{
+  font-family:var(--mono); font-size:.6875rem; color:var(--muted);
+  letter-spacing:.04em; margin-top:14px; display:block;
+}
+
 /* Pricing */
 .plans{display:grid; grid-template-columns:repeat(3,1fr); gap:18px; align-items:start}
 @media (max-width:860px){ .plans{grid-template-columns:1fr} }
@@ -303,6 +348,7 @@ footer{border-top:1px solid var(--line); padding:38px 0 46px; color:var(--muted)
     </a>
     <nav>
       <a class="hide-sm" href="#modes">What it runs</a>
+      <a class="hide-sm" href="#preview">See it</a>
       <a class="hide-sm" href="#features">Features</a>
       <a class="hide-sm" href="#pricing">Pricing</a>
       <a class="try sm" data-app href="#" role="button">Try Now <span class="arrow">→</span></a>
@@ -421,6 +467,47 @@ footer{border-top:1px solid var(--line); padding:38px 0 46px; color:var(--muted)
             <li>Fast keypad totals and cash-drawer control</li>
           </ul>
         </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Preview ──────────────────────────────────────────────── -->
+  <section id="preview" style="background:var(--bg-alt); border-block:1px solid var(--line)">
+    <div class="rail">
+      <div class="head">
+        <span class="eyebrow">See it before you sign up</span>
+        <h2>The actual screens, with a real day's trading in them.</h2>
+        <p class="prose">
+          These are screenshots of RestoPOS itself — a Riyadh mandi house three weeks in.
+          Your own trial starts completely empty, so the first thing in it is your menu.
+        </p>
+      </div>
+
+      <div class="shots">
+        <div class="shot-nav" role="tablist" aria-label="Application screens">
+          <button class="shot-tab" role="tab" aria-selected="true" data-shot="pos"><i>🖥️</i>POS &amp; billing</button>
+          <button class="shot-tab" role="tab" aria-selected="false" data-shot="dashboard"><i>📊</i>Dashboard</button>
+          <button class="shot-tab" role="tab" aria-selected="false" data-shot="transactions"><i>💳</i>Transactions</button>
+          <button class="shot-tab" role="tab" aria-selected="false" data-shot="reports"><i>📋</i>Reports</button>
+          <button class="shot-tab" role="tab" aria-selected="false" data-shot="vat"><i>🧾</i>VAT &amp; ZATCA</button>
+          <button class="shot-tab" role="tab" aria-selected="false" data-shot="inventory"><i>📦</i>Inventory</button>
+          <button class="shot-tab" role="tab" aria-selected="false" data-shot="customers"><i>👥</i>Customers</button>
+          <button class="shot-tab" role="tab" aria-selected="false" data-shot="financials"><i>🏦</i>Financials</button>
+        </div>
+
+        <div class="shot-stage">
+          <figure class="shot-frame" style="margin:0">
+            <div class="shot-chrome"><b></b><b></b><b></b><span id="shot-url">app.restopos.store — POS</span></div>
+            <img id="shot-img" src="shots/pos.jpg" width="1600" height="938" alt="The RestoPOS till: menu grid on the left, running cart and VAT-inclusive total on the right" />
+          </figure>
+          <div class="shot-cap">
+            <div>
+              <h3 id="shot-title">POS &amp; billing</h3>
+              <p id="shot-desc">Tap items into the cart, or scan them in supermarket mode. VAT is calculated inclusive as ZATCA requires, and the kitchen ticket prints separately from the bill.</p>
+            </div>
+          </div>
+          <span class="shot-note">Sample business shown · your trial starts empty</span>
+        </div>
       </div>
     </div>
   </section>
@@ -569,6 +656,59 @@ document.querySelectorAll("[data-app]").forEach(function(el){ el.href = APP_URL;
   Array.prototype.forEach.call(roll.children, function(line, i){
     line.style.animationDelay = (140 + i * 62) + "ms";
   });
+})();
+
+/* Preview gallery. Descriptions live here rather than in eight hidden DOM
+   copies, so only the screenshot the visitor asked for is ever fetched. */
+(function previewGallery(){
+  var SHOTS = {
+    pos:        ["POS & billing", "Tap items into the cart, or scan them in supermarket mode. VAT is calculated inclusive as ZATCA requires, and the kitchen ticket prints separately from the bill.", "The RestoPOS till: menu grid on the left, running cart and VAT-inclusive total on the right"],
+    dashboard:  ["Dashboard", "Today's takings, VAT collected and live ZATCA invoice status the moment you open the till — plus the day's orders as they come in.", "Dashboard showing today's orders, VAT collected and ZATCA invoice counters"],
+    transactions:["Transactions", "Every invoice, searchable, with its ZATCA status attached. Reprint, refund or issue a credit note without leaving the list.", "Transactions list with per-invoice ZATCA reporting status"],
+    reports:    ["Reports", "Sales by day, week or month, broken down by category, item and payment method. Export to Excel with Arabic text intact.", "Sales report with revenue, VAT, payment breakdown and category breakdown"],
+    vat:        ["VAT & ZATCA", "Your VAT position and filing deadline, with the Phase 2 queue showing exactly which invoices have been reported and which are still pending.", "VAT dashboard showing output VAT, filing period and ZATCA submission status"],
+    inventory:  ["Inventory", "Stock levels per item, low-stock warnings, supplier records and stock-take adjustments — costed, so your margins stay honest.", "Inventory screen listing stock levels and low-stock alerts"],
+    customers:  ["Customers", "Names, numbers and order history build themselves as you bill. Loyalty tiers and spend totals come along with it.", "Customer list with spend totals and loyalty tiers"],
+    financials: ["Financials", "Revenue against expenses, profit and loss, and the numbers your accountant asks for at month end.", "Financial summary with revenue, expenses and profit"],
+  };
+  var img = document.getElementById("shot-img");
+  var url = document.getElementById("shot-url");
+  var title = document.getElementById("shot-title");
+  var desc = document.getElementById("shot-desc");
+  var tabs = Array.prototype.slice.call(document.querySelectorAll(".shot-tab"));
+  if (!img || !tabs.length) return;
+
+  // Warm the next screenshot so switching tabs doesn't flash an empty frame.
+  function preload(name){ var i = new Image(); i.src = "shots/" + name + ".jpg"; }
+
+  function show(name){
+    var s = SHOTS[name]; if (!s) return;
+    img.src = "shots/" + name + ".jpg";
+    img.alt = s[2];
+    title.textContent = s[0];
+    desc.textContent = s[1];
+    url.textContent = "app.restopos.store — " + s[0];
+    tabs.forEach(function(t){ t.setAttribute("aria-selected", String(t.dataset.shot === name)); });
+  }
+
+  tabs.forEach(function(t){
+    t.addEventListener("click", function(){ show(t.dataset.shot); });
+    t.addEventListener("mouseenter", function(){ preload(t.dataset.shot); });
+    t.addEventListener("keydown", function(e){
+      var i = tabs.indexOf(t);
+      if (e.key === "ArrowDown" || e.key === "ArrowRight") { e.preventDefault(); tabs[(i+1)%tabs.length].focus(); tabs[(i+1)%tabs.length].click(); }
+      if (e.key === "ArrowUp"   || e.key === "ArrowLeft")  { e.preventDefault(); tabs[(i-1+tabs.length)%tabs.length].focus(); tabs[(i-1+tabs.length)%tabs.length].click(); }
+    });
+  });
+  // Once the gallery is on screen, quietly fetch the rest.
+  if ("IntersectionObserver" in window) {
+    var io = new IntersectionObserver(function(es){
+      if (es.some(function(e){ return e.isIntersecting; })) {
+        Object.keys(SHOTS).forEach(preload); io.disconnect();
+      }
+    }, { rootMargin: "200px" });
+    io.observe(img);
+  }
 })();
 
 /* Stylised QR block for the sample receipt — drawn, not fetched, so the

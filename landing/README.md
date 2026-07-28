@@ -37,6 +37,18 @@ Do these in order, so there is never a window where nothing serves.
 Deploying this folder as its own Vercel project: **Root Directory** `landing`,
 framework preset **Other**, no build command, no install command.
 
+## The preview gallery
+
+`shots/*.jpg` are real screenshots of the app running a seeded sample business
+(a Riyadh mandi house, three weeks of trading), cropped below the trial banner
+and served from this folder — no external requests, lazy-loaded, ~815 KB total
+for eight screens.
+
+They exist because the trial itself is deliberately empty: a prospect who wants
+to see a full system looks here, and the gallery says plainly "sample business
+shown · your trial starts empty". Refresh them by re-capturing from a local dev
+server after a UI change.
+
 ## Existing installs keep working
 
 Tills that installed RestoPOS as a PWA have a shortcut whose `start_url` is

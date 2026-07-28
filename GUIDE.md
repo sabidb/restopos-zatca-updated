@@ -163,10 +163,11 @@ switches between them mid-trial — products and sales are untouched, only the
 till layout changes, and the new mode is written back to the trial document so
 the admin panel and any other device follow.
 
-A trial starts **clean** so the client enters their own products. **+ Sample
-products** in the banner loads a catalogue for the current mode (18 restaurant
-dishes or 19 supermarket lines including weighed produce and barcodes),
-appended rather than replacing, and flagged `isSample`.
+A trial is **completely empty on entry** — no demo products, no fake sales,
+nothing to delete before the client can start. The first thing in the till is
+their own menu. Anyone who wants to see a stocked system looks at the preview
+gallery on the landing page instead (`landing/shots/`), which is real
+screenshots of a sample business and is labelled as such.
 
 **What the operator sees.** Signup writes `pending_activations/TRIAL-<mobile>`
 with `isTrial: true`, `trialSource: "self-serve"`, `businessType`,
@@ -251,6 +252,11 @@ a trial-specific screen making clear nothing was deleted.
 products, invoices, revenue, VAT, active days, last seen — and **🔍 View their
 data** opens their actual invoices and catalogue, read straight from the
 `trials` subcollections.
+
+**Preview gallery.** `landing/shots/*.jpg` are real screenshots of the app —
+POS, dashboard, transactions, reports, VAT, inventory, customers, financials —
+captured from a seeded sample business. To refresh them after a UI change,
+re-run the capture against a local dev server rather than editing images.
 
 **Optional: a trial-only deployment.** Building with `VITE_TRIAL_MODE=true`
 makes a whole deployment a trial — useful for `try.restopos.store` on a second
