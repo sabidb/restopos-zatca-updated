@@ -123,11 +123,30 @@ header{
   background:linear-gradient(135deg,var(--brand),var(--gold));
   color:#fff; font-weight:900; font-size:15px; flex:none;
 }
-.logo span small{display:block; font-family:var(--mono); font-size:.5625rem; letter-spacing:.14em; color:var(--muted); font-weight:600}
+.logo span small{display:block; font-family:var(--mono); font-size:.5625rem; letter-spacing:.14em; color:var(--muted); font-weight:600; white-space:nowrap}
 .bar nav{margin-inline-start:auto; display:flex; gap:22px; align-items:center}
 .bar nav a:not(.try){font-size:.875rem; color:var(--text-mid); text-decoration:none; font-weight:500}
 .bar nav a:not(.try):hover{color:var(--text)}
 @media (max-width:760px){ .bar nav a.hide-sm{display:none} }
+/* Narrow phones: tighten spacing, and drop the strapline rather than let the
+   header wrap. The logo, Sign in and Try Now all have to stay on one line. */
+@media (max-width:480px){
+  .bar{gap:8px}
+  .bar nav{gap:4px}
+  .signin{padding:8px 6px}
+  .try.sm{padding:9px 14px}
+  .logo span small{display:none}
+}
+
+/* Existing clients arriving at the domain out of habit. Deliberately quiet —
+   it is a signpost, not a second call to action — but never hidden on mobile,
+   because it is the only way in for someone who bookmarked this address. */
+.signin{
+  font-size:.875rem; font-weight:650; color:var(--text); text-decoration:none;
+  padding:8px 12px; border-radius:8px; white-space:nowrap;
+  transition:background .15s ease;
+}
+.signin:hover{background:color-mix(in srgb,var(--brand) 10%,transparent)}
 
 /* ── Try Now button ──────────────────────────────────────────── */
 .try{
@@ -137,6 +156,7 @@ header{
   background:linear-gradient(135deg,var(--brand),var(--brand-deep));
   color:#fff; font-family:var(--sans); font-size:1rem; font-weight:750;
   letter-spacing:-.01em; text-decoration:none; overflow:hidden; isolation:isolate;
+  white-space:nowrap;
   box-shadow:0 1px 0 rgba(255,255,255,.14) inset, 0 10px 26px -12px rgba(0,0,0,.6);
   animation:halo 3.4s ease-in-out infinite;
   transition:transform .18s cubic-bezier(.2,.8,.3,1), box-shadow .18s ease;
@@ -351,6 +371,7 @@ footer{border-top:1px solid var(--line); padding:38px 0 46px; color:var(--muted)
       <a class="hide-sm" href="#preview">See it</a>
       <a class="hide-sm" href="#features">Features</a>
       <a class="hide-sm" href="#pricing">Pricing</a>
+      <a class="signin" data-app href="#">Sign in</a>
       <a class="try sm" data-app href="#" role="button">Try Now <span class="arrow">→</span></a>
     </nav>
   </div>
@@ -617,6 +638,7 @@ footer{border-top:1px solid var(--line); padding:38px 0 46px; color:var(--muted)
 <footer>
   <div class="rail foot">
     <span>© 2026 RestoPOS</span>
+    <a data-app href="#">Client sign in</a>
     <a href="tel:+966538360053">+966 53 836 0053</a>
     <a href="mailto:restopos.noreply@gmail.com">restopos.noreply@gmail.com</a>
     <a href="/RestoPOS_Terms_and_Conditions.pdf">Terms</a>
