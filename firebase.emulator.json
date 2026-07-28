@@ -14,6 +14,9 @@
     },
     "functions": {
       "port": 5001
+    },
+    "storage": {
+      "port": 9199
     }
   },
   "functions": [
@@ -21,5 +24,8 @@
       "source": "functions",
       "codebase": "default"
     }
-  ]
+  ],
+  "storage": {
+    "rules": "storage.rules"
+  }
 }

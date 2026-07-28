@@ -5,7 +5,9 @@
   "type": "module",
   "description": "Firestore security-rules tests. Kept out of the app's package.json so the frontend build stays lean.",
   "scripts": {
-    "test": "firebase emulators:exec --only firestore --project demo-restopos --config ../firebase.emulator.json \"node rules.test.mjs\""
+    "test": "firebase emulators:exec --only firestore --project demo-restopos --config ../firebase.emulator.json \"node rules.test.mjs\"",
+    "test:storage": "firebase emulators:exec --only firestore,storage --project demo-restopos --config ../firebase.emulator.json \"node storage.test.mjs\"",
+    "test:all": "npm test && npm run test:storage"
   },
   "devDependencies": {
     "@firebase/rules-unit-testing": "^3.0.4",

@@ -1,7 +1,8 @@
-name: Deploy Firestore Rules
+name: Deploy Security Rules
 
-# firestore.rules guards live tills. This runs the rules test suite first and
-# refuses to deploy if anything fails, so a bad rule can't reach production.
+# firestore.rules guards live tills and storage.rules guards every client's
+# filed CR and VAT certificates. This runs both test suites first and refuses
+# to deploy if anything fails, so a bad rule can't reach production.
 on:
   workflow_dispatch:
 
@@ -25,8 +26,12 @@ jobs:
         run: npm install
         working-directory: rules-test
 
-      - name: Test rules against the emulator
+      - name: Test Firestore rules against the emulator
         run: npm test
+        working-directory: rules-test
+
+      - name: Test Storage rules against the emulator
+        run: npm run test:storage
         working-directory: rules-test
 
       - name: Write service account key
@@ -35,12 +40,9 @@ jobs:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
 
       - name: Deploy rules
-        # Rules ONLY. Deploying indexes from here reconciles the whole index
-        # set, and the CLI refuses non-interactively when the project has
-        # indexes the file does not list — because going ahead would DELETE
-        # them. firestore.indexes.json documents the indexes these queries
-        # need; deploy it by hand, after checking it against the project's
-        # existing list, so nothing live is dropped.
-        run: npx firebase-tools@13 deploy --only firestore:rules --project restopos-db
+        # Rules ONLY — never indexes. An index deploy reconciles the whole set
+        # and deletes anything the file does not list, so it has its own
+        # workflow (deploy-indexes.yml) with its own decision to make.
+        run: npx firebase-tools@13 deploy --only firestore:rules,storage --project restopos-db
         env:
           GOOGLE_APPLICATION_CREDENTIALS: /tmp/key.json

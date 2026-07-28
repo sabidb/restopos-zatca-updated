@@ -1,0 +1,112 @@
+rules_version = '2';
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RestoPOS Cloud Storage security rules.
+//
+// These did not exist. There was no storage.rules in the repository and no
+// storage block in firebase.json, so whatever is live was set in the console
+// and has never been reviewed or tested. Firebase's default template is
+//
+//     allow read, write: if request.auth != null;
+//
+// and this app signs every device in with signInAnonymously — so that default
+// grants access to anyone who opens the site. What sits in this bucket is each
+// client's commercial registration and VAT certificate.
+//
+// The model matches firestore.rules exactly: a caller owns a license when its
+// UID is on that account's authUids allowlist, or when it holds the custom
+// token minted by verifyLogin (uid == the license key).
+//
+// ── One thing these rules cannot fix ──────────────────────────────────────
+// getDownloadURL() mints a URL carrying a permanent access token, and that URL
+// bypasses these rules by design — anyone holding the link can fetch the file.
+// The app stores those links on the account document as crDocUrl / vatDocUrl
+// and the admin panel opens them directly. Rules still matter: they stop a
+// caller enumerating or fetching paths it was never given, which is the
+// realistic attack. Closing the token hole means storing the storage PATH
+// instead of the URL and fetching through the authenticated SDK, which changes
+// the admin panel too — worth doing, deliberately, not as a side effect.
+// ═══════════════════════════════════════════════════════════════════════════
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Single owner admin — same account as firestore.rules. Read with .get()
+    // so an anonymous token (no email claim at all) evaluates to false instead
+    // of erroring, which would deny the whole rule including the owner branch.
+    function isAdmin() {
+      return isSignedIn()
+        && request.auth.token.get('email', '') == '8742sabithsaleem@gmail.com'
+        && request.auth.token.get('email_verified', false) == true;
+    }
+
+    function ownsLicenseKey(licenseKey) {
+      return isSignedIn() && (
+        request.auth.uid == licenseKey
+        || (firestore.exists(/databases/(default)/documents/pending_activations/$(licenseKey))
+            && request.auth.uid in firestore.get(/databases/(default)/documents/pending_activations/$(licenseKey)).data.authUids)
+      );
+    }
+
+    // A cap, not a filter. Without one the bucket is free file hosting for
+    // anyone with an account. Deliberately not restricting content type on
+    // registration documents: a CR scan arrives as a PDF, a JPEG or a phone
+    // screenshot depending on the client, and a rejected upload during signup
+    // is a lost customer for no security gain.
+    function withinSizeLimit() {
+      return request.resource.size < 10 * 1024 * 1024;
+    }
+
+    // ── Registration documents (CR + VAT certificates) ────────────────────
+    // Written once during activation. LicenseVerification creates the
+    // pending_activations document with authUids BEFORE uploading, so the
+    // caller genuinely owns the key by the time it gets here.
+    //
+    // A device re-registering an EXISTING key is not on that account's
+    // authUids and its upload is denied. That is the correct answer — an
+    // unknown device should not be able to replace a client's filed
+    // certificates — and the caller already tolerates it: the upload is
+    // wrapped in a catch and registration completes without the documents.
+    // `resource == null` is the create-only test, spelled out rather than
+    // relying on the create/update split: a write onto a path that already
+    // holds an object was still being treated as a create, so an owner could
+    // overwrite its own filed certificate. `request.resource != null`
+    // separates an upload from a delete.
+    function isNewUpload() {
+      return resource == null && request.resource != null;
+    }
+
+    match /documents/{licenseKey}/{file} {
+      allow read: if isAdmin() || ownsLicenseKey(licenseKey);
+      // Create only. Paths carry Date.now(), so nothing legitimate ever writes
+      // the same path twice, and allowing it would let a device replace a
+      // filed certificate with anything it liked.
+      allow write: if isAdmin()
+        || (ownsLicenseKey(licenseKey) && withinSizeLimit() && isNewUpload());
+    }
+
+    // ── Support chat photos ───────────────────────────────────────────────
+    // Room id is chat_<licenseKey>, the same convention firestore.rules uses
+    // for the message documents. Clients photograph their own till screens
+    // here, so the room is private between that client and the owner.
+    function ownsRoom(room) {
+      return room.split('chat_').size() > 1 && ownsLicenseKey(room.split('chat_')[1]);
+    }
+    match /chat/{room}/{file} {
+      allow read: if isAdmin() || ownsRoom(room);
+      allow write: if isAdmin()
+        || (ownsRoom(room) && withinSizeLimit() && isNewUpload()
+            && request.resource.contentType.matches('image/.*'));
+    }
+
+    // Everything else, including any path a future feature adds without
+    // thinking about it, is closed.
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
