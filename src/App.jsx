@@ -7971,7 +7971,7 @@ function Accounts({sales,items}){
 // ═══════════════════════════════════════════════════════════════════
 // REPORTS
 // ═══════════════════════════════════════════════════════════════════
-function Reports({sales,allSales,items,setSales,lang="en"}){
+function Reports({sales,allSales,items,setSales,lang="en",archiveIndex={},fetchCloudRange,cloudLoading,cloudError}){
   const _t=s=>t(s,lang);
   // ── All hooks first ──────────────────────────────────────────────
   const [tab,setTab]=useState("summary");
@@ -8002,6 +8002,43 @@ function Reports({sales,allSales,items,setSales,lang="en"}){
   const paperWidth=(LS.get("restopos_invoice_format")?.paperWidth||"80mm");
   const allSalesData=allSales||sales||[];
   const filtered=allSalesData.filter(s=>s.date>=dateFrom&&s.date<=dateTo&&!s.isDraft);
+
+  // ── What this range is missing ──────────────────────────────────────
+  //
+  // The archive index says which business days exist in the cloud and how many
+  // invoices each holds. Comparing it against what is actually loaded tells the
+  // client, honestly, whether the figures on screen are the whole period or
+  // only the part this device happens to be carrying. Reporting a month as
+  // "0 orders" when it is sitting in Firestore is worse than saying nothing.
+  function cloudGapFor(from,to){
+    const have={};
+    for(const s of allSalesData){
+      if(!s||s.isDraft||s.status==="voided")continue;
+      have[s.date]=(have[s.date]||0)+1;
+    }
+    const days=[];let invoices=0;
+    for(const [date,info] of Object.entries(archiveIndex||{})){
+      if(date<from||date>to)continue;
+      const missing=(info?.n||0)-(have[date]||0);
+      if(missing>0){days.push(date);invoices+=missing;}
+    }
+    days.sort();
+    return{days,invoices,from:days[0],to:days[days.length-1]};
+  }
+  const cloudGap=useMemo(()=>cloudGapFor(dateFrom,dateTo),[allSalesData,archiveIndex,dateFrom,dateTo]);
+
+  // The whole span the cloud holds, for the "you have history back to …" line.
+  const archiveSpan=useMemo(()=>{
+    const dates=Object.keys(archiveIndex||{}).sort();
+    if(!dates.length)return null;
+    const totals=Object.values(archiveIndex).reduce((a,v)=>({n:a.n+(v?.n||0),total:a.total+(v?.total||0)}),{n:0,total:0});
+    return{first:dates[0],last:dates[dates.length-1],days:dates.length,...totals};
+  },[archiveIndex]);
+
+  async function loadRangeFromCloud(){
+    if(!fetchCloudRange||!cloudGap.days.length)return;
+    await fetchCloudRange(cloudGap.from,cloudGap.to);
+  }
   const todaySales=(sales||[]).filter(s=>s.date===TODAY);
   const todayLog=dayLog[TODAY];
 
@@ -8009,15 +8046,28 @@ function Reports({sales,allSales,items,setSales,lang="en"}){
   // Filters every sale by an exact from/to timestamp (date + time), using
   // the reliable createdAt where present (falls back to date noon for old
   // records). Shows a "retrieving data" state, then a printable summary.
-  function runCustomReport(){
+  async function runCustomReport(){
     setCrLoading(true);setCrResult(null);
+    // Pull anything in this span that lives only in the cloud FIRST, so a
+    // custom report over an old period is the real period rather than the
+    // fraction this device happens to be carrying. The rows are used directly
+    // rather than read back from state, because the state update queued by the
+    // fetch is not visible to this function — it would report on the data as it
+    // was a moment before the download.
+    let extra=[];
+    try{
+      const gap=cloudGapFor(crFromDate,crToDate);
+      if(gap.days.length&&fetchCloudRange)extra=await fetchCloudRange(gap.from,gap.to)||[];
+    }catch(e){/* fall through and report on what is here */}
+    const known=new Set((allSalesData||[]).map(s=>s&&s.id));
+    const dataset=[...(allSalesData||[]),...extra.filter(s=>s&&s.id&&!known.has(s.id))];
     // Defer so the "retrieving data" UI paints before the (possibly heavy) filter runs.
     setTimeout(()=>{
       try{
         const fromTs=new Date(`${crFromDate}T${crFromTime||"00:00"}:00`).getTime();
         const toTs=new Date(`${crToDate}T${crToTime||"23:59"}:59`).getTime();
         const saleTs=s=>{if(s.createdAt){const t=new Date(s.createdAt).getTime();if(!isNaN(t))return t;}const dt=new Date(`${s.date||""}T12:00:00`);return isNaN(dt.getTime())?0:dt.getTime();};
-        const inRange=(allSalesData||[]).filter(s=>{
+        const inRange=(dataset||[]).filter(s=>{
           if(s.isDraft)return false;
           const ts=saleTs(s);
           return ts>=fromTs&&ts<=toTs;
@@ -8117,7 +8167,20 @@ function Reports({sales,allSales,items,setSales,lang="en"}){
   }
 
   // ── Excel export ─────────────────────────────────────────────────
-  function exportToExcel(type){
+  // Exporting a period that is only partly on this device would hand the client
+  // a file that looks complete and is not — the worst possible outcome for
+  // something they may file with ZATCA. Pull the missing days first, always.
+  async function exportToExcel(type){
+    const gap=cloudGapFor(dateFrom,dateTo);
+    let extra=[];
+    if(gap.days.length&&fetchCloudRange){
+      if(!confirm(`${gap.invoices.toLocaleString()} invoice(s) in this period are stored in the cloud.\n\n`+
+        `They will be downloaded first so the export is complete. Continue?`))return;
+      extra=await fetchCloudRange(gap.from,gap.to)||[];
+    }
+    const known=new Set((allSalesData||[]).map(x=>x&&x.id));
+    const merged=[...(allSalesData||[]),...extra.filter(x=>x&&x.id&&!known.has(x.id))];
+    const filtered=merged.filter(s=>s.date>=dateFrom&&s.date<=dateTo&&!s.isDraft);
     const bom="\uFEFF";
     const esc=v=>`"${String(v||"").replace(/"/g,'""')}"`;
     let rows=[];
@@ -8375,9 +8438,58 @@ ${_brandingHTML({...REPORT_DEFAULTS,...(LS.get("restopos_report_format")||{})})}
     setShowDaySummary(true);
   }
 
+  // ── Cloud history bar ────────────────────────────────────────────
+  // Sits with the date controls, because that is where a client asks for a
+  // period. It only appears when it has something to say.
+  const CloudBar=()=>{
+    if(!archiveSpan&&!cloudGap.days.length)return null;
+    const gap=cloudGap.days.length>0;
+    return(
+      <div style={{marginBottom:10,padding:"10px 13px",borderRadius:10,
+        border:`1px solid ${gap?"#F0A50055":C.border}`,background:gap?"#FFF8E7":C.bg,
+        display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+        <span style={{fontSize:16}}>{gap?"☁️":"✅"}</span>
+        <div style={{flex:1,minWidth:220}}>
+          {gap?(
+            <>
+              <div style={{fontSize:12.5,fontWeight:700,color:"#8A6100"}}>
+                {cloudGap.invoices.toLocaleString()} invoice{cloudGap.invoices===1?"":"s"} in this period are stored in the cloud, not on this device.
+              </div>
+              <div style={{fontSize:11,color:C.textMid,marginTop:2}}>
+                {cloudGap.days.length} day{cloudGap.days.length===1?"":"s"} · {fmtDate(cloudGap.from)}
+                {cloudGap.from!==cloudGap.to?` → ${fmtDate(cloudGap.to)}`:""} — the totals below exclude them until you load them.
+              </div>
+            </>
+          ):(
+            <>
+              <div style={{fontSize:12.5,fontWeight:700,color:C.text}}>
+                This period is complete — everything in the cloud for these dates is loaded.
+              </div>
+              {archiveSpan&&(
+                <div style={{fontSize:11,color:C.textMid,marginTop:2}}>
+                  Cloud history: {archiveSpan.days.toLocaleString()} day{archiveSpan.days===1?"":"s"} from {fmtDate(archiveSpan.first)} to {fmtDate(archiveSpan.last)} · {archiveSpan.n.toLocaleString()} invoices.
+                </div>
+              )}
+            </>
+          )}
+          {cloudError&&<div style={{fontSize:11,color:C.danger,marginTop:4}}>{cloudError}</div>}
+        </div>
+        {gap&&(
+          <button onClick={loadRangeFromCloud} disabled={cloudLoading}
+            style={{padding:"9px 16px",background:cloudLoading?"#ccc":"linear-gradient(135deg,#1A6B4A,#134D36)",
+              color:"#fff",border:"none",borderRadius:9,fontSize:12,fontWeight:800,
+              cursor:cloudLoading?"wait":"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>
+            {cloudLoading?"Downloading…":"☁️ Load from cloud"}
+          </button>
+        )}
+      </div>
+    );
+  };
+
   // ── DateFilter component ─────────────────────────────────────────
   const DateFilter=()=>(
     <Card style={{marginBottom:14}}>
+      <CloudBar/>
       <div style={{display:"flex",gap:6,marginBottom:10,flexWrap:"wrap"}}>
         {[["today","Today"],["yesterday","Yesterday"],["week","7 Days"],["month","This Month"],["lastmonth","Last Month"],["3months","3 Months"],["year","This Year"]].map(([id,label])=>(
           <button key={id} onClick={()=>setPreset(id)}
@@ -8740,6 +8852,10 @@ ${_brandingHTML({...REPORT_DEFAULTS,...(LS.get("restopos_report_format")||{})})}
       {/* ── TRANSACTIONS TAB ── */}
       {tab==="transactions"&&(()=>{
         const q=txSearch.toLowerCase().trim();
+        // This tab has its own range, so it needs its own gap check — a search
+        // that quietly excluded invoices held in the cloud would look like the
+        // invoice does not exist.
+        const txGap=cloudGapFor(txFrom,txTo);
         const txAll=allSalesData.filter(s=>!s.isDraft&&s.date>=txFrom&&s.date<=txTo);
         const txFiltered=q?txAll.filter(s=>
           s.id?.toLowerCase().includes(q)||
@@ -8758,6 +8874,20 @@ ${_brandingHTML({...REPORT_DEFAULTS,...(LS.get("restopos_report_format")||{})})}
                 placeholder="🔍 Search invoice #, customer name, payment method, item..."
                 style={{width:"100%",padding:"9px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontSize:13,fontFamily:"inherit"}}/>
               <div style={{fontSize:11,color:C.textMid,marginTop:6}}>{txFiltered.length} invoices found · {fmtSAR(txFiltered.reduce((s,o)=>s+o.total,0))}</div>
+              {txGap.days.length>0&&(
+                <div style={{marginTop:9,padding:"9px 12px",background:"#FFF8E7",border:"1px solid #F0A50055",borderRadius:9,
+                  display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+                  <span style={{fontSize:14}}>☁️</span>
+                  <div style={{flex:1,minWidth:200,fontSize:11.5,color:"#8A6100",fontWeight:600}}>
+                    {txGap.invoices.toLocaleString()} more invoice{txGap.invoices===1?"":"s"} in this range are in the cloud — not searched yet.
+                  </div>
+                  <button onClick={()=>fetchCloudRange&&fetchCloudRange(txGap.from,txGap.to)} disabled={cloudLoading}
+                    style={{padding:"7px 13px",background:cloudLoading?"#ccc":"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",
+                      border:"none",borderRadius:8,fontSize:11.5,fontWeight:800,cursor:cloudLoading?"wait":"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>
+                    {cloudLoading?"Downloading…":"☁️ Load & search"}
+                  </button>
+                </div>
+              )}
             </Card>
             {txFiltered.length===0?(
               <Card><div style={{textAlign:"center",padding:"40px 0",color:C.textMid}}>No invoices found</div></Card>
@@ -15889,7 +16019,49 @@ export default function App(){
     }
     return months.sort().reverse();
   }
-  // allSales merges active sales + ALL monthly archive buckets + closed-day archives
+  // ── CLOUD ARCHIVE — history older than this device has ──────────────
+  //
+  // A device carries the recent months; the cloud holds years. So Reports can
+  // legitimately be asked for a period this machine has never seen, and until
+  // now it would have answered "no sales" for a month that is sitting safely in
+  // Firestore. These let it fetch those days on demand and fold them in for the
+  // session. Nothing is written to localStorage — a five-year range would blow
+  // the quota, and the cloud is the durable copy anyway.
+  const [archiveIndex,setArchiveIndex]=useState({});
+  const [cloudSales,setCloudSales]=useState([]);
+  const [cloudLoading,setCloudLoading]=useState(false);
+  const [cloudError,setCloudError]=useState("");
+
+  useEffect(()=>{
+    const lic=license?.licenseKey||LS.get("restopos_license_v2")?.licenseKey;
+    if(!lic)return;
+    // One small read that says which days exist and how big they are, without
+    // fetching a single invoice.
+    loadArchiveIndex(lic).then(setArchiveIndex).catch(()=>{});
+  },[license?.licenseKey]);
+
+  const fetchCloudRange=useCallback(async(from,to)=>{
+    const lic=license?.licenseKey||LS.get("restopos_license_v2")?.licenseKey;
+    if(!lic||!from||!to)return[];
+    setCloudLoading(true);setCloudError("");
+    try{
+      const rows=await loadArchivedRange(lic,from,to);
+      setCloudSales(prev=>{
+        const seen=new Set(prev.map(s=>s.id));
+        return[...prev,...rows.filter(s=>s&&s.id&&!seen.has(s.id))];
+      });
+      // Returned as well as merged: a caller computing a report right now
+      // cannot see the state update it just queued, and would otherwise
+      // report on the data as it was a moment before the download.
+      return rows;
+    }catch(e){
+      setCloudError(e?.message||"Couldn't reach the cloud archive.");
+      return[];
+    }finally{setCloudLoading(false);}
+  },[license?.licenseKey]);
+
+  // allSales merges active sales + ALL monthly archive buckets + closed-day
+  // archives + anything pulled down from the cloud archive this session.
   const allSales=useMemo(()=>{
     const activeIds=new Set(sales.map(s=>s.id));
     // Load archived sales fresh from LS every time sales changes
@@ -15905,8 +16077,14 @@ export default function App(){
     const archived=allArchived.filter(s=>!activeIds.has(s.id));
     const seen=new Set();
     const deduped=archived.filter(s=>{if(seen.has(s.id))return false;seen.add(s.id);return true;});
-    return[...sales,...deduped].sort((a,b)=>b.date.localeCompare(a.date)||b.id.localeCompare(a.id));
-  },[sales,salesVersion]);
+    const localIds=new Set([...activeIds,...deduped.map(s=>s.id)]);
+    const fromCloud=cloudSales.filter(s=>s&&s.id&&!localIds.has(s.id));
+    // Defensive compare: one sale with a missing date used to throw here and
+    // take the whole screen down, and cloud rows are assembled from documents
+    // rather than written by this device.
+    const d=(x)=>String(x&&x.date||""),i=(x)=>String(x&&x.id||"");
+    return[...sales,...deduped,...fromCloud].sort((a,b)=>d(b).localeCompare(d(a))||i(b).localeCompare(i(a)));
+  },[sales,salesVersion,cloudSales]);
   // ── TRIAL DATA MIRROR ──────────────────────────────────────────────
   // Push a readable copy of everything this trial does into Firebase, so the
   // operator can browse it in the console instead of squinting at the JSON
@@ -16167,7 +16345,8 @@ export default function App(){
         {/* Invoices moved into Settings → Invoices tab */}
         {/* Expenses moved to Financials tab */}
         {screen==="customers"&&<Customers sales={allSales} lang={lang}/>}
-        {screen==="reports"&&<Reports sales={sales} allSales={allSales} items={items} setSales={setSales} lang={lang}/>}
+        {screen==="reports"&&<Reports sales={sales} allSales={allSales} items={items} setSales={setSales} lang={lang}
+          archiveIndex={archiveIndex} fetchCloudRange={fetchCloudRange} cloudLoading={cloudLoading} cloudError={cloudError}/>}
         {screen==="advanced"&&<AdvancedFeatures sales={allSales} items={items} setItems={setItems} license={license} company={company} invoiceFormat={invoiceFormat} setInvoiceFormat={setInvoiceFormat} users={users} setUsers={setUsers} lang={lang}/>}
         {screen==="inventory"&&<InventoryManagement items={items} setItems={setItems} lang={lang}/>}
         {screen==="vat"&&<ZATCAVatEngine lang={lang}/>}

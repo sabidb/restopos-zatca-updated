@@ -6,7 +6,9 @@
   "description": "Browser tests that drive the real app against the local Firebase emulators. Kept out of the app's package.json \u2014 like rules-test/ \u2014 so the frontend build stays lean.",
   "scripts": {
     "killswitch": "node killswitch.mjs",
-    "archive": "node archive.mjs"
+    "archive": "node archive.mjs",
+    "reports": "node reports.mjs",
+    "loginflow": "node loginflow.mjs"
   },
   "devDependencies": {
     "playwright": "^1.49.0",
