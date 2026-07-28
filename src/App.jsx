@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback, Component } from "react";
 import { initializeApp } from "firebase/app";
-import { getFirestore, collection, query, where, getDocs, updateDoc, doc, addDoc, getDoc, onSnapshot, setDoc, deleteDoc, orderBy, limit, startAfter, getCountFromServer, arrayUnion, writeBatch , connectFirestoreEmulator } from "firebase/firestore";
+import { getFirestore, collection, query, where, getDocs, updateDoc, doc, addDoc, getDoc, onSnapshot, setDoc, deleteDoc, orderBy, limit, startAfter, arrayUnion, writeBatch , connectFirestoreEmulator } from "firebase/firestore";
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken, connectAuthEmulator } from "firebase/auth";
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { getFunctions, httpsCallable } from "firebase/functions";
@@ -10436,12 +10436,6 @@ function ArchiveExportPanel({license,lang="en"}){
     else if(kind==="year")start.setFullYear(end.getFullYear()-1);
     else if(kind==="5y")start.setFullYear(end.getFullYear()-5);
     setFrom(start.toISOString().slice(0,10));setTo(end.toISOString().slice(0,10));setEstimate(null);
-  }
-
-  function rangeFilters(){
-    const fromTs=new Date(from+"T00:00:00.000Z").toISOString();
-    const toTs=new Date(to+"T23:59:59.999Z").toISOString();
-    return [where("seller_vat","==",sellerVat),where("timestamp",">=",fromTs),where("timestamp","<=",toTs)];
   }
 
   async function runEstimate(){
