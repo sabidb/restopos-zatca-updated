@@ -9111,6 +9111,18 @@ function SupportTicketsTab(){
   );
 }
 
+// ⚠️ NOT MOUNTED, AND MUST NOT BE without a rules change first.
+//
+// This is a copy of the owner console embedded in the till. Nothing renders
+// it — SupportTicketsTab below is reachable only from here, so it is dead too.
+//
+// It lists pending_activations and licenses wholesale, which firestore.rules
+// now allows only for the admin account. A till signs in anonymously, so
+// mounting this would give every screen here an empty list and a permissions
+// error in the console rather than an obvious failure. The owner console is
+// the separate Restopos-Admin app, which signs in with a real password; use
+// that. If this ever needs to come back, it has to read through a Cloud
+// Function on the Admin SDK instead of querying these collections directly.
 function OwnerDashboardInline(){
   const [tab,setTab]=useState("overview");
   const [activations,setActivations]=useState([]);
