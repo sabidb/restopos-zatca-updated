@@ -64,6 +64,7 @@ const verifyLoginFn = httpsCallable(functions, "verifyLogin");
 // read every shop's invoices. These three are the only way in, and they take
 // the seller VAT from the caller's own account rather than from the request.
 const zatcaArchiveFn = httpsCallable(functions, "zatcaArchive");
+const zatcaArchiveBatchFn = httpsCallable(functions, "zatcaArchiveBatch");
 const zatcaChainFn = httpsCallable(functions, "zatcaChain");
 const zatcaExportFn = httpsCallable(functions, "zatcaExport");
 const currentLicenseKey = () => {
@@ -261,6 +262,8 @@ const ZATCA_LOCAL_CACHE_LIMIT = 5000;
 // against the real exposure — the hours between the rules closing and a till
 // loading the new build — without re-filing years of confirmed history.
 const ZATCA_GAP_BACKFILL_LIMIT = 300;
+// Invoices per batched archive call. The function caps it at 200.
+const ZATCA_BATCH_SIZE = 200;
 
 const invoiceStorage = {
   getNextCounter() { const c = parseInt(localStorage.getItem(ZATCA_COUNTER_KEY)||"1000",10); localStorage.setItem(ZATCA_COUNTER_KEY,String(c+1)); return c+1; },
@@ -353,15 +356,45 @@ const invoiceStorage = {
     try{q=JSON.parse(localStorage.getItem(ZATCA_ARCHIVE_PENDING_KEY)||"[]");}catch(e){return 0;}
     if(!q.length)return 0;
     let sent=0;
+    // In batches: a till that traded through a long outage can have hundreds
+    // queued, and one round trip each would take minutes.
     while(q.length){
-      const item=q[0];
-      try{ await zatcaArchiveFn({licenseKey,invoice:item.inv,extra:item.extra||{}}); }
-      catch(e){ break; }
-      q.shift();sent++;
+      const chunk=q.slice(0,ZATCA_BATCH_SIZE);
+      try{
+        const res=await zatcaArchiveBatchFn({licenseKey,invoices:chunk.map(x=>x.inv)});
+        // Anything the server refused — a VAT that is not this account's — is
+        // dropped rather than retried forever. Retrying cannot make it valid.
+        const refused=new Set((res.data?.rejected||[]).map(r=>r.invoice_number));
+        this.markArchived(chunk.map(x=>x.inv.invoice_number).filter(n=>!refused.has(n)));
+        if(refused.size)console.warn(`[ZATCA] ${refused.size} invoice(s) refused by the archive and dropped.`);
+      }catch(e){ break; }
+      q=q.slice(chunk.length);sent+=chunk.length;
       try{localStorage.setItem(ZATCA_ARCHIVE_PENDING_KEY,JSON.stringify(q));}catch(e){}
     }
     if(sent)console.log(`[ZATCA] ${sent} deferred invoice(s) archived.`);
     return sent;
+  },
+  /**
+   * Re-file EVERY invoice this device holds, not just the recent window.
+   *
+   * For the shops that lost invoices before document ids were scoped to the
+   * tenant. Two shops reaching the same invoice number overwrote each other in
+   * the shared archive, and the losing shop's only surviving copy is the one in
+   * its own browser. This puts it back under that shop's own key, leaving the
+   * other shop's copy alone.
+   *
+   * Deliberately manual — it is a one-off repair, not something to run on every
+   * boot. From a till: window.__restoposDebug.invoiceStorage.reconcileArchive()
+   */
+  async reconcileArchive(){
+    if(TRIAL)return{filed:0};
+    const all=this.getAll().filter(i=>i&&i.invoice_number);
+    if(!all.length)return{filed:0};
+    console.log(`[ZATCA] reconciling ${all.length} local invoice(s) into the archive…`);
+    for(const inv of all)this.queuePendingArchive(inv,{});
+    const filed=await this.drainPendingArchive();
+    console.log(`[ZATCA] reconciliation filed ${filed} of ${all.length}.`);
+    return{filed,total:all.length,stillPending:this.pendingArchiveCount()};
   },
   getAll() { try{return JSON.parse(localStorage.getItem(ZATCA_STORAGE_KEY)||"[]");}catch{return [];} },
   getOne(n) { return this.getAll().find(i=>i.invoice_number===n)||null; },

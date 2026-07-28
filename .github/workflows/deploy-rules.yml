@@ -34,7 +34,13 @@ jobs:
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
 
-      - name: Deploy rules and indexes
-        run: npx firebase-tools@13 deploy --only firestore:rules,firestore:indexes --project restopos-db
+      - name: Deploy rules
+        # Rules ONLY. Deploying indexes from here reconciles the whole index
+        # set, and the CLI refuses non-interactively when the project has
+        # indexes the file does not list — because going ahead would DELETE
+        # them. firestore.indexes.json documents the indexes these queries
+        # need; deploy it by hand, after checking it against the project's
+        # existing list, so nothing live is dropped.
+        run: npx firebase-tools@13 deploy --only firestore:rules --project restopos-db
         env:
           GOOGLE_APPLICATION_CREDENTIALS: /tmp/key.json

@@ -1,12 +1,16 @@
 {
   "//": [
-    "Composite indexes Firestore cannot infer. Deployed by the Deploy Firestore",
-    "Rules workflow alongside firestore.rules.",
+    "Composite indexes these queries need. NOT deployed by the workflow.",
     "",
-    "The emulator does NOT enforce these — it answers any query happily — so a",
-    "missing index only shows up in production, as a failed export on a client's",
-    "screen. That is exactly why they are declared here rather than created by",
-    "hand from a console link when something breaks."
+    "`firebase deploy --only firestore:indexes` reconciles the ENTIRE index set:",
+    "any index live in the project but missing from this file is deleted. The",
+    "project already has indexes predating this file, so deploying it blind would",
+    "drop them and break whatever queries depend on them.",
+    "",
+    "Before deploying indexes: open Firebase console -> Firestore -> Indexes, add",
+    "every existing composite index to this file, and only then deploy. Until that",
+    "merge is done this file is documentation, and a missing index shows up in",
+    "production as a failed export with a create-it link in the browser console."
   ],
   "indexes": [
     {
@@ -14,22 +18,37 @@
       "collectionGroup": "zatca_invoices",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "seller_vat", "order": "ASCENDING" },
-        { "fieldPath": "icv", "order": "DESCENDING" }
+        {
+          "fieldPath": "seller_vat",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "icv",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "//": [
         "zatcaExport: a date range for one tenant, paged. invoice_number is in",
-        "the sort so the cursor is unambiguous — ordering on timestamp alone",
+        "the sort so the cursor is unambiguous \u2014 ordering on timestamp alone",
         "would skip invoices sharing a second, which a busy till produces."
       ],
       "collectionGroup": "zatca_invoices",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "seller_vat", "order": "ASCENDING" },
-        { "fieldPath": "timestamp", "order": "ASCENDING" },
-        { "fieldPath": "invoice_number", "order": "ASCENDING" }
+        {
+          "fieldPath": "seller_vat",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "invoice_number",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
@@ -37,7 +56,10 @@
       "collectionGroup": "invoices",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "date", "order": "ASCENDING" }
+        {
+          "fieldPath": "date",
+          "order": "ASCENDING"
+        }
       ]
     }
   ],

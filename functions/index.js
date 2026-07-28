@@ -522,6 +522,46 @@ export const zatcaArchive = onCall({ cors: true, region: "us-central1" }, async 
 });
 
 /**
+ * File many invoices in one call.
+ *
+ * Two jobs. It drains a till's offline backlog quickly instead of one round
+ * trip per invoice, and it is what a reconciliation uses: before document ids
+ * were scoped to the tenant, two shops reaching the same invoice number
+ * overwrote each other, and the losing shop's only surviving copy is the one
+ * in its own browser. Re-filing that cache puts it back under the shop's own
+ * key without disturbing the other's.
+ *
+ * Every invoice is checked against the caller's VAT individually — a batch is
+ * not an excuse to skip the check that makes any of this safe.
+ */
+export const zatcaArchiveBatch = onCall({ cors: true, region: "us-central1" }, async (req) => {
+  const { licenseKey, invoices } = req.data || {};
+  const { data } = await requireLicense(req, licenseKey);
+  const sellerVat = sellerVatOf(data);
+  if (!Array.isArray(invoices) || !invoices.length) {
+    throw new HttpsError("invalid-argument", "invoices must be a non-empty array.");
+  }
+  if (invoices.length > 200) throw new HttpsError("invalid-argument", "At most 200 invoices per call.");
+
+  const batch = db.batch();
+  let written = 0;
+  const rejected = [];
+  for (const inv of invoices) {
+    if (!inv || !inv.invoice_number) { rejected.push({ reason: "no invoice_number" }); continue; }
+    if (String(inv.seller_vat || "").trim() !== sellerVat) {
+      rejected.push({ invoice_number: inv.invoice_number, reason: "seller VAT does not belong to this account" });
+      continue;
+    }
+    batch.set(db.collection("zatca_invoices").doc(archiveDocId(sellerVat, inv.invoice_number)), {
+      ...inv, seller_vat: sellerVat, archived_at: new Date().toISOString(),
+    }, { merge: true });
+    written += 1;
+  }
+  if (written) await batch.commit();
+  return { written, rejected };
+});
+
+/**
  * The head of this tenant's hash chain, plus the most recent invoices to
  * repopulate the till's local cache. This is what lets a wiped or replaced
  * device pick the ICV sequence back up instead of restarting it — which would

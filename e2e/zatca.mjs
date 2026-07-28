@@ -144,5 +144,32 @@ console.log('\n── export ─────────────────
   t('the date range is honoured', narrow?.count === 2, `count=${narrow?.count}`);
 }
 
+console.log('\n── batched filing ─────────────────────────────────────');
+{
+  // Used to drain a long offline backlog, and to re-file a shop's local cache
+  // after the overwrite bug. One round trip per invoice would take minutes.
+  const many = Array.from({ length: 120 }, (_, i) => mkInvoice(A.vat, 500 + i, 10));
+  const r = (await call('zatcaArchiveBatch', { licenseKey: A.key, invoices: many }, userA.idToken)).result;
+  t('files a whole batch in one call', r?.written === 120, `written=${r?.written}`);
+
+  const back = (await call('zatcaExport', { licenseKey: A.key, from: '2026-06-10', to: '2026-06-10', countOnly: true }, userA.idToken)).result;
+  t('and they are all in the archive', back?.count === 120, `count=${back?.count}`);
+
+  // A batch is not an excuse to skip the check that makes any of this safe.
+  const mixed = (await call('zatcaArchiveBatch', { licenseKey: A.key,
+    invoices: [mkInvoice(A.vat, 900, 11), mkInvoice(B.vat, 901, 11)] }, userA.idToken)).result;
+  t('another shop invoice is refused, the valid one still files',
+    mixed?.written === 1 && mixed?.rejected?.length === 1,
+    `written=${mixed?.written} rejected=${mixed?.rejected?.length}`);
+
+  const tooMany = await call('zatcaArchiveBatch', { licenseKey: A.key,
+    invoices: Array.from({ length: 201 }, (_, i) => mkInvoice(A.vat, 2000 + i, 12)) }, userA.idToken);
+  t('an oversized batch is refused', !tooMany.result && !!tooMany.error, tooMany.error?.status || '');
+
+  const notMine = await call('zatcaArchiveBatch', { licenseKey: B.key,
+    invoices: [mkInvoice(B.vat, 950, 11)] }, userA.idToken);
+  t('cannot batch-file into another shop archive', !notMine.result && !!notMine.error, notMine.error?.status || '');
+}
+
 console.log(`\n${fail === 0 ? '✅ ALL PASSED' : '❌ FAILURES'} — ${pass} passed, ${fail} failed\n`);
 process.exit(fail === 0 ? 0 : 1);
