@@ -57,6 +57,46 @@ service cloud.firestore {
       ]);
     }
 
+    // ── Why `list` is admin-only nearly everywhere below ───────────────────
+    // The app signs devices in with signInAnonymously, and the Firebase config
+    // ships in the client bundle. So `isSignedIn()` does NOT mean "a customer
+    // of ours" — anyone who opens the site can obtain that token. It is a
+    // rate-limiting identity, not an authorisation.
+    //
+    // That distinction decides everything here. `get` on a doc keyed by a
+    // license key still needs a signed-in caller only, because a device must
+    // read its own account before it is on the authUids allowlist (a second
+    // terminal polling for approval). But `list` is what turns a guessed key
+    // into a full export of every tenant, so listing is reserved for the
+    // admin panel, which signs in with a real password as the owner account.
+    //
+    // Rules cannot filter a query, so a collection read is all-or-nothing:
+    // if a client ever needs to list one of these, it must go through a
+    // Cloud Function on the Admin SDK, not a widened rule.
+
+    // Fields a device legitimately stamps on its own license during activation.
+    // `active` is deliberately absent: switching a license off is the
+    // kill-switch, and a client must never be able to switch its own back on.
+    function onlyLicenseStamp() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+        'activatedBy', 'activatedAt', 'businessName', 'vatNumber', 'email',
+        'phone', 'city', 'deviceId', 'deviceInfo', 'location', 'locationUpdatedAt',
+        'updatedAt'
+      ]);
+    }
+
+    // A ZATCA invoice is a tax record in a hash chain: each one commits to the
+    // previous invoice's hash, so altering an archived invoice breaks the chain
+    // and the audit trail with it. Re-archiving the same invoice is fine (the
+    // values are identical, so they don't count as changed) and clearance
+    // updates may add fields — but these may never be rewritten.
+    function zatcaChainIntact() {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+        'invoice_number', 'uuid', 'seller_vat', 'invoice_hash',
+        'prev_invoice_hash', 'icv', 'total', 'vat_amount', 'timestamp'
+      ]);
+    }
+
     // ── HARD-LOCKED SECRETS ────────────────────────────────────────────────
     // Anthropic API key, ZATCA EGS private keys/certs, manager PIN hashes and
     // the branch→client linking. Only reachable via the Admin SDK.
@@ -87,12 +127,17 @@ service cloud.firestore {
     // clientUsername, credentialsApproved) and lifecycle fields (isActive,
     // status) are set only by the Admin SDK / admin panel. A device may edit a
     // narrow set of its own device-management fields.
-    // Read is open to any signed-in device: a new/unapproved device must read
-    // this doc to poll for approval, and the logged-in client (uid == key) and
-    // the kill-switch watchdog read it live. The doc holds no plaintext secret
-    // (passwordHash is bcrypt); the real protection is on the writes below.
+    // A single doc is readable by any signed-in device: a new/unapproved device
+    // must read it to poll for approval, and the logged-in client (uid == key)
+    // and the kill-switch watchdog read it live — all by known key.
+    //
+    // Listing the collection is admin-only. These docs carry the client's CR
+    // and VAT numbers, address, email, phone, bcrypt password hash and now the
+    // terms-acceptance record including the signer's name and IP address. A
+    // readable list is a one-request export of every client on the platform.
     match /pending_activations/{key} {
-      allow read: if isSignedIn();
+      allow get: if isSignedIn();
+      allow list: if isAdmin();
 
       // Activation creates the doc — a client can never create it pre-approved.
       allow create: if isAdmin() || (
@@ -112,27 +157,58 @@ service cloud.firestore {
 
     // ── licenses (issued by admin; activation stamps activatedBy/at) ────────
     match /licenses/{key} {
-      allow read: if isSignedIn();
+      // Activation checks one key it was given; only the admin panel lists the
+      // catalogue of issued keys.
+      allow get: if isSignedIn();
+      allow list: if isAdmin();
       allow create, delete: if isAdmin();
-      // Activation may stamp activation metadata; admin may change anything.
-      allow update: if isAdmin() || isSignedIn();
+      // Activation stamps its own metadata onto the key it just used. It may
+      // not touch `active` — that is the kill switch.
+      allow update: if isAdmin() || (isSignedIn() && onlyLicenseStamp());
     }
 
     // ── lookup indexes (written at activation; read during login/reset) ─────
+    // These map an identifier to a license key, and the password-reset path
+    // follows them. Pointing an index entry at a license you do NOT own is the
+    // takeover: aim your own email at a victim's key, reset "your" password,
+    // and you are inside their account.
+    //
+    // So the test is ownership of the target, not immutability of the mapping.
+    // Freezing the mapping outright would also have broken a legitimate case —
+    // a client re-registering the same email or VAT against a newly purchased
+    // license key, which happens whenever a lapsed account comes back. Both
+    // writers (activation and registerDeviceUid) create the account document
+    // before touching the index, so by this point they genuinely own the key.
+    function indexPointsToOwnLicense() {
+      return ownsLicenseKey(request.resource.data.get('licenseKey', ''));
+    }
     match /vat_index/{vat} {
-      allow read: if isSignedIn();
-      allow write: if isAdmin() || isSignedIn();
+      allow get: if isSignedIn();
+      allow list: if isAdmin();
+      allow create: if isAdmin() || (isSignedIn() && indexPointsToOwnLicense());
+      allow update: if isAdmin() || (isSignedIn() && indexPointsToOwnLicense());
+      allow delete: if isAdmin();
     }
     match /email_index/{email} {
-      allow read: if isSignedIn();
-      allow write: if isAdmin() || isSignedIn();
+      allow get: if isSignedIn();
+      allow list: if isAdmin();
+      allow create: if isAdmin() || (isSignedIn() && indexPointsToOwnLicense());
+      allow update: if isAdmin() || (isSignedIn() && indexPointsToOwnLicense());
+      allow delete: if isAdmin();
     }
 
     // ── ZATCA invoice archive (keyed by invoice number) ────────────────────
     // No per-owner field is guaranteed on these docs, so gate on auth. They
     // contain no secrets (signatures/hashes are public artifacts on receipts).
+    //
+    // `list` has to stay open to a signed-in till: restoring the hash chain
+    // queries this collection by seller_vat, and rules cannot inspect a query's
+    // where-clauses, so there is no way to express "only your own VAT" here.
+    // The write side is where the value is, and it is locked: an archived
+    // invoice's chain fields can never be rewritten by a client.
     match /zatca_invoices/{invoiceNumber} {
-      allow read, create, update: if isSignedIn();
+      allow read, create: if isSignedIn();
+      allow update: if isAdmin() || (isSignedIn() && zatcaChainIntact());
       allow delete: if isAdmin();
     }
 
@@ -160,10 +236,17 @@ service cloud.firestore {
     }
 
     // ── live support chat (room id = chat_<licenseKey>) ────────────────────
+    // A support conversation is a private channel between one client and the
+    // owner — clients describe problems, paste figures and attach photos of
+    // their own tills. The room id embeds the license key, so ownership is the
+    // same authUids check used everywhere else, applied to the key in the id.
+    function ownsRoom(room) {
+      return room.split('chat_').size() > 1 && ownsLicenseKey(room.split('chat_')[1]);
+    }
     match /live_chats/{room} {
-      allow read, write: if isAdmin() || isSignedIn();
+      allow read, write: if isAdmin() || ownsRoom(room);
       match /messages/{msg} {
-        allow read, write: if isAdmin() || isSignedIn();
+        allow read, write: if isAdmin() || ownsRoom(room);
       }
     }
 
