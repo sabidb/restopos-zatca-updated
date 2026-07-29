@@ -510,6 +510,25 @@ const fatooraQueue = {
   getUrgent() { const cutoff=Date.now()-23*60*60*1000; return this.getQueue().filter(q=>q.status!=="reported"&&new Date(q.queued_at).getTime()<cutoff); }
 };
 
+// Whether this terminal has completed ZATCA Phase 2 activation. A merchant
+// still on Phase 1 issues perfectly valid Phase 1 invoices — QR, VAT, printing
+// and the whole POS work exactly as before — they simply have nothing to report,
+// because they hold no certificate. Queueing their invoices would make the
+// background sync fail forever against a device ZATCA has never heard of.
+function isPhase2Active(){
+  try{ return JSON.parse(localStorage.getItem("restopos_zatca_phase2_status")||"{}").productionReady===true; }
+  catch{ return false; }
+}
+
+// ── Invoice notifications ────────────────────────────────────────────────
+// Emitted after every ZATCA submission so the cashier can see what happened
+// without digging into a report. Severity decides the presentation: a success
+// is a glance, a failed clearance has to be acknowledged.
+const ZATCA_NOTIFY_EVENT="zatca-invoice-notify";
+function notifyZatca(detail){
+  try{ window.dispatchEvent(new CustomEvent(ZATCA_NOTIFY_EVENT,{detail})); }catch(e){}
+}
+
 // ZATCA Phase 2 microservice (signs invoice + reports to FATOORA)
 const ZATCA_SERVICE_URL = "https://zatca-service-82816670819.me-central1.run.app";
 // Reads from onboarding saved status — true when the service environment is production
@@ -632,10 +651,21 @@ async function reportToFatoora(inv) {
     // Fix: merge the report result into the SAME Firestore doc created at generation time
     // (invoiceStorage.save), instead of addDoc'ing a second duplicate archive entry.
     invoiceStorage.archiveToFirestore(inv,{signed_invoice_hash:data.invoiceHash||inv.invoice_hash_base64,signed_qr_string:data.qr||inv.qr_string,signed_xml:data.signedXml||null,icv:data.icv??inv.icv,zatca_reported:!queuedForRetry,zatca_pending_report:queuedForRetry,reported_at:new Date().toISOString()}).catch(()=>{});
+    notifyZatca(queuedForRetry
+      ? { level:"warning", title:"Invoice signed — reporting queued",
+          invoiceNumber:inv.invoice_number, icv:data.icv, kind:"B2C",
+          total:inv.total, lines:["Valid to give the customer.","ZATCA unreachable; will retry automatically."] }
+      : { level:"success", title:"Reported to ZATCA",
+          invoiceNumber:inv.invoice_number, icv:data.icv, kind:"B2C",
+          total:inv.total, lines:[] });
+
     return { success: true, invoiceHash: data.invoiceHash, qr: data.qr, icv: data.icv, queuedForRetry, reportError: queuedForRetry ? (data.error || null) : null };
   } catch (err) {
     console.error("[ZATCA] Report error:", err.message);
     fatooraQueue.markFailed(inv.invoice_number);
+    notifyZatca({ level:"warning", title:"Reporting failed",
+      invoiceNumber:inv.invoice_number, kind:"B2C", total:inv.total,
+      lines:["The invoice is signed and valid to give the customer.", err.message] });
     throw err;
   }
 }
@@ -679,7 +709,12 @@ async function clearanceB2BInvoice(inv) {
         ? ` (${data.zatcaErrors.map(e => e.message || e).join("; ")})`
         : "";
     // Unlike B2C reporting there is no retry path here: an uncleared standard
-    // invoice cannot lawfully be issued to the buyer, so this has to fail loudly.
+    // invoice cannot lawfully be issued to the buyer, so this has to fail loudly
+    // and must not disappear on a timer.
+    notifyZatca({ level:"critical", title:"NOT cleared — do not give to the buyer",
+      invoiceNumber:inv.invoice_number, kind:"B2B", total:inv.total,
+      lines:["ZATCA did not clear this invoice, so it cannot lawfully be issued.",
+             (data.error || `Clearance failed: ${res.status}`) + detail] });
     throw new Error((data.error || `Clearance failed: ${res.status}`) + detail);
   }
   // ZATCA returns the invoice countersigned with its own stamp. THAT document is
@@ -695,6 +730,9 @@ async function clearanceB2BInvoice(inv) {
     localStorage.setItem(ZATCA_STORAGE_KEY, JSON.stringify(all));
   } catch (e) {}
   fatooraQueue.markSent(inv.invoice_number);
+  notifyZatca({ level:"success", title:"Cleared by ZATCA",
+    invoiceNumber:inv.invoice_number, icv:data.icv, kind:"B2B", total:inv.total,
+    lines:["Safe to give the buyer the cleared invoice."] });
   console.log("[ZATCA] B2B Cleared:", inv.invoice_number);
   // Fix: merge the clearance result into the SAME Firestore doc created at generation time
   // (invoiceStorage.save), instead of addDoc'ing a second duplicate archive entry.
@@ -732,7 +770,8 @@ async function generateZATCAInvoice({seller_name,seller_vat,seller_address,selle
   const qr_string = generatePhase1QR({sellerName:seller_name,vatNumber:seller_vat,timestamp,total,vatAmount:vat_amount});
   const invoice = {...partial,invoice_hash,invoice_hash_base64,qr_string,ecdsa_signature:null,ecdsa_public_key:null,zatca_reported:false,phase:1};
   invoiceStorage.save(invoice);
-  fatooraQueue.enqueue(invoice);
+  // Only queue for reporting when the terminal actually has a certificate.
+  if(isPhase2Active())fatooraQueue.enqueue(invoice);
   try{window.dispatchEvent(new Event("restopos-invoice"));}catch(e){}
   return invoice;
 }
@@ -16193,6 +16232,102 @@ if(TRIAL){
   buildPresetKOT=(...a)=>trialStampHTML(_pkot(...a));
 }
 
+// ── ZATCA invoice notifications ──────────────────────────────────────────
+//
+// Feedback after every submission, presented by severity rather than uniformly.
+// A toast that clears itself is right for "reported" and actively wrong for
+// "not cleared": an uncleared standard invoice cannot lawfully reach the buyer,
+// and a message the cashier can miss during a rush is worse than none, because
+// it trains everyone to ignore the banner that finally matters.
+function ZatcaNotifications(){
+  const [toasts,setToasts]=useState([]);
+  const [blocking,setBlocking]=useState(null);
+
+  useEffect(()=>{
+    function onNotify(e){
+      const n=e.detail||{};
+      if(n.level==="critical"){ setBlocking({...n,id:Date.now()}); return; }
+      const id=Date.now()+Math.random();
+      setToasts(p=>[...p,{...n,id}]);
+      // Success is a glance; a queued retry needs long enough to actually read.
+      const ms=n.level==="success"?2400:6000;
+      setTimeout(()=>setToasts(p=>p.filter(t=>t.id!==id)),ms);
+    }
+    window.addEventListener(ZATCA_NOTIFY_EVENT,onNotify);
+    return()=>window.removeEventListener(ZATCA_NOTIFY_EVENT,onNotify);
+  },[]);
+
+  const tone={success:{bg:"#0f7a43",accent:"#34d399",icon:"\u2705"},
+              warning:{bg:"#a15c00",accent:"#fbbf24",icon:"\u23f3"}};
+
+  return(
+    <>
+      <style>{`@keyframes zatcaIn{from{opacity:0;transform:translateY(14px) scale(.97)}to{opacity:1;transform:none}}
+@keyframes zatcaPulse{0%,100%{box-shadow:0 0 0 0 rgba(217,64,64,.55)}50%{box-shadow:0 0 0 14px rgba(217,64,64,0)}}`}</style>
+
+      <div style={{position:"fixed",right:14,bottom:14,zIndex:4000,display:"flex",
+        flexDirection:"column",gap:8,alignItems:"flex-end",pointerEvents:"none",maxWidth:"min(92vw,360px)"}}>
+        {toasts.map(t=>{
+          const c=tone[t.level]||tone.success;
+          return(
+            <div key={t.id} style={{background:c.bg,color:"#fff",borderRadius:12,padding:"11px 14px",
+              width:"100%",boxSizing:"border-box",boxShadow:"0 10px 30px rgba(0,0,0,.32)",
+              borderLeft:`4px solid ${c.accent}`,animation:"zatcaIn .22s ease-out",fontFamily:"inherit"}}>
+              <div style={{display:"flex",gap:9,alignItems:"baseline"}}>
+                <span style={{fontSize:15}}>{c.icon}</span>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:12.5,fontWeight:800}}>{t.title}</div>
+                  <div style={{fontSize:11.5,opacity:.95,marginTop:2,fontFamily:"monospace"}}>
+                    {t.invoiceNumber}{t.icv?` \u00b7 ICV ${t.icv}`:""}{t.kind?` \u00b7 ${t.kind}`:""}
+                    {typeof t.total==="number"?` \u00b7 SAR ${t.total.toFixed(2)}`:""}
+                  </div>
+                  {(t.lines||[]).map((l,i)=>(
+                    <div key={i} style={{fontSize:10.5,opacity:.9,marginTop:3,lineHeight:1.45}}>{l}</div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {blocking&&(
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.62)",zIndex:5000,
+          display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+          <div style={{background:"#fff",borderRadius:16,maxWidth:440,width:"100%",
+            boxShadow:"0 24px 70px rgba(0,0,0,.45)",animation:"zatcaIn .2s ease-out",overflow:"hidden"}}>
+            <div style={{background:C.danger,color:"#fff",padding:"14px 18px",
+              display:"flex",alignItems:"center",gap:10,animation:"zatcaPulse 1.9s ease-in-out 3"}}>
+              <span style={{fontSize:21}}>{"\u26d4"}</span>
+              <div style={{fontSize:14.5,fontWeight:800}}>{blocking.title}</div>
+            </div>
+            <div style={{padding:"16px 18px"}}>
+              <div style={{fontSize:12,fontFamily:"monospace",color:C.textMid,marginBottom:10}}>
+                {blocking.invoiceNumber}{blocking.kind?` \u00b7 ${blocking.kind}`:""}
+                {typeof blocking.total==="number"?` \u00b7 SAR ${blocking.total.toFixed(2)}`:""}
+              </div>
+              {(blocking.lines||[]).map((l,i)=>(
+                <div key={i} style={{fontSize:12.5,color:i===0?C.text:C.textMid,
+                  fontWeight:i===0?700:400,marginBottom:8,lineHeight:1.55}}>{l}</div>
+              ))}
+              <div style={{fontSize:11.5,color:C.textMid,background:C.dangerLight,
+                padding:"9px 11px",borderRadius:8,marginTop:6,lineHeight:1.55}}>
+                Retry from the ZATCA screen once the problem is fixed. Until it is cleared,
+                this invoice must not be handed to the buyer.
+              </div>
+              <button onClick={()=>setBlocking(null)} style={{marginTop:14,width:"100%",
+                background:C.danger,color:"#fff",border:"none",borderRadius:10,padding:"12px",
+                fontFamily:"inherit",fontSize:13.5,fontWeight:800,cursor:"pointer"}}>
+                I understand {"\u2014"} do not issue this invoice
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 export default function App(){
   const [step,setStep]=useState("checking");const [businessData,setBusinessData]=useState(null);const [license,setLicense]=useState(null);const [currentUser,setCurrentUser]=useState(null);const [screen,_setScreen]=useState(()=>{
     // Crash-recovery: if the error boundary set this, honor it once then clear.
@@ -16281,6 +16416,9 @@ export default function App(){
       // Only run if we have a license (i.e. app is activated)
       const lic=LS.get("restopos_license_v2");
       if(!lic?.licenseKey)return;
+      // A Phase 1 merchant has no certificate, so every submission would fail
+      // against a device ZATCA has never seen. Nothing to flush.
+      if(!isPhase2Active())return;
 
       // Find all invoices still pending ZATCA reporting
       const queue=fatooraQueue.getQueue().filter(q=>q.status==="pending"||q.status==="failed");
@@ -16875,6 +17013,9 @@ export default function App(){
   if(step==="login"||!currentUser)return<RoleLogin license={license} lang={lang} onLogin={(user)=>{setCurrentUser(user);setStep("app");if(user.role==="Cashier")setScreen("pos");}} onClientLogin={()=>setStep("clientLogin")}/>;
   return(
     <ErrorBoundary>
+    {/* Rendered outside the scaled shell so a blocking clearance failure is
+        never clipped or shrunk by the UI zoom setting. */}
+    <ZatcaNotifications/>
     <div dir={dir(lang)} style={{fontFamily:lang==="ar"?"'Tajawal','Plus Jakarta Sans',sans-serif":"'Plus Jakarta Sans','Tajawal',sans-serif",background:C.bg,height:"100vh",display:"flex",flexDirection:"column",overflow:"hidden",zoom:`${uiScale}%`}}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Tajawal:wght@400;500;700;800&display=swap');html,body,#root{height:100%;margin:0;padding:0;width:100%}*{box-sizing:border-box;margin:0;padding:0}::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-track{background:${C.bg}}::-webkit-scrollbar-thumb{background:${C.border};border-radius:3px}input,select{outline:none}input:focus,select:focus{border-color:${C.primary}!important}@media print{header,nav{display:none!important}}${lang==="ar"?"body,button,input,select,textarea{font-family:'Tajawal',sans-serif!important}":""}`}</style>
       {TRIAL&&<TrialBanner license={license} onModeChange={handleTrialModeChange} onRegister={handleRegisterFromTrial}/>}
