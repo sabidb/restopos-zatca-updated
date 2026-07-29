@@ -11859,6 +11859,21 @@ function ZATCASetup({license,sales=[]}){
   const [vatNumber,setVatNumber]=useState(license?.vatNumber||"");
   const [companyName,setCompanyName]=useState(license?.businessName||"");
   const [branchName,setBranchName]=useState(saved.branchName||"Main Branch");
+  // ZATCA registration entered by the merchant, who holds the certificates.
+  // Written to pending_activations/{licenseKey}.zatcaRegistration; the approval
+  // verdict lives in the admin-only `zatcaApproved` field and is never set here.
+  const [crNumber,setCrNumber]=useState("");
+  const [branchIndustry,setBranchIndustry]=useState("Restaurant");
+  const [addrStreet,setAddrStreet]=useState("");
+  const [addrBuilding,setAddrBuilding]=useState("");
+  const [addrAdditional,setAddrAdditional]=useState("");
+  const [addrDistrict,setAddrDistrict]=useState("");
+  const [addrCity,setAddrCity]=useState(license?.city||"");
+  const [addrPostal,setAddrPostal]=useState("");
+  const [regLoaded,setRegLoaded]=useState(false);
+  const [regApproved,setRegApproved]=useState(false);
+  const [savingReg,setSavingReg]=useState(false);
+  const [regMsg,setRegMsg]=useState("");
   const [busy,setBusy]=useState(false);
   const [status,setStatus]=useState(saved.activated?"activated":"idle");
   const [msg,setMsg]=useState("");
@@ -11866,6 +11881,78 @@ function ZATCASetup({license,sales=[]}){
   const [currentStep,setCurrentStep]=useState("");
   // Manually-entered prior-year taxable revenue (for businesses with history outside RestoPOS)
   const [manualRev,setManualRev]=useState(()=>LS.get(ZATCA_MANUAL_REVENUE_KEY)||{});
+
+  // ── ZATCA registration: field rules ────────────────────────────────────
+  // Mirrors src/validation.js in the signing service. Checking here means a bad
+  // value is caught before the taxpayer generates a FATOORA OTP, which is
+  // single-use and expires within the hour.
+  const REG_CHECKS = {
+    companyName:{ ok:v=>!!String(v||"").trim(), hint:"Exactly as printed on the VAT certificate" },
+    vatNumber:{ ok:v=>/^3\d{13}3$/.test(v||""), hint:"15 digits, starting and ending with 3" },
+    crNumber:{ ok:v=>/^\d{10}$/.test(v||""), hint:"10 digits — from the CR certificate, NOT the VAT number" },
+    addrStreet:{ ok:v=>!!String(v||"").trim(), hint:"Required" },
+    addrBuilding:{ ok:v=>/^\d{4}$/.test(v||""), hint:"Exactly 4 digits" },
+    addrAdditional:{ ok:v=>/^\d{4}$/.test(v||""), hint:"Exactly 4 digits" },
+    addrDistrict:{ ok:v=>!!String(v||"").trim(), hint:"Required" },
+    addrCity:{ ok:v=>!!String(v||"").trim(), hint:"Required" },
+    addrPostal:{ ok:v=>/^\d{5}$/.test(v||""), hint:"Exactly 5 digits" },
+  };
+  const regValues={companyName,vatNumber,crNumber,addrStreet,addrBuilding,addrAdditional,addrDistrict,addrCity,addrPostal};
+  const regComplete=Object.entries(REG_CHECKS).every(([k,c])=>c.ok(regValues[k]));
+
+  // Load whatever registration already exists, plus the admin's verdict.
+  useEffect(()=>{
+    if(TRIAL||!license?.licenseKey)return;
+    let cancelled=false;
+    (async()=>{
+      try{
+        const snap=await getDoc(doc(db,"pending_activations",license.licenseKey));
+        if(cancelled||!snap.exists())return;
+        const d=snap.data()||{};
+        const r=d.zatcaRegistration||{};
+        const a=r.address||{};
+        if(r.companyName)setCompanyName(r.companyName);
+        if(r.vatNumber)setVatNumber(r.vatNumber);
+        if(r.crNumber)setCrNumber(r.crNumber);
+        if(r.branchName)setBranchName(r.branchName);
+        if(r.branchIndustry)setBranchIndustry(r.branchIndustry);
+        if(a.street)setAddrStreet(a.street);
+        if(a.buildingNumber)setAddrBuilding(a.buildingNumber);
+        if(a.additionalNumber)setAddrAdditional(a.additionalNumber);
+        if(a.district)setAddrDistrict(a.district);
+        if(a.city)setAddrCity(a.city);
+        if(a.postalCode)setAddrPostal(a.postalCode);
+        setRegApproved(d.zatcaApproved===true);
+      }catch(e){ console.warn("[ZATCA] Could not load registration:",e.message); }
+      finally{ if(!cancelled)setRegLoaded(true); }
+    })();
+    return()=>{cancelled=true;};
+  },[license?.licenseKey]);
+
+  async function saveRegistration(){
+    if(!license?.licenseKey){setRegMsg("No license key found.");return;}
+    if(!regComplete){setRegMsg("Fill in every field correctly before submitting.");return;}
+    setSavingReg(true);setRegMsg("");
+    try{
+      // `zatcaApproved` is deliberately NOT written here — the Firestore rules
+      // reserve it for the admin panel. A merchant confirming its own tax
+      // identity would make the check worthless.
+      await updateDoc(doc(db,"pending_activations",license.licenseKey),{
+        zatcaRegistration:{
+          companyName:companyName.trim(), vatNumber:vatNumber.trim(), crNumber:crNumber.trim(),
+          branchName:branchName.trim()||"Main Branch", branchIndustry:branchIndustry.trim()||"Restaurant",
+          address:{
+            street:addrStreet.trim(), buildingNumber:addrBuilding.trim(),
+            additionalNumber:addrAdditional.trim(), district:addrDistrict.trim(),
+            city:addrCity.trim(), postalCode:addrPostal.trim(),
+          },
+          submittedAt:new Date().toISOString(),
+        },
+      });
+      setRegMsg("✅ Submitted. RestoPOS will check it against your VAT and CR certificates — you can activate once it is approved.");
+    }catch(e){ setRegMsg("Could not save: "+e.message); }
+    setSavingReg(false);
+  }
 
   // ── ZATCA Phase 2 wave thresholds (per ZATCA, qualifying years 2022/2023/2024) ──
   // Wave 24 (current lowest): taxable revenue > SAR 375,000 → Phase 2 mandated, deadline 30 Jun 2026.
@@ -12149,24 +12236,94 @@ function ZATCASetup({license,sales=[]}){
               <a href="https://fatoora.zatca.gov.sa" target="_blank" rel="noopener noreferrer" style={{display:"inline-block",marginTop:10,background:C.zatca,color:"#fff",padding:"9px 16px",borderRadius:8,fontSize:13,fontWeight:700,textDecoration:"none"}}>🌐 Open FATOORA Portal</a>
             </div>
 
-            <div style={{marginTop:16}}>
-              <label style={labelStyle}>Company / VAT Name</label>
-              <input value={companyName} onChange={e=>setCompanyName(e.target.value)} style={inputStyle} placeholder="Registered business name"/>
-            </div>
-            <div style={{marginTop:14}}>
-              <label style={labelStyle}>VAT Number (15 digits)</label>
-              <input value={vatNumber} onChange={e=>setVatNumber(e.target.value.replace(/\D/g,"").slice(0,15))} style={inputStyle} placeholder="3XXXXXXXXXXXXXX" inputMode="numeric"/>
-            </div>
-            <div style={{marginTop:14}}>
-              <label style={labelStyle}>Branch Name</label>
-              <input value={branchName} onChange={e=>setBranchName(e.target.value)} style={inputStyle} placeholder="e.g. Main Branch"/>
-            </div>
-            <div style={{marginTop:14}}>
-              <label style={labelStyle}>OTP from FATOORA Portal</label>
-              <input value={otp} onChange={e=>setOtp(e.target.value)} style={{...inputStyle,letterSpacing:3,fontWeight:700}} placeholder="Paste OTP here"/>
+            {/* ── Step 1: registration details ──────────────────────────────
+                These are written into your cryptographic certificate and
+                printed on every tax invoice. They cannot be corrected later
+                without re-onboarding this device with a new OTP. */}
+            <div style={{marginTop:18,padding:"12px 14px",background:C.bg,border:`1px solid ${C.border}`,borderRadius:10}}>
+              <div style={{fontSize:13,fontWeight:800,marginBottom:4}}>Step 1 · Your registration details</div>
+              <div style={{fontSize:11,color:C.textLight,lineHeight:1.6}}>
+                Copy these exactly from your <strong>VAT certificate</strong>, <strong>Commercial Registration</strong> and
+                <strong> National Address</strong>. They are permanently written into your ZATCA certificate — a mistake
+                here can only be fixed by starting activation over.
+              </div>
             </div>
 
-            <button onClick={handleActivate} disabled={busy} style={{marginTop:18,width:"100%",background:busy?C.textLight:C.zatca,color:"#fff",border:"none",borderRadius:10,padding:"13px",fontFamily:"inherit",fontSize:14,fontWeight:700,cursor:busy?"not-allowed":"pointer"}}>{busy?"Activating… please wait":"🔐 Activate ZATCA Phase 2"}</button>
+            {(() => {
+              const F=({label,field,value,setValue,placeholder,numeric,maxLen})=>{
+                const c=REG_CHECKS[field];
+                const touched=String(value||"").length>0;
+                const ok=c?c.ok(value):true;
+                return(
+                  <div style={{marginTop:14}}>
+                    <label style={labelStyle}>{label}</label>
+                    <input value={value}
+                      onChange={e=>setValue(numeric?e.target.value.replace(/\D/g,"").slice(0,maxLen):e.target.value)}
+                      inputMode={numeric?"numeric":undefined}
+                      placeholder={placeholder}
+                      style={{...inputStyle,borderColor:touched?(ok?"#16a34a":"#dc2626"):C.border,fontFamily:numeric?"monospace":"inherit"}}/>
+                    <div style={{fontSize:10,color:touched&&!ok?"#dc2626":C.textLight,marginTop:3}}>{c?.hint}</div>
+                  </div>
+                );
+              };
+              return(
+                <>
+                  <F label="Company / VAT Name" field="companyName" value={companyName} setValue={setCompanyName} placeholder="Registered business name"/>
+                  <F label="VAT Number" field="vatNumber" value={vatNumber} setValue={setVatNumber} placeholder="3XXXXXXXXXXXXX3" numeric maxLen={15}/>
+                  <F label="Commercial Registration (CR) Number" field="crNumber" value={crNumber} setValue={setCrNumber} placeholder="1010101010" numeric maxLen={10}/>
+                  <div style={{marginTop:14}}>
+                    <label style={labelStyle}>Branch Name</label>
+                    <input value={branchName} onChange={e=>setBranchName(e.target.value)} style={inputStyle} placeholder="e.g. Main Branch"/>
+                  </div>
+                  <div style={{marginTop:14}}>
+                    <label style={labelStyle}>Industry</label>
+                    <input value={branchIndustry} onChange={e=>setBranchIndustry(e.target.value)} style={inputStyle} placeholder="e.g. Restaurant"/>
+                  </div>
+
+                  <div style={{marginTop:18,fontSize:12,fontWeight:800,color:C.zatca}}>National Address (العنوان الوطني)</div>
+                  <F label="Street Name" field="addrStreet" value={addrStreet} setValue={setAddrStreet} placeholder="e.g. King Fahd Road"/>
+                  <F label="Building Number" field="addrBuilding" value={addrBuilding} setValue={setAddrBuilding} placeholder="1234" numeric maxLen={4}/>
+                  <F label="Additional Number" field="addrAdditional" value={addrAdditional} setValue={setAddrAdditional} placeholder="5678" numeric maxLen={4}/>
+                  <F label="District" field="addrDistrict" value={addrDistrict} setValue={setAddrDistrict} placeholder="e.g. Al Olaya"/>
+                  <F label="City" field="addrCity" value={addrCity} setValue={setAddrCity} placeholder="e.g. Riyadh"/>
+                  <F label="Postal Code" field="addrPostal" value={addrPostal} setValue={setAddrPostal} placeholder="12345" numeric maxLen={5}/>
+                </>
+              );
+            })()}
+
+            {regMsg&&<div style={{marginTop:12,fontSize:12,padding:"9px 12px",borderRadius:8,
+              background:regMsg.startsWith("✅")?"#f0fdf4":"#fef2f2",color:regMsg.startsWith("✅")?"#166534":"#991b1b"}}>{regMsg}</div>}
+
+            <button onClick={saveRegistration} disabled={savingReg||!regComplete}
+              style={{marginTop:14,width:"100%",background:(savingReg||!regComplete)?C.textLight:"#0369a1",color:"#fff",border:"none",borderRadius:10,padding:"12px",fontFamily:"inherit",fontSize:13,fontWeight:700,cursor:(savingReg||!regComplete)?"not-allowed":"pointer"}}>
+              {savingReg?"Submitting…":regComplete?"💾 Submit registration for approval":"Complete every field above to submit"}
+            </button>
+
+            {/* ── Step 2: activation ────────────────────────────────────────
+                Gated on the admin having compared these details against the
+                actual certificates. Enforced server-side too — the signing
+                service refuses to onboard an unapproved registration — so this
+                is a clearer message, not the security boundary. */}
+            <div style={{marginTop:20,padding:"12px 14px",borderRadius:10,
+              background:regApproved?"#f0fdf4":"#fffbeb",border:`1px solid ${regApproved?"#86efac":"#fbbf24"}`}}>
+              <div style={{fontSize:13,fontWeight:800,marginBottom:4,color:regApproved?"#166534":"#92400e"}}>
+                Step 2 · {regApproved?"Approved — ready to activate":"Waiting for RestoPOS to approve your details"}
+              </div>
+              <div style={{fontSize:11,color:regApproved?"#166534":"#92400e",lineHeight:1.6}}>
+                {regApproved
+                  ? "Your details have been checked against your certificates. Generate an OTP in the FATOORA portal and activate below — the OTP is single-use and expires within the hour, so use it straight away."
+                  : regLoaded
+                    ? "Submit your details above, then RestoPOS checks them against your VAT and CR certificates. Do not generate an OTP yet — it expires within the hour and can only be used once."
+                    : "Checking your registration status…"}
+              </div>
+            </div>
+
+            <div style={{marginTop:14,opacity:regApproved?1:0.5}}>
+              <label style={labelStyle}>OTP from FATOORA Portal</label>
+              <input value={otp} onChange={e=>setOtp(e.target.value)} disabled={!regApproved} style={{...inputStyle,letterSpacing:3,fontWeight:700}} placeholder={regApproved?"Paste OTP here":"Available once approved"}/>
+            </div>
+
+            <button onClick={handleActivate} disabled={busy||!regApproved} style={{marginTop:18,width:"100%",background:(busy||!regApproved)?C.textLight:C.zatca,color:"#fff",border:"none",borderRadius:10,padding:"13px",fontFamily:"inherit",fontSize:14,fontWeight:700,cursor:(busy||!regApproved)?"not-allowed":"pointer"}}>{busy?"Activating… please wait":regApproved?"🔐 Activate ZATCA Phase 2":"🔒 Awaiting approval"}</button>
 
             {busy&&progressSteps.length>0&&(
               <div style={{marginTop:16,background:C.bg,border:`1px solid ${C.border}`,borderRadius:10,padding:14}}>
