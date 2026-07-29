@@ -702,7 +702,7 @@ async function clearanceB2BInvoice(inv) {
   return { success: true, invoiceHash: data.invoiceHash, qr: data.qr, icv: data.icv, signedXml: data.signedXml || null, clearedXml: legalXml };
 }
 
-async function generateZATCAInvoice({seller_name,seller_vat,seller_address,seller_cr="",seller_city="",items=[],is_credit_note=false,original_invoice_number="",invoice_type="B2C",buyer_name="",buyer_vat="",payMethod="Cash",discount=0}) {
+async function generateZATCAInvoice({seller_name,seller_vat,seller_address,seller_cr="",seller_city="",items=[],is_credit_note=false,original_invoice_number="",credit_note_reason="",invoice_type="B2C",buyer_name="",buyer_vat="",buyer_street="",buyer_building="",buyer_district="",buyer_city="",buyer_postal_code="",payMethod="Cash",discount=0}) {
   const icv = invoiceStorage.getNextCounter();
   const invoice_number = `INV-${String(icv).padStart(6,"0")}`;
   const timestamp = new Date().toISOString();
@@ -711,7 +711,10 @@ async function generateZATCAInvoice({seller_name,seller_vat,seller_address,selle
   const vat_amount = parseFloat((total*(15/115)).toFixed(2));
   const subtotal = parseFloat((total-vat_amount).toFixed(2));
   const prev_invoice_hash = invoiceStorage.getLastHash();
-  const partial = {invoice_number,uuid,timestamp,icv,seller_name,seller_vat,seller_address,seller_cr,seller_city,items,subtotal,vat_amount,total,prev_invoice_hash,is_credit_note,original_invoice_number,invoice_type,is_b2b:invoice_type==="B2B",buyer_name,buyer_vat,payMethod,discount};
+  // Buyer address is carried on the invoice because ZATCA requires it on every
+  // standard (B2B) document — street, city and postal code are mandatory, and a
+  // clearance request without them is rejected.
+  const partial = {invoice_number,uuid,timestamp,icv,seller_name,seller_vat,seller_address,seller_cr,seller_city,items,subtotal,vat_amount,total,prev_invoice_hash,is_credit_note,original_invoice_number,credit_note_reason,invoice_type,is_b2b:invoice_type==="B2B",buyer_name,buyer_vat,buyer_street,buyer_building,buyer_district,buyer_city,buyer_postal_code,payMethod,discount};
   // Hashing uses Web Crypto (needs HTTPS). If it ever fails, fall back to a
   // deterministic non-crypto hash so the invoice, QR and number STILL complete
   // and link — a missing hash must never block the QR/number from being stored.
@@ -3703,6 +3706,12 @@ function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1
   const [isB2B,setIsB2B]=useState(()=>total>=1000);
   const [buyerName,setBuyerName]=useState("");
   const [buyerVat,setBuyerVat]=useState("");
+  // ZATCA requires the buyer's National Address on a standard (B2B) invoice.
+  const [buyerStreet,setBuyerStreet]=useState("");
+  const [buyerBuilding,setBuyerBuilding]=useState("");
+  const [buyerDistrict,setBuyerDistrict]=useState("");
+  const [buyerCity,setBuyerCity]=useState("");
+  const [buyerPostal,setBuyerPostal]=useState("");
   const [buyerError,setBuyerError]=useState("");
   useEffect(()=>{ if(total>=1000) setIsB2B(true); },[total]);
   // Cash denomination tracker
@@ -3832,10 +3841,24 @@ function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1
   // ── Confirm ───────────────────────────────────────────────────────
   function handleConfirm(shouldPrint=true){
     if(!canConfirm)return;
-    // Validate buyer details when B2B or total >= SAR 1,000
-    if(isB2B && total>=1000){
-      if(!buyerName.trim()){setBuyerError("Buyer name is required for invoices SAR 1,000 and above.");return;}
-      if(buyerVat.trim() && !/^3\d{14}$/.test(buyerVat.trim())){setBuyerError("VAT number must be 15 digits starting with 3.");return;}
+    // A B2B invoice is submitted to ZATCA for clearance as a standard tax
+    // invoice, which legally requires the buyer's identity AND their National
+    // Address. ZATCA rejects a clearance request missing any of them, and an
+    // uncleared standard invoice cannot lawfully be given to the buyer — so
+    // these are blocking here rather than a surprise after the sale.
+    if(isB2B){
+      if(!buyerName.trim()){setBuyerError("Buyer / company name is required on a B2B tax invoice.");return;}
+      if(!/^3\d{13}3$/.test(buyerVat.trim())){setBuyerError("A B2B tax invoice needs the buyer's VAT number — 15 digits, starting and ending with 3.");return;}
+      if(!buyerStreet.trim()){setBuyerError("Buyer street name is required on a B2B tax invoice.");return;}
+      if(!buyerDistrict.trim()){setBuyerError("Buyer district is required on a B2B tax invoice.");return;}
+      if(!buyerCity.trim()){setBuyerError("Buyer city is required on a B2B tax invoice.");return;}
+      if(!/^\d{5}$/.test(buyerPostal.trim())){setBuyerError("Buyer postal code must be exactly 5 digits.");return;}
+      if(buyerBuilding.trim() && !/^\d{4}$/.test(buyerBuilding.trim())){setBuyerError("Buyer building number must be exactly 4 digits.");return;}
+    }else if(total>=1000){
+      // Simplified invoices of SAR 1,000 or more must carry the buyer's VAT
+      // number. This does not make the document a standard invoice, so no
+      // address is required.
+      if(buyerVat.trim() && !/^3\d{13}3$/.test(buyerVat.trim())){setBuyerError("VAT number must be 15 digits, starting and ending with 3.");return;}
     }
     setBuyerError("");
     localStorage.setItem("restopos_print_save_pref",String(shouldPrint));
@@ -3855,7 +3878,9 @@ function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1
       shouldPrint,payInfo,manualDiscountAmt,promoDiscountAmt,
       isDraft,
       {customerName:custName,customerPhone:custPhone,invoiceNote,orderType:localOrderType,billType:localBillType,
-       isB2B:isB2B&&total>=1000,buyerName:buyerName.trim(),buyerVat:buyerVat.trim()}
+       isB2B,buyerName:buyerName.trim(),buyerVat:buyerVat.trim(),
+       buyerStreet:buyerStreet.trim(),buyerBuilding:buyerBuilding.trim(),
+       buyerDistrict:buyerDistrict.trim(),buyerCity:buyerCity.trim(),buyerPostal:buyerPostal.trim()}
     );
   }
 
@@ -3915,7 +3940,31 @@ function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1
                   <input value={buyerVat} onChange={e=>{setBuyerVat(e.target.value.replace(/\D/g,"").slice(0,15));setBuyerError("");}}
                     placeholder="VAT / TRN (3XXXXXXXXXXXXXX, optional)" inputMode="numeric"
                     style={{width:"100%",padding:"8px 10px",border:"1px solid #cbd5e1",borderRadius:8,fontSize:12,fontFamily:"monospace",boxSizing:"border-box"}}/>
-                  {buyerVat.length>0&&<div style={{fontSize:10,color:buyerVat.length===15&&buyerVat.startsWith("3")?"#16a34a":"#dc2626"}}>{buyerVat.length===15&&buyerVat.startsWith("3")?"✓ Valid TRN":`${buyerVat.length}/15 digits${!buyerVat.startsWith("3")?" — must start with 3":""}`}</div>}
+                  {buyerVat.length>0&&<div style={{fontSize:10,color:/^3\d{13}3$/.test(buyerVat)?"#16a34a":"#dc2626"}}>{/^3\d{13}3$/.test(buyerVat)?"✓ Valid TRN":`${buyerVat.length}/15 digits${buyerVat.length===15?" — must start and end with 3":""}`}</div>}
+
+                  {/* Buyer National Address — ZATCA rejects a standard invoice
+                      without street, district, city and postal code. */}
+                  <div style={{fontSize:10,fontWeight:700,color:"#0369a1",marginTop:2}}>Buyer National Address (required for a tax invoice)</div>
+                  <input value={buyerStreet} onChange={e=>{setBuyerStreet(e.target.value);setBuyerError("");}}
+                    placeholder="Street name *"
+                    style={{width:"100%",padding:"8px 10px",border:"1px solid #cbd5e1",borderRadius:8,fontSize:12,fontFamily:"inherit",boxSizing:"border-box"}}/>
+                  <div style={{display:"flex",gap:7}}>
+                    <input value={buyerBuilding} onChange={e=>{setBuyerBuilding(e.target.value.replace(/\D/g,"").slice(0,4));setBuyerError("");}}
+                      placeholder="Building no. (4 digits)" inputMode="numeric"
+                      style={{flex:1,minWidth:0,padding:"8px 10px",border:"1px solid #cbd5e1",borderRadius:8,fontSize:12,fontFamily:"monospace",boxSizing:"border-box"}}/>
+                    <input value={buyerPostal} onChange={e=>{setBuyerPostal(e.target.value.replace(/\D/g,"").slice(0,5));setBuyerError("");}}
+                      placeholder="Postal code * (5 digits)" inputMode="numeric"
+                      style={{flex:1,minWidth:0,padding:"8px 10px",border:"1px solid #cbd5e1",borderRadius:8,fontSize:12,fontFamily:"monospace",boxSizing:"border-box"}}/>
+                  </div>
+                  <div style={{display:"flex",gap:7}}>
+                    <input value={buyerDistrict} onChange={e=>{setBuyerDistrict(e.target.value);setBuyerError("");}}
+                      placeholder="District *"
+                      style={{flex:1,minWidth:0,padding:"8px 10px",border:"1px solid #cbd5e1",borderRadius:8,fontSize:12,fontFamily:"inherit",boxSizing:"border-box"}}/>
+                    <input value={buyerCity} onChange={e=>{setBuyerCity(e.target.value);setBuyerError("");}}
+                      placeholder="City *"
+                      style={{flex:1,minWidth:0,padding:"8px 10px",border:"1px solid #cbd5e1",borderRadius:8,fontSize:12,fontFamily:"inherit",boxSizing:"border-box"}}/>
+                  </div>
+
                   {buyerError&&<div style={{fontSize:11,color:"#dc2626",fontWeight:600,padding:"5px 8px",background:"#fef2f2",borderRadius:6}}>⚠️ {buyerError}</div>}
                 </div>
               </div>
@@ -5264,6 +5313,11 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
           invoice_type:_isB2B?"B2B":"B2C",
           buyer_name:extraData.buyerName||"",
           buyer_vat:extraData.buyerVat||"",
+          buyer_street:extraData.buyerStreet||"",
+          buyer_building:extraData.buyerBuilding||"",
+          buyer_district:extraData.buyerDistrict||"",
+          buyer_city:extraData.buyerCity||"",
+          buyer_postal_code:extraData.buyerPostal||"",
         });
         zatcaInvForPrint=zatcaInv;
         setLastZatcaInvoice(zatcaInv);
@@ -8181,9 +8235,18 @@ function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,arch
               items:(origInv?.items||refundTarget.items||[]).map(i=>({name:i.name,price:i.price,qty:i.qty})),
               is_credit_note:true,
               original_invoice_number:refundTarget.id,
+              // BR-KSA-17: a credit note must state why it was issued.
+              credit_note_reason:refundTarget.refundReason||"Customer refund",
               invoice_type:origInv?.invoice_type||"B2C",
+              // A credit note against a standard invoice is itself a standard
+              // document, so it needs the same buyer details as the original.
               buyer_name:origInv?.buyer_name||"",
               buyer_vat:origInv?.buyer_vat||"",
+              buyer_street:origInv?.buyer_street||"",
+              buyer_building:origInv?.buyer_building||"",
+              buyer_district:origInv?.buyer_district||"",
+              buyer_city:origInv?.buyer_city||"",
+              buyer_postal_code:origInv?.buyer_postal_code||"",
               payMethod:refundTarget.payMethod||"Cash",
             });
             alert("✅ Credit note generated and queued for FATOORA reporting.");
