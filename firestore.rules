@@ -115,6 +115,13 @@ service cloud.firestore {
     match /config/announcement     { allow read: if isSignedIn(); allow write: if isAdmin(); }
     match /config/{doc}            { allow read, write: if false; }
     match /zatca_egs/{licenseKey}  { allow read, write: if false; }
+    // Operational health per device — certificate expiry, unreported invoice
+    // counts, chain position. Written only by the ZATCA service through the
+    // Admin SDK, and readable by the admin panel so an expiring certificate or
+    // an invoice that never reached ZATCA is visible before a merchant calls.
+    // Deliberately a separate collection from zatca_egs, which holds key
+    // material and stays closed to every browser including this one.
+    match /zatca_fleet_status/{licenseKey} { allow read: if isAdmin(); allow write: if false; }
     match /manager_logins/{key}    { allow read, write: if isAdmin(); }
     match /orgs/{orgId}            { allow read, write: if false; }
     match /activity_log/{doc}      { allow read, write: if isAdmin(); }
