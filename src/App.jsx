@@ -740,6 +740,33 @@ async function clearanceB2BInvoice(inv) {
   return { success: true, invoiceHash: data.invoiceHash, qr: data.qr, icv: data.icv, signedXml: data.signedXml || null, clearedXml: legalXml };
 }
 
+
+// Downloads the merchant's archived ZATCA documents for a period as a ZIP of
+// XML files. Retention is only meaningful if the documents can be produced
+// again — an audit asks for a period, not for database access. The cleared copy
+// of a standard invoice is included alongside the submitted one, since that is
+// the version that legally counts.
+async function exportZatcaArchive({from,to}={}){
+  const licenseKey=LS.get("restopos_license_v2")?.licenseKey;
+  if(!licenseKey)throw new Error("No license key found.");
+  const res=await fetch(`${ZATCA_SERVICE_URL}/zatca/invoices/export`,{
+    method:"POST",
+    headers:await zatcaAuthHeaders(),
+    body:JSON.stringify({licenseKey,from:from||null,to:to||null})
+  });
+  if(!res.ok){
+    const d=await res.json().catch(()=>({}));
+    throw new Error(d.error||`Export failed (${res.status})`);
+  }
+  const blob=await res.blob();
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  a.href=url;
+  a.download=`zatca-archive-${licenseKey}-${new Date().toISOString().slice(0,10)}.zip`;
+  document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),4000);
+}
+
 async function generateZATCAInvoice({seller_name,seller_vat,seller_address,seller_cr="",seller_city="",items=[],is_credit_note=false,original_invoice_number="",credit_note_reason="",invoice_type="B2C",buyer_name="",buyer_vat="",buyer_street="",buyer_building="",buyer_district="",buyer_city="",buyer_postal_code="",payMethod="Cash",discount=0}) {
   const icv = invoiceStorage.getNextCounter();
   const invoice_number = `INV-${String(icv).padStart(6,"0")}`;
@@ -849,9 +876,52 @@ function ZATCAInvoiceHistory(){
   // Fix #10: B2B clearance handler
   async function handleClearanceB2B(inv){setReporting(inv.invoice_number);try{await clearanceB2BInvoice(inv);const allInv=invoiceStorage.getAll().map(i=>i.invoice_number===inv.invoice_number?{...i,zatca_reported:true,zatca_cleared:true}:i);localStorage.setItem("zatca_invoices_v2",JSON.stringify(allInv));setInvoices(allInv);setQueue(fatooraQueue.getQueue());alert(`✅ B2B Invoice ${inv.invoice_number} cleared by ZATCA. You may now share it with the buyer.`);}catch(e){alert("Clearance failed: "+e.message);}setReporting(null);}
   const urgent=queue.filter(q=>q.status!=="reported"&&new Date(q.queued_at).getTime()<Date.now()-23*60*60*1000);
+
+  // ZATCA requires issued invoices to be retained, which only means anything if
+  // they can be produced again. This pulls the signed documents back out of the
+  // archive as a ZIP, so an audit does not need anyone with database access.
+  const [exportFrom,setExportFrom]=useState("");
+  const [exportTo,setExportTo]=useState("");
+  const [exporting,setExporting]=useState(false);
+  async function handleExport(){
+    setExporting(true);
+    try{
+      await exportZatcaArchive({from:exportFrom?`${exportFrom}T00:00:00.000Z`:null,
+                                to:exportTo?`${exportTo}T23:59:59.999Z`:null});
+    }catch(e){ alert("Export failed: "+e.message); }
+    setExporting(false);
+  }
+
   return(
     <div style={{color:C.text}}>
       {urgent.length>0&&<div style={{background:C.dangerLight,border:`1px solid ${C.danger}`,borderRadius:8,padding:"10px 16px",marginBottom:16,fontSize:13,fontWeight:600,color:C.danger}}>🚨 {urgent.length} invoice(s) approaching 24-hour FATOORA reporting deadline!</div>}
+
+      <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:"12px 14px",marginBottom:16}}>
+        <div style={{fontSize:13,fontWeight:800,marginBottom:3}}>📦 Export signed archive</div>
+        <div style={{fontSize:11,color:C.textMid,lineHeight:1.6,marginBottom:10}}>
+          Downloads the ZATCA-signed XML for a period as a ZIP, with a manifest. Cleared B2B invoices
+          include the copy ZATCA countersigned — that is the version that legally counts. Leave the dates
+          blank to export everything.
+        </div>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"flex-end"}}>
+          <div>
+            <div style={{fontSize:10,color:C.textLight,fontWeight:700,marginBottom:3}}>FROM</div>
+            <input type="date" value={exportFrom} onChange={e=>setExportFrom(e.target.value)}
+              style={{padding:"7px 9px",border:`1px solid ${C.border}`,borderRadius:7,fontSize:12,fontFamily:"inherit"}}/>
+          </div>
+          <div>
+            <div style={{fontSize:10,color:C.textLight,fontWeight:700,marginBottom:3}}>TO</div>
+            <input type="date" value={exportTo} onChange={e=>setExportTo(e.target.value)}
+              style={{padding:"7px 9px",border:`1px solid ${C.border}`,borderRadius:7,fontSize:12,fontFamily:"inherit"}}/>
+          </div>
+          <button onClick={handleExport} disabled={exporting}
+            style={{background:exporting?C.textLight:C.zatca,color:"#fff",border:"none",borderRadius:8,
+              padding:"9px 16px",fontSize:12,fontWeight:700,fontFamily:"inherit",
+              cursor:exporting?"not-allowed":"pointer"}}>
+            {exporting?"Preparing…":"⬇ Download ZIP"}
+          </button>
+        </div>
+      </div>
       <div style={{display:"flex",gap:6,marginBottom:16}}>
         {[["list","📋 Invoices"],["queue","⏳ Queue"],["xml","📄 XML Export"]].map(([id,label])=>(
           <button key={id} onClick={()=>setTab(id)} style={{background:tab===id?C.zatcaLight:"transparent",border:`1px solid ${tab===id?C.zatca:C.border}`,borderRadius:6,padding:"7px 14px",color:tab===id?C.zatca:C.textMid,cursor:"pointer",fontSize:12,fontFamily:"inherit"}}>{label}</button>

@@ -129,6 +129,15 @@ await t('admin CAN approve a ZATCA registration', () =>
   assertSucceeds(updateDoc(doc(admin, 'pending_activations', TRIAL), { zatcaApproved: true })));
 await t('admin CAN withdraw ZATCA approval', () =>
   assertSucceeds(updateDoc(doc(admin, 'pending_activations', TRIAL), { zatcaApproved: false })));
+// Fleet health is written by the ZATCA service through the Admin SDK. The admin
+// panel reads it so an expiring certificate or an unreported invoice surfaces
+// before a merchant phones in; nobody in a browser may forge it.
+await t('admin CAN read ZATCA fleet health', () =>
+  assertSucceeds(getDoc(doc(admin, 'zatca_fleet_status', TRIAL))));
+await t('client CANNOT read another shop ZATCA fleet health', () =>
+  assertFails(getDoc(doc(owner, 'zatca_fleet_status', 'REALCLIENT'))));
+await t('nobody in a browser can forge fleet health', () =>
+  assertFails(setDoc(doc(admin, 'zatca_fleet_status', TRIAL), { certificateDaysLeft: 999 })));
 await t('client records terms acceptance at registration', () =>
   assertSucceeds(setDoc(doc(stranger, 'pending_activations', 'TRIAL-0577777777'), {
     licenseKey: 'TRIAL-0577777777', status: 'pending', credentialsApproved: false,
