@@ -16232,6 +16232,67 @@ if(TRIAL){
   buildPresetKOT=(...a)=>trialStampHTML(_pkot(...a));
 }
 
+// ── ZATCA status chip ────────────────────────────────────────────────────
+//
+// A standing indicator in the header, so the reporting position is answerable
+// at a glance rather than only in the instant a toast is on screen. It replaces
+// a hardcoded "ZATCA P2" badge that claimed Phase 2 was active even on a
+// merchant who had never onboarded.
+//
+// The urgent state is deliberately distinct: ZATCA requires a simplified
+// invoice to reach them within 24 hours, so an item approaching that deadline
+// is a different problem from one that failed a minute ago.
+function ZatcaStatusChip({viewport}){
+  const [state,setState]=useState({phase2:false,pending:0,failed:0,urgent:0});
+
+  useEffect(()=>{
+    function refresh(){
+      const phase2=isPhase2Active();
+      if(!phase2){ setState({phase2:false,pending:0,failed:0,urgent:0}); return; }
+      const q=fatooraQueue.getQueue();
+      setState({
+        phase2:true,
+        pending:q.filter(x=>x.status==="pending").length,
+        failed:q.filter(x=>x.status==="failed").length,
+        urgent:fatooraQueue.getUrgent().length,
+      });
+    }
+    refresh();
+    const id=setInterval(refresh,15000);
+    window.addEventListener("restopos-invoice",refresh);
+    window.addEventListener(ZATCA_NOTIFY_EVENT,refresh);
+    return()=>{ clearInterval(id);
+      window.removeEventListener("restopos-invoice",refresh);
+      window.removeEventListener(ZATCA_NOTIFY_EVENT,refresh); };
+  },[]);
+
+  let look;
+  if(!state.phase2){
+    look={label:"ZATCA P1",fg:"#cbd5e1",bg:"rgba(148,163,184,0.22)",bd:"rgba(148,163,184,0.35)",
+      title:"Phase 1 — invoices carry a QR code but are not reported to ZATCA. Activate Phase 2 in Settings."};
+  }else if(state.urgent>0){
+    look={label:`ZATCA ! ${state.urgent}`,fg:"#fecaca",bg:"rgba(217,64,64,0.32)",bd:"rgba(217,64,64,0.6)",
+      title:`${state.urgent} invoice(s) approaching the 24-hour reporting deadline. Open the ZATCA screen.`};
+  }else if(state.failed>0){
+    look={label:`ZATCA \u26a0 ${state.failed}`,fg:"#fed7aa",bg:"rgba(224,123,0,0.3)",bd:"rgba(224,123,0,0.55)",
+      title:`${state.failed} invoice(s) failed to report. They are signed and valid; reporting will be retried.`};
+  }else if(state.pending>0){
+    look={label:`ZATCA \u23f3 ${state.pending}`,fg:"#fde68a",bg:"rgba(240,165,0,0.28)",bd:"rgba(240,165,0,0.5)",
+      title:`${state.pending} invoice(s) waiting to be reported to ZATCA.`};
+  }else{
+    look={label:"ZATCA \u2713",fg:"#7FFAB5",bg:"rgba(26,107,74,0.35)",bd:"rgba(26,107,74,0.55)",
+      title:"Phase 2 active \u2014 every invoice reported."};
+  }
+
+  return(
+    <span title={look.title} style={{fontSize:8,background:look.bg,color:look.fg,padding:"2px 5px",
+      borderRadius:4,fontWeight:700,border:`1px solid ${look.bd}`,whiteSpace:"nowrap",
+      display:viewport?.w<640?"none":"inline"}}>
+      {look.label}
+    </span>
+  );
+}
+
 // ── ZATCA invoice notifications ──────────────────────────────────────────
 //
 // Feedback after every submission, presented by severity rather than uniformly.
@@ -17074,7 +17135,7 @@ export default function App(){
           {/* Strict Live indicator — always visible when online (offline shown separately with queue count) */}
           {isOnline&&<span style={{fontSize:8,background:"rgba(46,204,113,0.25)",color:"#7FFAB5",padding:"2px 6px",borderRadius:4,fontWeight:800,border:"1px solid rgba(46,204,113,0.5)",whiteSpace:"nowrap"}}>● LIVE</span>}
 
-          <span style={{fontSize:8,background:"rgba(99,102,241,0.25)",color:"#c7d2fe",padding:"2px 5px",borderRadius:4,fontWeight:700,border:"1px solid rgba(99,102,241,0.35)",whiteSpace:"nowrap",display:viewport.w<640?"none":"inline"}}>ZATCA P2</span>
+          <ZatcaStatusChip viewport={viewport}/>
           <div style={{display:"flex",alignItems:"center",gap:2,background:"rgba(255,255,255,0.1)",borderRadius:5,padding:"2px 4px",border:"1px solid rgba(255,255,255,0.15)"}}>
             <div style={{display:"flex",alignItems:"center",gap:4}}>
               <button onClick={()=>handleScaleChange(uiScale-5)} style={{background:"rgba(255,255,255,0.1)",border:"none",color:"#fff",width:16,height:16,borderRadius:3,cursor:"pointer",fontSize:10,display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"inherit"}}>−</button>
