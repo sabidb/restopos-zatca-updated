@@ -109,6 +109,26 @@ await t('device CANNOT flip its own status to approved', () =>
   assertFails(updateDoc(doc(owner, 'pending_activations', TRIAL), { status: 'approved' })));
 await t('device CANNOT extend its own expiry', () =>
   assertFails(updateDoc(doc(owner, 'pending_activations', TRIAL), { customExpiryDate: '2099-01-01' })));
+// ZATCA registration follows the same split as device approval: the merchant
+// supplies the data, because they hold the VAT and CR certificates, and an
+// admin confirms it against those documents. The signing service will not mint
+// a cryptographic certificate against a taxpayer's identity without that
+// confirmation, so the subject of the check must not be able to grant it.
+await t('client CAN submit its own ZATCA registration', () =>
+  assertSucceeds(updateDoc(doc(owner, 'pending_activations', TRIAL), {
+    zatcaRegistration: {
+      vatNumber: '300000000000003', crNumber: '1010101010', companyName: 'Test Co',
+      address: { street: 'King Fahd Road', buildingNumber: '1234', additionalNumber: '5678',
+        district: 'Al Olaya', city: 'Riyadh', postalCode: '12345' } } })));
+await t('client CANNOT approve its own ZATCA registration', () =>
+  assertFails(updateDoc(doc(owner, 'pending_activations', TRIAL), { zatcaApproved: true })));
+await t('client CANNOT smuggle approval alongside a legitimate registration write', () =>
+  assertFails(updateDoc(doc(owner, 'pending_activations', TRIAL), {
+    zatcaRegistration: { vatNumber: '300000000000003' }, zatcaApproved: true })));
+await t('admin CAN approve a ZATCA registration', () =>
+  assertSucceeds(updateDoc(doc(admin, 'pending_activations', TRIAL), { zatcaApproved: true })));
+await t('admin CAN withdraw ZATCA approval', () =>
+  assertSucceeds(updateDoc(doc(admin, 'pending_activations', TRIAL), { zatcaApproved: false })));
 await t('client records terms acceptance at registration', () =>
   assertSucceeds(setDoc(doc(stranger, 'pending_activations', 'TRIAL-0577777777'), {
     licenseKey: 'TRIAL-0577777777', status: 'pending', credentialsApproved: false,
