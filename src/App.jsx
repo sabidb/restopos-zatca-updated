@@ -511,29 +511,52 @@ const fatooraQueue = {
 };
 
 // ZATCA Phase 2 microservice (signs invoice + reports to FATOORA)
-const ZATCA_SERVICE_URL = "https://restopos-zatca-service-production.up.railway.app";
-// Reads from onboarding saved status — true when Railway environment is production
+const ZATCA_SERVICE_URL = "https://zatca-service-82816670819.me-central1.run.app";
+// Reads from onboarding saved status — true when the service environment is production
 const IS_PRODUCTION_ENV = (()=>{ try{ return JSON.parse(localStorage.getItem("restopos_zatca_phase2_status")||"{}").environment==="production"; }catch{ return false; } })();
 
-// Build the simplified-invoice payload the microservice expects from a stored invoice
+// UN/CEFACT 4461 payment means codes. ZATCA requires one on every standard
+// (B2B) document and on every credit or debit note.
+const ZATCA_PAYMENT_MEANS = { cash:"10", card:"48", credit:"30", transfer:"30", bank:"42", online:"42", visa:"48", mada:"48" };
+function paymentMeansCode(payMethod) {
+  return ZATCA_PAYMENT_MEANS[String(payMethod||"cash").toLowerCase().trim()] || "10";
+}
+
+// Build the payload the signing service expects from a stored invoice.
+//
+// The invoice counter (ICV) and previous invoice hash (PIH) are deliberately
+// NOT sent. ZATCA requires an unbroken per-device chain — the counter must
+// increment by exactly one and each document must embed its predecessor's hash
+// — and a browser cannot guarantee that across tabs, retries and crashes. The
+// service allocates both inside a Firestore transaction and ignores anything
+// the client sends for them. The authoritative counter comes back on the
+// response as `icv`.
 function buildZatcaReportPayload(inv, licenseKey) {
+  const timestamp = inv.timestamp || new Date().toISOString();
+  const isCreditNote = inv.is_credit_note === true;
   return {
     licenseKey,
     invoice: {
-      props: {
-        invoice_counter_number: inv.icv,
-        invoice_serial_number: inv.invoice_number,
-        issue_date: (inv.timestamp || new Date().toISOString()).slice(0, 10),
-        issue_time: (inv.timestamp || new Date().toISOString()).slice(11, 19),
-        previous_invoice_hash: inv.prev_invoice_hash || "NWZlY2ViNjZmZmM4NmYzOGQ5NTI3ODZjNmQ2OTZjNzljMmRiYzIzOWRkNGU5MWIONjcyOWQ3M2EyN2ZiNTdlOQ==",
-        line_items: (inv.items || []).map((it, idx) => ({
-          id: String(idx + 1),
-          name: it.name || `Item ${idx + 1}`,
-          quantity: it.qty,
-          tax_exclusive_price: parseFloat((it.price / 1.15).toFixed(2)),
-          VAT_percent: 0.15
-        }))
-      }
+      document_type: isCreditNote ? "credit_note" : "invoice",
+      serial_number: inv.invoice_number,
+      issue_date: timestamp.slice(0, 10),
+      issue_time: timestamp.slice(11, 19),
+      payment_means_code: paymentMeansCode(inv.payMethod),
+      ...(isCreditNote ? {
+        original_invoice_number: inv.original_invoice_number || "",
+        reason: inv.credit_note_reason || "Refund issued to customer"
+      } : {}),
+      line_items: (inv.items || []).map((it, idx) => ({
+        id: String(idx + 1),
+        name: it.name || `Item ${idx + 1}`,
+        quantity: it.qty,
+        // Menu prices are VAT-inclusive, so the net price is derived here. It is
+        // deliberately NOT rounded first: rounding each unit to two decimals and
+        // then multiplying by quantity drifts from the gross the customer
+        // actually paid, and ZATCA validates that the totals tie out.
+        tax_exclusive_price: it.price / 1.15,
+        VAT_percent: 0.15
+      }))
     }
   };
 }
@@ -578,25 +601,38 @@ async function reportToFatoora(inv) {
     if (!res.ok || data.success !== true) {
       console.error("[ZATCA] Report failed:", data.error || res.status);
       fatooraQueue.markFailed(inv.invoice_number);
-      throw new Error(data.error || `ZATCA service returned ${res.status}`);
+      // A 400 carries per-field detail naming exactly what the payload got
+      // wrong; surfacing it beats a bare status code when diagnosing.
+      const detail = Array.isArray(data.details) && data.details.length
+        ? ` (${data.details.map(d => `${d.field}: ${d.message}`).join("; ")})`
+        : "";
+      throw new Error((data.error || `ZATCA service returned ${res.status}`) + detail);
     }
+
+    // A 202 means the invoice was signed and is legally valid, but ZATCA could
+    // not be reached. The customer's copy is fine to print and hand over — the
+    // service retries in the background inside the 24-hour reporting window, so
+    // this must NOT be treated as a failure or re-queued locally.
+    const queuedForRetry = data.queuedForRetry === true;
 
     // Persist signed hash + signed QR + signed XML back onto the stored invoice
     try {
       const all = invoiceStorage.getAll().map(i =>
         i.invoice_number === inv.invoice_number
-          ? { ...i, zatca_reported: true, phase: 2, signed_invoice_hash: data.invoiceHash || i.invoice_hash_base64, signed_qr_string: data.qr || i.qr_string, signed_xml: data.signedXml || null }
+          ? { ...i, zatca_reported: !queuedForRetry, zatca_pending_report: queuedForRetry, phase: 2, icv: data.icv ?? i.icv, signed_invoice_hash: data.invoiceHash || i.invoice_hash_base64, signed_qr_string: data.qr || i.qr_string, signed_xml: data.signedXml || null }
           : i
       );
       localStorage.setItem(ZATCA_STORAGE_KEY, JSON.stringify(all));
     } catch (e) { /* storage best-effort */ }
 
     fatooraQueue.markSent(inv.invoice_number);
-    console.log("[ZATCA] Reported:", inv.invoice_number, "hash:", data.invoiceHash);
+    console.log(queuedForRetry
+      ? `[ZATCA] Signed; reporting queued for retry: ${inv.invoice_number}`
+      : `[ZATCA] Reported: ${inv.invoice_number} hash: ${data.invoiceHash}`);
     // Fix: merge the report result into the SAME Firestore doc created at generation time
     // (invoiceStorage.save), instead of addDoc'ing a second duplicate archive entry.
-    invoiceStorage.archiveToFirestore(inv,{signed_invoice_hash:data.invoiceHash||inv.invoice_hash_base64,signed_qr_string:data.qr||inv.qr_string,signed_xml:data.signedXml||null,zatca_reported:true,reported_at:new Date().toISOString()}).catch(()=>{});
-    return { success: true, invoiceHash: data.invoiceHash, qr: data.qr, reportError: data.reportError || null };
+    invoiceStorage.archiveToFirestore(inv,{signed_invoice_hash:data.invoiceHash||inv.invoice_hash_base64,signed_qr_string:data.qr||inv.qr_string,signed_xml:data.signedXml||null,icv:data.icv??inv.icv,zatca_reported:!queuedForRetry,zatca_pending_report:queuedForRetry,reported_at:new Date().toISOString()}).catch(()=>{});
+    return { success: true, invoiceHash: data.invoiceHash, qr: data.qr, icv: data.icv, queuedForRetry, reportError: queuedForRetry ? (data.error || null) : null };
   } catch (err) {
     console.error("[ZATCA] Report error:", err.message);
     fatooraQueue.markFailed(inv.invoice_number);
@@ -610,17 +646,24 @@ async function clearanceB2BInvoice(inv) {
   const licenseKey = LS.get("restopos_license_v2")?.licenseKey;
   if (!licenseKey) throw new Error("No license key found.");
   const payload = buildZatcaReportPayload(inv, licenseKey);
-  // Signal clearance (not reporting) via invoice_type flag
-  payload.invoice.props.invoice_type = "standard";
-  // Buyer party — required for a standard B2B invoice. The service injects this
-  // into the AccountingCustomerParty and switches the invoice sub-type.
+  // The endpoint decides the document sub-type — /zatca/clearance is always
+  // standard — so no invoice_type flag is sent.
+  //
+  // Buyer party. ZATCA mandates the buyer's registration name, an identifier
+  // and a postal address (street, city and a 5-digit postal code) on a standard
+  // invoice; a request missing any of them is rejected with the field names.
   payload.invoice.buyer = {
     name: inv.buyer_name || "",
     vat_number: inv.buyer_vat || "",
     id: inv.buyer_vat || "",
     id_scheme: "TIN",
-    street: inv.buyer_address || inv.customer_address || "",
-    city: inv.buyer_city || inv.seller_city || "",
+    address: {
+      street: inv.buyer_street || inv.buyer_address || inv.customer_address || "",
+      building: inv.buyer_building || "",
+      district: inv.buyer_district || "",
+      city: inv.buyer_city || "",
+      postal_zone: inv.buyer_postal_code || ""
+    }
   };
   const res = await fetch(`${ZATCA_SERVICE_URL}/zatca/clearance`, {
     method: "POST",
@@ -628,15 +671,25 @@ async function clearanceB2BInvoice(inv) {
     body: JSON.stringify(payload)
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok || data.success !== true) {
+  if (!res.ok || data.success !== true || data.cleared !== true) {
     fatooraQueue.markFailed(inv.invoice_number);
-    throw new Error(data.error || `Clearance failed: ${res.status}`);
+    const detail = Array.isArray(data.details) && data.details.length
+      ? ` (${data.details.map(d => `${d.field}: ${d.message}`).join("; ")})`
+      : Array.isArray(data.zatcaErrors) && data.zatcaErrors.length
+        ? ` (${data.zatcaErrors.map(e => e.message || e).join("; ")})`
+        : "";
+    // Unlike B2C reporting there is no retry path here: an uncleared standard
+    // invoice cannot lawfully be issued to the buyer, so this has to fail loudly.
+    throw new Error((data.error || `Clearance failed: ${res.status}`) + detail);
   }
-  // Write cleared status + signed XML back to storage
+  // ZATCA returns the invoice countersigned with its own stamp. THAT document is
+  // the legal invoice — it is what must be stored, printed and sent to the
+  // buyer, not the copy this device signed.
+  const legalXml = data.clearedInvoiceXml || data.signedXml || null;
   try {
     const all = invoiceStorage.getAll().map(i =>
       i.invoice_number === inv.invoice_number
-        ? { ...i, zatca_reported: true, zatca_cleared: true, phase: 2, signed_invoice_hash: data.invoiceHash || i.invoice_hash_base64, signed_qr_string: data.qr || i.qr_string, signed_xml: data.signedXml || null }
+        ? { ...i, zatca_reported: true, zatca_cleared: true, phase: 2, icv: data.icv ?? i.icv, signed_invoice_hash: data.invoiceHash || i.invoice_hash_base64, signed_qr_string: data.qr || i.qr_string, signed_xml: data.signedXml || null, cleared_xml: legalXml }
         : i
     );
     localStorage.setItem(ZATCA_STORAGE_KEY, JSON.stringify(all));
@@ -645,8 +698,8 @@ async function clearanceB2BInvoice(inv) {
   console.log("[ZATCA] B2B Cleared:", inv.invoice_number);
   // Fix: merge the clearance result into the SAME Firestore doc created at generation time
   // (invoiceStorage.save), instead of addDoc'ing a second duplicate archive entry.
-  invoiceStorage.archiveToFirestore(inv,{zatca_reported:true,zatca_cleared:true,signed_invoice_hash:data.invoiceHash||inv.invoice_hash_base64,signed_qr_string:data.qr||inv.qr_string,signed_xml:data.signedXml||null,cleared_at:new Date().toISOString()}).catch(()=>{});
-  return { success: true, invoiceHash: data.invoiceHash, qr: data.qr, signedXml: data.signedXml || null };
+  invoiceStorage.archiveToFirestore(inv,{zatca_reported:true,zatca_cleared:true,icv:data.icv??inv.icv,signed_invoice_hash:data.invoiceHash||inv.invoice_hash_base64,signed_qr_string:data.qr||inv.qr_string,signed_xml:data.signedXml||null,cleared_xml:legalXml,cleared_at:new Date().toISOString()}).catch(()=>{});
+  return { success: true, invoiceHash: data.invoiceHash, qr: data.qr, icv: data.icv, signedXml: data.signedXml || null, clearedXml: legalXml };
 }
 
 async function generateZATCAInvoice({seller_name,seller_vat,seller_address,seller_cr="",seller_city="",items=[],is_credit_note=false,original_invoice_number="",invoice_type="B2C",buyer_name="",buyer_vat="",payMethod="Cash",discount=0}) {
@@ -750,7 +803,7 @@ function ZATCAInvoiceHistory(){
     window.addEventListener("restopos-invoice",onInv);
     return()=>window.removeEventListener("restopos-invoice",onInv);
   },[]);
-  async function handleReportToFatoora(inv){setReporting(inv.invoice_number);try{await reportToFatoora(inv);const allInv=invoiceStorage.getAll().map(i=>i.invoice_number===inv.invoice_number?{...i,zatca_reported:true}:i);localStorage.setItem("zatca_invoices_v2",JSON.stringify(allInv));setInvoices(allInv);setQueue(fatooraQueue.getQueue());alert(`✅ Invoice ${inv.invoice_number} reported to FATOORA successfully.`);}catch(e){alert("Failed to report: "+e.message);}setReporting(null);}
+  async function handleReportToFatoora(inv){setReporting(inv.invoice_number);try{const r=await reportToFatoora(inv);const allInv=invoiceStorage.getAll().map(i=>i.invoice_number===inv.invoice_number?{...i,zatca_reported:!r.queuedForRetry,zatca_pending_report:!!r.queuedForRetry}:i);localStorage.setItem("zatca_invoices_v2",JSON.stringify(allInv));setInvoices(allInv);setQueue(fatooraQueue.getQueue());alert(r.queuedForRetry?`✅ Invoice ${inv.invoice_number} signed and valid to give the customer.\n\nZATCA could not be reached just now — reporting will retry automatically within the 24-hour window. No action needed.`:`✅ Invoice ${inv.invoice_number} reported to FATOORA successfully.`);}catch(e){alert("Failed to report: "+e.message);}setReporting(null);}
   // Fix #10: B2B clearance handler
   async function handleClearanceB2B(inv){setReporting(inv.invoice_number);try{await clearanceB2BInvoice(inv);const allInv=invoiceStorage.getAll().map(i=>i.invoice_number===inv.invoice_number?{...i,zatca_reported:true,zatca_cleared:true}:i);localStorage.setItem("zatca_invoices_v2",JSON.stringify(allInv));setInvoices(allInv);setQueue(fatooraQueue.getQueue());alert(`✅ B2B Invoice ${inv.invoice_number} cleared by ZATCA. You may now share it with the buyer.`);}catch(e){alert("Clearance failed: "+e.message);}setReporting(null);}
   const urgent=queue.filter(q=>q.status!=="reported"&&new Date(q.queued_at).getTime()<Date.now()-23*60*60*1000);
@@ -11805,6 +11858,34 @@ function ZATCASetup({license,sales=[]}){
     if(!companyName){setMsg("⚠️ Company name is required.");return;}
     if(!otp||otp.trim().length<4){setMsg("⚠️ Enter the OTP from the FATOORA portal.");return;}
     setBusy(true);setMsg("");
+
+    // Preflight before spending the OTP. A FATOORA OTP is single-use and expires
+    // within the hour, so an incomplete registration or a misconfigured key must
+    // surface here rather than after the taxpayer has already generated one.
+    try{
+      const pre=await fetch(`${ZATCA_SERVICE_URL}/zatca/preflight`,{
+        method:"POST",
+        headers:await zatcaAuthHeaders(),
+        body:JSON.stringify({licenseKey:license.licenseKey})
+      });
+      const preData=await pre.json().catch(()=>({}));
+      if(!pre.ok||preData.ready!==true){
+        const blocked=(preData.checks||[]).filter(c=>c.status==="blocked");
+        const missing=blocked.flatMap(c=>(c.missingFields||[]).map(f=>`• ${f.field} — ${f.message}`));
+        setMsg(
+          "⚠️ Not ready to activate — your OTP has NOT been used.\n\n"+
+          (blocked.map(c=>`• ${c.detail}`).join("\n")||preData.error||"Preflight failed.")+
+          (missing.length?`\n\nMissing registration fields:\n${missing.join("\n")}`:"")
+        );
+        setBusy(false);
+        return;
+      }
+    }catch(e){
+      setMsg("⚠️ Could not reach the ZATCA service to run pre-checks: "+e.message);
+      setBusy(false);
+      return;
+    }
+
     setProgressSteps(STEP_LABELS.map(l=>({label:l,status:"pending"})));
     setCurrentStep("Starting activation...");
 
@@ -11828,26 +11909,49 @@ function ZATCASetup({license,sales=[]}){
         headers:await zatcaAuthHeaders(),
         body:JSON.stringify({licenseKey:license.licenseKey,vatNumber,companyName,branchName,otp:otp.trim()})
       });
-      clearInterval(stepTimer);
       const data=await res.json().catch(()=>({}));
-      if(!res.ok||data.success!==true){throw new Error(data.error||`Service returned ${res.status}`);}
+      if(!res.ok||data.success!==true){clearInterval(stepTimer);throw new Error(data.error||`Service returned ${res.status}`);}
 
-      // Mark all steps done
-      setProgressSteps(STEP_LABELS.map(l=>({label:l,status:"done"})));
-      setCurrentStep("Complete");
+      // Onboarding only yields a compliance certificate. ZATCA will not issue a
+      // production certificate until a signed sample of every document type the
+      // device declared has passed its compliance checks, so activation is not
+      // finished until this second call succeeds. It runs those checks itself.
+      setCurrentStep("Running ZATCA compliance checks...");
+      const act=await fetch(`${ZATCA_SERVICE_URL}/zatca/production-cert`,{
+        method:"POST",
+        headers:await zatcaAuthHeaders(),
+        body:JSON.stringify({licenseKey:license.licenseKey})
+      });
+      clearInterval(stepTimer);
+      const actData=await act.json().catch(()=>({}));
 
       LS.set(ZATCA_SETUP_STATUS_KEY,{
-        activated:true, branchName, vatNumber, companyName,
+        activated:act.ok&&actData.success===true, branchName, vatNumber, companyName,
         activatedAt:new Date().toISOString(),
         complianceRequestId:data.complianceRequestId,
-        productionReady:data.productionReady||false,
+        productionReady:act.ok&&actData.success===true,
         environment:data.environment||"sandbox"
       });
-      setStatus("activated");
-      setMsg(data.productionReady
-        ? "✅ Phase 2 fully activated. Your branch is certified with ZATCA and ready for live reporting."
-        : "✅ Activation complete. Contact your RestoPOS provider to finalise the production certificate.");
       setOtp("");
+
+      if(!act.ok||actData.success!==true){
+        // The compliance results name the exact BR-KSA rules each sample tripped.
+        const failed=(actData.results||[]).filter(r=>!r.passed);
+        setProgressSteps(prev=>prev.map(s=>s.status==="active"?{...s,status:"error"}:s));
+        setStatus("pending");
+        setMsg(
+          "⚠️ Onboarded, but ZATCA's compliance checks did not pass, so no production certificate was issued.\n\n"+
+          (failed.map(r=>`• ${r.invoiceType} ${r.documentType}: ${(r.errors||[]).map(e=>e.message||e).join("; ")||"failed"}`).join("\n")
+            ||actData.error||"See the service logs for detail.")
+        );
+        setBusy(false);
+        return;
+      }
+
+      setProgressSteps(STEP_LABELS.map(l=>({label:l,status:"done"})));
+      setCurrentStep("Complete");
+      setStatus("activated");
+      setMsg("✅ Phase 2 fully activated. Your branch is certified with ZATCA and ready for live reporting.");
     }catch(e){
       clearInterval(stepTimer);
       setProgressSteps(prev=>prev.map(s=>s.status==="active"?{...s,status:"error"}:s));
