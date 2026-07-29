@@ -60,7 +60,18 @@ service cloud.firestore {
         // all. verifyLogin settles it on the Admin SDK now, which bypasses
         // these rules; a client may still add itself to pendingDevices (below)
         // to ask, it just cannot answer.
-        'approvedDevices'
+        'approvedDevices',
+        // Confirmation that a human has compared this merchant's VAT and CR
+        // certificates against the registration they submitted. The ZATCA
+        // service refuses to mint a cryptographic certificate against a
+        // taxpayer's identity without it, so the subject of that check must not
+        // be able to grant it — the same reasoning as approvedDevices above.
+        //
+        // The registration data itself (`zatcaRegistration`) stays client
+        // writable on purpose: the merchant holds the certificates and enters
+        // their own VAT number, CR number and National Address. Only the
+        // verdict is reserved.
+        'zatcaApproved'
       ]);
     }
 
