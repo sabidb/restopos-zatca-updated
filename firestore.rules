@@ -26,6 +26,22 @@ service cloud.firestore {
       return request.auth != null;
     }
     // Single owner admin (admin panel signs in as this Firebase Auth account).
+    //
+    // ⚠️ The account must have emailVerified == true in Firebase Auth. An
+    // account created with email/password starts unverified, and publishing
+    // these rules against an unverified admin locks the panel out of every
+    // collection at once — the symptom is "Missing or insufficient permissions"
+    // with empty client and licence lists, which reads like data loss but is
+    // purely an authorisation failure. Check before publishing:
+    //
+    //   curl -s -X POST "https://identitytoolkit.googleapis.com/v1/projects/restopos-db/accounts:lookup" \
+    //     -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+    //     -H "x-goog-user-project: restopos-db" -H "Content-Type: application/json" \
+    //     -d '{"email":["8742sabithsaleem@gmail.com"]}'
+    //
+    // and if it reports false, POST accounts:update with
+    // {"localId":"<uid>","emailVerified":true}, then sign out and back in —
+    // the ID token caches the claim, so a refresh alone will not pick it up.
     function isAdmin() {
       return request.auth != null
         && request.auth.token.get('email', '') == '8742sabithsaleem@gmail.com'
