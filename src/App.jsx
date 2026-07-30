@@ -3416,9 +3416,9 @@ function BusinessRegistration({onNext,onLogin,onTryTrial,initial}){
   // occupies on wide screens (the grid is 2 columns); everything collapses to a
   // single column on narrow screens via the .reg-grid CSS rule below.
   const FIELDS=[
-    ["ownerName","Your Full Name (Owner / Contact)","Mohammed Al-Rashid",2],
+    ["ownerName","Your Full Name (Owner / Contact)","Mohammed Al-Rashid",1],
     ["businessName","Business Name (Arabic / English)","Al Baik Restaurant — مطعم البيك",2],
-    ["businessNameAr","اسم المنشأة بالعربية (اختياري)","مطعم البيك",2],
+    ["businessNameAr","اسم المنشأة بالعربية (اختياري)","مطعم البيك",1],
     ["email","Email Address (for password recovery)","your@email.com",1],
     ["phone","Phone Number","+966 50 000 0000",1],
     ["crNumber","CR Number — السجل التجاري (up to 12 digits)","1234567890",1],
@@ -3434,13 +3434,15 @@ function BusinessRegistration({onNext,onLogin,onTryTrial,initial}){
         .reg-shell{min-height:100vh;width:100%;display:grid;grid-template-columns:1fr;background:linear-gradient(135deg,#0a1628 0%,#1A3A5C 50%,#0a2818 100%);font-family:'Plus Jakarta Sans',sans-serif}
         .reg-hero{display:none}
         .reg-form-col{display:flex;justify-content:center;align-items:flex-start;padding:32px 24px;overflow-y:auto}
-        .reg-form-inner{width:100%;max-width:640px}
-        .reg-grid{display:grid;grid-template-columns:1fr;gap:14px}
+        .reg-form-inner{width:100%;max-width:860px}
+        /* Auto-flow grid: boxes sit next to each other and re-wrap to the
+           device width, so short fields pair (or triple) up instead of
+           stacking into one tall column. */
+        .reg-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
         .reg-field-full{grid-column:1 / -1}
         .reg-input{width:100%;padding:12px 14px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);border-radius:10px;font-size:14px;color:#fff;font-family:inherit;transition:border-color .15s,background .15s}
         .reg-input::placeholder{color:rgba(255,255,255,0.3)}
         .reg-input:focus{outline:none;border-color:rgba(46,204,113,0.65);background:rgba(255,255,255,0.12)}
-        @media(min-width:720px){.reg-grid{grid-template-columns:1fr 1fr}.reg-field-half{grid-column:span 1}}
         @media(min-width:1024px){
           .reg-shell{grid-template-columns:minmax(380px,40%) 1fr}
           .reg-hero{display:flex;flex-direction:column;justify-content:center;padding:56px 48px;position:sticky;top:0;height:100vh;background:linear-gradient(160deg,rgba(26,107,74,0.28),rgba(10,22,40,0.15) 55%,rgba(240,165,0,0.14));border-right:1px solid rgba(255,255,255,0.08)}
@@ -3538,7 +3540,7 @@ function BusinessRegistration({onNext,onLogin,onTryTrial,initial}){
             <div style={{background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:12,padding:"16px 18px",marginTop:18}}>
               <div style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.7)",marginBottom:12}}>📎 Upload Documents <span style={{color:"rgba(255,255,255,0.35)",fontWeight:400}}>(Optional — speeds up approval)</span></div>
               {fileError&&<div style={{fontSize:11,color:"#ff8080",marginBottom:8}}>⚠️ {fileError}</div>}
-              <div style={{display:"grid",gridTemplateColumns:"1fr",gap:10}}>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(240px,1fr))",gap:10}}>
                 <div>
                   <label style={{fontSize:11,fontWeight:600,color:"rgba(255,255,255,0.55)",display:"block",marginBottom:5}}>🏢 Commercial Registration (CR) — JPG, PNG or PDF, max 10MB</label>
                   <label style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",background:"rgba(255,255,255,0.06)",border:`1.5px dashed ${crFile?"rgba(46,204,113,0.5)":"rgba(255,255,255,0.2)"}`,borderRadius:8,cursor:"pointer"}}>
