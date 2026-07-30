@@ -3433,20 +3433,28 @@ function BusinessRegistration({onNext,onLogin,onTryTrial,initial}){
         *{box-sizing:border-box;margin:0;padding:0}
         .reg-shell{min-height:100vh;width:100%;display:grid;grid-template-columns:1fr;background:linear-gradient(135deg,#0a1628 0%,#1A3A5C 50%,#0a2818 100%);font-family:'Plus Jakarta Sans',sans-serif}
         .reg-hero{display:none}
-        .reg-form-col{display:flex;justify-content:center;align-items:flex-start;padding:32px 24px;overflow-y:auto}
-        .reg-form-inner{width:100%;max-width:860px}
-        /* Auto-flow grid: boxes sit next to each other and re-wrap to the
-           device width, so short fields pair (or triple) up instead of
-           stacking into one tall column. */
-        .reg-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
+        .reg-form-col{padding:32px 20px}
+        .reg-form-inner{width:100%;max-width:720px;margin:0 auto}
+        .reg-selectors{display:grid;grid-template-columns:1fr;gap:14px;margin-bottom:18px}
+        /* Auto-flow grid: boxes sit next to each other and re-wrap to fill the
+           available width, so short fields pack into rows instead of stacking
+           into one tall column. */
+        .reg-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}
         .reg-field-full{grid-column:1 / -1}
         .reg-input{width:100%;padding:12px 14px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);border-radius:10px;font-size:14px;color:#fff;font-family:inherit;transition:border-color .15s,background .15s}
         .reg-input::placeholder{color:rgba(255,255,255,0.3)}
         .reg-input:focus{outline:none;border-color:rgba(46,204,113,0.65);background:rgba(255,255,255,0.12)}
+        /* Desktop: full-screen split. The hero cell auto-stretches to the full
+           height of the row (no fixed 100vh), so there is never a dead gradient
+           band beneath it. The form column fills the rest of the width and its
+           fields flow into multiple columns to keep it short. */
         @media(min-width:1024px){
-          .reg-shell{grid-template-columns:minmax(380px,40%) 1fr}
-          .reg-hero{display:flex;flex-direction:column;justify-content:center;padding:56px 48px;position:sticky;top:0;height:100vh;background:linear-gradient(160deg,rgba(26,107,74,0.28),rgba(10,22,40,0.15) 55%,rgba(240,165,0,0.14));border-right:1px solid rgba(255,255,255,0.08)}
+          .reg-shell{grid-template-columns:minmax(320px,34%) 1fr}
+          .reg-hero{display:flex;flex-direction:column;justify-content:center;padding:56px 48px;background:linear-gradient(160deg,rgba(26,107,74,0.30),rgba(10,22,40,0.10) 55%,rgba(240,165,0,0.16));border-right:1px solid rgba(255,255,255,0.08)}
           .reg-hero-mobile{display:none !important}
+          .reg-form-col{padding:48px 56px;display:flex;align-items:center}
+          .reg-form-inner{max-width:1040px;margin:0}
+          .reg-selectors{grid-template-columns:1fr 1fr}
         }
       `}</style>
 
@@ -3483,31 +3491,33 @@ function BusinessRegistration({onNext,onLogin,onTryTrial,initial}){
             <div style={{fontSize:20,fontWeight:800,color:"#fff",marginBottom:6}}>Business Registration</div>
             <div style={{fontSize:13,color:"rgba(255,255,255,0.5)",marginBottom:22}}>Step 1 of 2 — Enter your business details</div>
 
-            {/* BUSINESS TYPE — drives Restaurant vs Supermarket mode */}
-            <div style={{marginBottom:18,padding:"14px 16px",background:"rgba(26,107,74,0.12)",border:"1px solid rgba(26,107,74,0.35)",borderRadius:12}}>
-              <div style={{fontSize:13,fontWeight:700,color:"#7FFAB5",marginBottom:10}}>🏬 What type of business is this?</div>
-              <div style={{display:"flex",gap:10}}>
-                {[["restaurant","🍽️","Restaurant","Tables, dine-in, kitchen tickets"],["supermarket","🛒","Supermarket","Barcode checkout, weighed items"]].map(([v,icon,label,desc])=>(
-                  <button key={v} onClick={()=>set("businessType",v)} type="button"
-                    style={{flex:1,padding:"12px 12px",borderRadius:10,border:`2px solid ${form.businessType===v?"#1A6B4A":"rgba(255,255,255,0.15)"}`,background:form.businessType===v?"rgba(26,107,74,0.25)":"rgba(255,255,255,0.05)",color:form.businessType===v?"#7FFAB5":"rgba(255,255,255,0.6)",fontFamily:"inherit",cursor:"pointer",textAlign:"left"}}>
-                    <div style={{fontSize:20,marginBottom:4}}>{icon}</div>
-                    <div style={{fontSize:13,fontWeight:800}}>{label}</div>
-                    <div style={{fontSize:10,opacity:0.75,marginTop:2,lineHeight:1.3}}>{desc}</div>
-                  </button>
-                ))}
+            <div className="reg-selectors">
+              {/* BUSINESS TYPE — drives Restaurant vs Supermarket mode */}
+              <div style={{padding:"14px 16px",background:"rgba(26,107,74,0.12)",border:"1px solid rgba(26,107,74,0.35)",borderRadius:12}}>
+                <div style={{fontSize:13,fontWeight:700,color:"#7FFAB5",marginBottom:10}}>🏬 What type of business is this?</div>
+                <div style={{display:"flex",gap:10}}>
+                  {[["restaurant","🍽️","Restaurant","Tables, dine-in, kitchen tickets"],["supermarket","🛒","Supermarket","Barcode checkout, weighed items"]].map(([v,icon,label,desc])=>(
+                    <button key={v} onClick={()=>set("businessType",v)} type="button"
+                      style={{flex:1,padding:"12px 12px",borderRadius:10,border:`2px solid ${form.businessType===v?"#1A6B4A":"rgba(255,255,255,0.15)"}`,background:form.businessType===v?"rgba(26,107,74,0.25)":"rgba(255,255,255,0.05)",color:form.businessType===v?"#7FFAB5":"rgba(255,255,255,0.6)",fontFamily:"inherit",cursor:"pointer",textAlign:"left"}}>
+                      <div style={{fontSize:20,marginBottom:4}}>{icon}</div>
+                      <div style={{fontSize:13,fontWeight:800}}>{label}</div>
+                      <div style={{fontSize:10,opacity:0.75,marginTop:2,lineHeight:1.3}}>{desc}</div>
+                    </button>
+                  ))}
+                </div>
               </div>
-            </div>
 
-            {/* ARE YOU THE OWNER? */}
-            <div style={{marginBottom:20,padding:"14px 16px",background:"rgba(240,165,0,0.1)",border:"1px solid rgba(240,165,0,0.3)",borderRadius:12}}>
-              <div style={{fontSize:13,fontWeight:700,color:"#F0A500",marginBottom:10}}>🏢 Are you the owner of this business?</div>
-              <div style={{display:"flex",gap:10}}>
-                {[["yes","✅ Yes, I am the owner"],["no","👤 No, I am a staff member"]].map(([v,label])=>(
-                  <button key={v} onClick={()=>setIsOwner(v==="yes")}
-                    style={{flex:1,padding:"9px 12px",borderRadius:8,border:`2px solid ${isOwner===(v==="yes")?"#F0A500":"rgba(255,255,255,0.15)"}`,background:isOwner===(v==="yes")?"rgba(240,165,0,0.2)":"rgba(255,255,255,0.05)",color:isOwner===(v==="yes")?"#F0A500":"rgba(255,255,255,0.6)",fontFamily:"inherit",fontSize:12,fontWeight:600,cursor:"pointer"}}>
-                    {label}
-                  </button>
-                ))}
+              {/* ARE YOU THE OWNER? */}
+              <div style={{padding:"14px 16px",background:"rgba(240,165,0,0.1)",border:"1px solid rgba(240,165,0,0.3)",borderRadius:12,display:"flex",flexDirection:"column"}}>
+                <div style={{fontSize:13,fontWeight:700,color:"#F0A500",marginBottom:10}}>🏢 Are you the owner of this business?</div>
+                <div style={{display:"flex",gap:10,flex:1}}>
+                  {[["yes","✅ Yes, I am the owner"],["no","👤 No, I am a staff member"]].map(([v,label])=>(
+                    <button key={v} onClick={()=>setIsOwner(v==="yes")}
+                      style={{flex:1,padding:"9px 12px",borderRadius:8,border:`2px solid ${isOwner===(v==="yes")?"#F0A500":"rgba(255,255,255,0.15)"}`,background:isOwner===(v==="yes")?"rgba(240,165,0,0.2)":"rgba(255,255,255,0.05)",color:isOwner===(v==="yes")?"#F0A500":"rgba(255,255,255,0.6)",fontFamily:"inherit",fontSize:12,fontWeight:600,cursor:"pointer"}}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
 
