@@ -2899,36 +2899,107 @@ function trialDetailsFromDoc(key,d){
   };
 }
 
+// Arabic strings for the whole registration page (hero, trial invite, form,
+// selectors, uploads, buttons, validation). Kept local to this screen so the
+// EN/AR toggle can translate every visible label without touching the app-wide
+// AR dictionary. rt() falls back to English when a key is missing.
+const REG_AR={
+  // Hero
+  "ZATCA PHASE 2 READY · KSA":"جاهز للمرحلة الثانية من زاتكا · السعودية",
+  "Run your restaurant or supermarket, fully ZATCA-compliant.":"أدر مطعمك أو سوبرماركتك بامتثال كامل لزاتكا.",
+  "Register your business to activate your license. Point-of-sale, tables, inventory, VAT reporting and e-invoicing — all in one place.":"سجّل منشأتك لتفعيل ترخيصك. نقاط البيع والطاولات والمخزون وتقارير ضريبة القيمة المضافة والفوترة الإلكترونية — كلها في مكان واحد.",
+  "Phase 2 e-invoicing":"الفوترة الإلكترونية للمرحلة الثانية",
+  "Cryptographic stamps, QR codes and reporting built in":"أختام تشفيرية ورموز QR وإبلاغ مدمج",
+  "Automatic cloud backup":"نسخ احتياطي سحابي تلقائي",
+  "Your data is safe and restores onto any licensed terminal":"بياناتك آمنة وتُستعاد على أي جهاز مرخّص",
+  "Full business suite":"منظومة أعمال متكاملة",
+  "POS, tables, CRM, inventory, reports and VAT dashboard":"نقاط البيع، الطاولات، إدارة العملاء، المخزون، التقارير ولوحة الضريبة",
+  // Trial invite
+  "No license key, no CR or VAT, no card — just your mobile number":"بدون مفتاح ترخيص، بدون سجل تجاري أو رقم ضريبي، بدون بطاقة — فقط رقم جوالك",
+  "Restaurant or Supermarket":"مطعم أو سوبرماركت",
+  "Pick your mode at signup and switch any time — both run in full":"اختر النمط عند التسجيل وبدّل في أي وقت — كلاهما يعمل بالكامل",
+  "Your own products":"منتجاتك الخاصة",
+  "Start clean and add your real menu or stock, or load a sample to look around":"ابدأ من جديد وأضف قائمتك أو مخزونك الحقيقي، أو حمّل عينة للاستكشاف",
+  "Saved automatically":"حفظ تلقائي",
+  "Your work is backed up to your mobile number — yesterday's sales are still there tomorrow":"يُحفظ عملك احتياطياً برقم جوالك — مبيعات الأمس تبقى موجودة غداً",
+  "The whole system":"النظام بالكامل",
+  "POS, tables, reports, VAT dashboard, CRM, inventory and printing":"نقاط البيع، الطاولات، التقارير، لوحة الضريبة، إدارة العملاء، المخزون والطباعة",
+  "The trial couldn't start — this browser won't let the app keep its storage separate. Try a normal (non-private) window, or allow site data for this site.":"تعذّر بدء التجربة — هذا المتصفح لا يسمح للتطبيق بعزل تخزينه. جرّب نافذة عادية (غير خاصة)، أو اسمح ببيانات الموقع لهذا الموقع.",
+  // Form
+  "Business Registration":"تسجيل المنشأة",
+  "Step 1 of 2 — Enter your business details":"الخطوة 1 من 2 — أدخل تفاصيل منشأتك",
+  "🏬 What type of business is this?":"🏬 ما نوع هذه المنشأة؟",
+  "Restaurant":"مطعم",
+  "Tables, dine-in, kitchen tickets":"طاولات، تناول بالمكان، تذاكر مطبخ",
+  "Supermarket":"سوبرماركت",
+  "Barcode checkout, weighed items":"دفع بالباركود، أصناف موزونة",
+  "🏢 Are you the owner of this business?":"🏢 هل أنت مالك هذه المنشأة؟",
+  "✅ Yes, I am the owner":"✅ نعم، أنا المالك",
+  "👤 No, I am a staff member":"👤 لا، أنا موظف",
+  "Your Full Name (Owner / Contact)":"اسمك الكامل (المالك / جهة الاتصال)",
+  "Business Name (Arabic / English)":"اسم المنشأة (عربي / إنجليزي)",
+  "Business Name in Arabic (optional)":"اسم المنشأة بالعربية (اختياري)",
+  "Email Address (for password recovery)":"البريد الإلكتروني (لاستعادة كلمة المرور)",
+  "Phone Number":"رقم الجوال",
+  "CR Number (up to 12 digits)":"رقم السجل التجاري (حتى 12 رقماً)",
+  "VAT / TRN Number (starts with 3)":"الرقم الضريبي (يبدأ بـ 3)",
+  "Business Address":"عنوان المنشأة",
+  "King Fahd Road, Riyadh":"طريق الملك فهد، الرياض",
+  "City":"المدينة",
+  "📎 Upload Documents":"📎 رفع المستندات",
+  "(Optional — speeds up approval)":"(اختياري — يسرّع الموافقة)",
+  "🏢 Commercial Registration (CR) — JPG, PNG or PDF, max 10MB":"🏢 السجل التجاري — JPG أو PNG أو PDF، بحد أقصى 10 ميجابايت",
+  "Click to upload CR document":"اضغط لرفع مستند السجل التجاري",
+  "🧾 VAT Registration Certificate — JPG, PNG or PDF, max 10MB":"🧾 شهادة التسجيل الضريبي — JPG أو PNG أو PDF، بحد أقصى 10 ميجابايت",
+  "Click to upload VAT certificate":"اضغط لرفع الشهادة الضريبية",
+  "Already a customer?":"عميل حالي؟",
+  "Log In":"تسجيل الدخول",
+  // Validation / file errors
+  "Please confirm whether you are the owner.":"يرجى تأكيد ما إذا كنت المالك.",
+  "Owner / contact name is required.":"اسم المالك / جهة الاتصال مطلوب.",
+  "Business name is required.":"اسم المنشأة مطلوب.",
+  "A valid email address is required — used for password recovery.":"يلزم إدخال بريد إلكتروني صحيح — يُستخدم لاستعادة كلمة المرور.",
+  "CR Number must be 7-12 digits (numbers only).":"يجب أن يكون رقم السجل التجاري من 7 إلى 12 رقماً (أرقام فقط).",
+  "VAT number must be 15 digits starting with 3 (or leave empty).":"يجب أن يكون الرقم الضريبي 15 رقماً يبدأ بـ 3 (أو اتركه فارغاً).",
+  "Address is required.":"العنوان مطلوب.",
+  "Phone number is required.":"رقم الجوال مطلوب.",
+  "The file must be less than 10MB.":"يجب أن يكون حجم الملف أقل من 10 ميجابايت.",
+  "Only JPG, PNG or PDF files allowed.":"يُسمح بملفات JPG أو PNG أو PDF فقط.",
+};
+function rt(lang,en){return lang==="ar"?(REG_AR[en]||en):en;}
+
 /** The full-width invitation. Sits above the registration form. */
-function TrialInviteSection({onStart}){
+function TrialInviteSection({onStart,lang}){
+  const L=s=>rt(lang,s);
+  const isAr=lang==="ar";
   // Set when a previous attempt couldn't isolate storage (private mode, blocked
   // site data). Without this the button would just appear to do nothing.
   const [failed]=useState(()=>consumeTrialStartError());
   return(
-    <div dir="ltr" style={{background:"linear-gradient(135deg,rgba(240,165,0,0.14),rgba(26,107,74,0.14))",border:"1px solid rgba(240,165,0,0.4)",borderRadius:20,padding:"22px 24px",marginBottom:18}}>
+    <div dir={isAr?"rtl":"ltr"} style={{background:"linear-gradient(135deg,rgba(240,165,0,0.14),rgba(26,107,74,0.14))",border:"1px solid rgba(240,165,0,0.4)",borderRadius:20,padding:"22px 24px",marginBottom:18,textAlign:"start"}}>
       <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
         <span style={{fontSize:22}}>🎁</span>
         <div>
-          <div style={{fontSize:16,fontWeight:800,color:"#fff"}}>Start a free {TRIAL_DAYS}-day trial</div>
-          <div style={{fontSize:12,color:"rgba(255,255,255,0.55)"}}>No license key, no CR or VAT, no card — just your mobile number</div>
+          <div style={{fontSize:16,fontWeight:800,color:"#fff"}}>{isAr?`ابدأ تجربة مجانية لمدة ${TRIAL_DAYS} يوماً`:`Start a free ${TRIAL_DAYS}-day trial`}</div>
+          <div style={{fontSize:12,color:"rgba(255,255,255,0.55)"}}>{L("No license key, no CR or VAT, no card — just your mobile number")}</div>
         </div>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(190px,1fr))",gap:8,margin:"14px 0"}}>
         {TRIAL_HIGHLIGHTS.map(([icon,title,desc])=>(
           <div key={title} style={{background:"rgba(0,0,0,0.18)",borderRadius:10,padding:"10px 12px"}}>
-            <div style={{fontSize:12,fontWeight:700,color:"#fff",marginBottom:2}}>{icon} {title}</div>
-            <div style={{fontSize:11,color:"rgba(255,255,255,0.5)",lineHeight:1.45}}>{desc}</div>
+            <div style={{fontSize:12,fontWeight:700,color:"#fff",marginBottom:2}}>{icon} {L(title)}</div>
+            <div style={{fontSize:11,color:"rgba(255,255,255,0.5)",lineHeight:1.45}}>{L(desc)}</div>
           </div>
         ))}
       </div>
       {failed&&(
         <div style={{background:"rgba(217,64,64,0.18)",border:"1px solid rgba(217,64,64,0.45)",borderRadius:10,padding:"10px 12px",marginBottom:10,fontSize:12,color:"#ffb3b3",lineHeight:1.5}}>
-          The trial couldn't start — this browser won't let the app keep its storage separate. Try a normal (non-private) window, or allow site data for this site.
+          {L("The trial couldn't start — this browser won't let the app keep its storage separate. Try a normal (non-private) window, or allow site data for this site.")}
         </div>
       )}
       <button onClick={onStart} type="button"
         style={{width:"100%",padding:14,background:"linear-gradient(135deg,#F0A500,#e09000)",color:"#1a1200",border:"none",borderRadius:12,fontSize:15,fontWeight:800,cursor:"pointer",fontFamily:"inherit"}}>
-        ▶ Start my free {TRIAL_DAYS}-day trial
+        {isAr?`▶ ابدأ تجربتي المجانية لمدة ${TRIAL_DAYS} يوماً`:`▶ Start my free ${TRIAL_DAYS}-day trial`}
       </button>
     </div>
   );
@@ -3391,86 +3462,117 @@ function BusinessRegistration({onNext,onLogin,onTryTrial,initial}){
   const [fileError,setFileError]=useState("");
   const set=(k,v)=>setForm(f=>({...f,[k]:v}));
 
+  // EN / AR toggle. Seeded from the app-wide language and persisted back to it,
+  // so choosing a language here carries through to the rest of the app.
+  const [lang,setLangState]=useState(()=>getLang());
+  const isAr=lang==="ar";
+  const tr=s=>rt(lang,s);
+  function switchLang(l){setLangState(l);try{setLangStore(l);}catch(e){}}
+
   function handleFile(e,type){
     const file=e.target.files[0];
     if(!file)return;
-    if(file.size>10*1024*1024){setFileError(type+" file must be less than 10MB.");return;}
-    if(!["image/jpeg","image/jpg","image/png","application/pdf"].includes(file.type)){setFileError("Only JPG, PNG or PDF files allowed.");return;}
+    if(file.size>10*1024*1024){setFileError(tr("The file must be less than 10MB."));return;}
+    if(!["image/jpeg","image/jpg","image/png","application/pdf"].includes(file.type)){setFileError(tr("Only JPG, PNG or PDF files allowed."));return;}
     setFileError("");
     if(type==="cr")setCrFile(file);
     else setVatFile(file);
   }
   function handleNext(){
     setError("");
-    if(isOwner===null)return setError("Please confirm whether you are the owner.");
-    if(!form.ownerName.trim())return setError("Owner / contact name is required.");
-    if(!form.businessName.trim())return setError("Business name is required.");
-    if(!form.email.trim()||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim()))return setError("A valid email address is required — used for password recovery.");
-    if(form.crNumber.trim()&&!/^\d{7,12}$/.test(form.crNumber.trim()))return setError("CR Number must be 7-12 digits (numbers only).");
-    if(form.vatNumber.trim()&&!/^3\d{14}$/.test(form.vatNumber.trim()))return setError("VAT number must be 15 digits starting with 3 (or leave empty).");
-    if(!form.address.trim())return setError("Address is required.");
-    if(!form.phone.trim())return setError("Phone number is required.");
+    if(isOwner===null)return setError(tr("Please confirm whether you are the owner."));
+    if(!form.ownerName.trim())return setError(tr("Owner / contact name is required."));
+    if(!form.businessName.trim())return setError(tr("Business name is required."));
+    if(!form.email.trim()||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim()))return setError(tr("A valid email address is required — used for password recovery."));
+    if(form.crNumber.trim()&&!/^\d{7,12}$/.test(form.crNumber.trim()))return setError(tr("CR Number must be 7-12 digits (numbers only)."));
+    if(form.vatNumber.trim()&&!/^3\d{14}$/.test(form.vatNumber.trim()))return setError(tr("VAT number must be 15 digits starting with 3 (or leave empty)."));
+    if(!form.address.trim())return setError(tr("Address is required."));
+    if(!form.phone.trim())return setError(tr("Phone number is required."));
     onNext({...form,email:form.email.trim().toLowerCase(),isOwner,crFile,vatFile});
   }
-  // Field layout for the form grid. `span` controls how many columns a field
-  // occupies on wide screens (the grid is 2 columns); everything collapses to a
-  // single column on narrow screens via the .reg-grid CSS rule below.
+  // Field layout for the form grid. `span:2` makes a field span the full row on
+  // wide screens; short fields (span:1) flow next to each other and re-wrap to
+  // whatever width the screen allows. Labels/placeholders run through tr().
   const FIELDS=[
     ["ownerName","Your Full Name (Owner / Contact)","Mohammed Al-Rashid",1],
     ["businessName","Business Name (Arabic / English)","Al Baik Restaurant — مطعم البيك",2],
-    ["businessNameAr","اسم المنشأة بالعربية (اختياري)","مطعم البيك",1],
+    ["businessNameAr","Business Name in Arabic (optional)","مطعم البيك",1],
     ["email","Email Address (for password recovery)","your@email.com",1],
     ["phone","Phone Number","+966 50 000 0000",1],
-    ["crNumber","CR Number — السجل التجاري (up to 12 digits)","1234567890",1],
+    ["crNumber","CR Number (up to 12 digits)","1234567890",1],
     ["vatNumber","VAT / TRN Number (starts with 3)","300000000000003",1],
     ["address","Business Address","King Fahd Road, Riyadh",2],
     ["city","City","Riyadh",1],
   ];
+  // Fields that hold Latin/numeric data stay left-to-right even in Arabic mode;
+  // free-text fields follow the chosen language.
+  const LTR_FIELDS=["email","phone","crNumber","vatNumber"];
+  const fieldDir=k=>k==="businessNameAr"?"rtl":LTR_FIELDS.includes(k)?"ltr":(isAr?"rtl":"ltr");
   return(
-    <div className="reg-shell">
+    <div className="reg-shell" dir={isAr?"rtl":"ltr"} style={{fontFamily:isAr?"'Tajawal',sans-serif":"'Plus Jakarta Sans',sans-serif"}}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Tajawal:wght@400;500;700&display=swap');
         *{box-sizing:border-box;margin:0;padding:0}
-        .reg-shell{min-height:100vh;width:100%;display:grid;grid-template-columns:1fr;background:linear-gradient(135deg,#0a1628 0%,#1A3A5C 50%,#0a2818 100%);font-family:'Plus Jakarta Sans',sans-serif;text-align:left}
+        html,body{width:100%;max-width:100%;overflow-x:hidden}
+        /* The shell never exceeds the viewport width on any device, and it lays
+           out as a single column that becomes a two-pane split only when there
+           is room. text-align:start + dir keep it correct in English and Arabic. */
+        .reg-shell{min-height:100vh;width:100%;max-width:100%;overflow-x:hidden;position:relative;display:grid;grid-template-columns:1fr;background:linear-gradient(135deg,#0a1628 0%,#1A3A5C 50%,#0a2818 100%);font-family:'Plus Jakarta Sans',sans-serif;text-align:start}
+        .reg-shell *{min-width:0}
         .reg-hero{display:none}
-        .reg-form-col{padding:32px 20px}
-        .reg-form-inner{width:100%;max-width:720px;margin:0 auto}
+        .reg-form-col{padding:clamp(20px,4vw,32px) clamp(16px,4vw,24px)}
+        .reg-form-inner{width:100%;max-width:640px;margin:0 auto}
         .reg-selectors{display:grid;grid-template-columns:1fr;gap:14px;margin-bottom:18px}
         /* Auto-flow grid: boxes sit next to each other and re-wrap to fill the
            available width, so short fields pack into rows instead of stacking
-           into one tall column. */
-        .reg-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}
+           into one tall column — and never overflow, because auto-fit drops a
+           column before it would. */
+        .reg-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px}
         .reg-field-full{grid-column:1 / -1}
-        .reg-input{width:100%;padding:12px 14px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);border-radius:10px;font-size:14px;color:#fff;font-family:inherit;transition:border-color .15s,background .15s}
+        .reg-input{width:100%;max-width:100%;padding:12px 14px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);border-radius:10px;font-size:14px;color:#fff;font-family:inherit;transition:border-color .15s,background .15s}
         .reg-input::placeholder{color:rgba(255,255,255,0.3)}
         .reg-input:focus{outline:none;border-color:rgba(46,204,113,0.65);background:rgba(255,255,255,0.12)}
+        .reg-langtoggle{position:absolute;top:14px;inset-inline-end:14px;z-index:20;display:flex;gap:4px;background:rgba(0,0,0,0.30);border:1px solid rgba(255,255,255,0.18);border-radius:999px;padding:4px;backdrop-filter:blur(6px)}
+        /* Tablet: give the form a comfortable wider measure. */
+        @media(min-width:640px){.reg-form-inner{max-width:760px}}
         /* Desktop: full-screen split. The hero cell auto-stretches to the full
            height of the row (no fixed 100vh), so there is never a dead gradient
            band beneath it. The form column fills the rest of the width and its
            fields flow into multiple columns to keep it short. */
         @media(min-width:1024px){
-          .reg-shell{grid-template-columns:minmax(320px,34%) 1fr}
-          .reg-hero{display:flex;flex-direction:column;justify-content:center;padding:56px 48px;background:linear-gradient(160deg,rgba(26,107,74,0.30),rgba(10,22,40,0.10) 55%,rgba(240,165,0,0.16));border-right:1px solid rgba(255,255,255,0.08)}
+          .reg-shell{grid-template-columns:minmax(300px,34%) 1fr}
+          .reg-hero{display:flex;flex-direction:column;justify-content:center;padding:clamp(40px,4vw,64px) clamp(32px,3.5vw,52px);background:linear-gradient(160deg,rgba(26,107,74,0.30),rgba(10,22,40,0.10) 55%,rgba(240,165,0,0.16));border-inline-end:1px solid rgba(255,255,255,0.08)}
           .reg-hero-mobile{display:none !important}
-          .reg-form-col{padding:48px 56px;display:flex;align-items:center}
-          .reg-form-inner{max-width:1040px;margin:0}
+          .reg-form-col{padding:clamp(40px,4vw,64px) clamp(40px,4vw,72px);display:flex;align-items:center}
+          .reg-form-inner{max-width:1120px;margin:0 auto}
           .reg-selectors{grid-template-columns:1fr 1fr}
         }
       `}</style>
 
+      {/* Language toggle — always visible, on every screen size */}
+      <div className="reg-langtoggle">
+        {[["en","EN"],["ar","ع"]].map(([l,lbl])=>(
+          <button key={l} onClick={()=>switchLang(l)} type="button" aria-pressed={lang===l}
+            style={{padding:"5px 14px",borderRadius:999,border:"none",cursor:"pointer",fontFamily:"'Plus Jakarta Sans',sans-serif",fontSize:12,fontWeight:800,minWidth:38,
+              background:lang===l?"linear-gradient(135deg,#1A6B4A,#F0A500)":"transparent",color:lang===l?"#fff":"rgba(255,255,255,0.6)"}}>
+            {lbl}
+          </button>
+        ))}
+      </div>
+
       {/* ── LEFT: branding hero (wide screens only) ─────────────────────── */}
       <div className="reg-hero">
         <div style={{display:"inline-flex",alignItems:"center",gap:14,marginBottom:32}}>
-          <div style={{width:56,height:56,background:"linear-gradient(135deg,#1A6B4A,#F0A500)",borderRadius:16,display:"flex",alignItems:"center",justifyContent:"center",fontSize:28,fontWeight:900,color:"#fff"}}>R</div>
-          <div><div style={{fontSize:30,fontWeight:900,color:"#fff",lineHeight:1}}>RestoPOS</div><div style={{fontSize:10,color:"rgba(255,255,255,0.5)",letterSpacing:"0.15em",marginTop:4}}>ZATCA PHASE 2 READY · KSA</div></div>
+          <div style={{width:56,height:56,background:"linear-gradient(135deg,#1A6B4A,#F0A500)",borderRadius:16,display:"flex",alignItems:"center",justifyContent:"center",fontSize:28,fontWeight:900,color:"#fff",flexShrink:0}}>R</div>
+          <div><div style={{fontSize:30,fontWeight:900,color:"#fff",lineHeight:1}}>RestoPOS</div><div style={{fontSize:10,color:"rgba(255,255,255,0.5)",letterSpacing:"0.12em",marginTop:4}}>{tr("ZATCA PHASE 2 READY · KSA")}</div></div>
         </div>
-        <div style={{fontSize:30,fontWeight:800,color:"#fff",lineHeight:1.25,marginBottom:14}}>Run your restaurant or supermarket, fully ZATCA-compliant.</div>
-        <div style={{fontSize:15,color:"rgba(255,255,255,0.55)",lineHeight:1.6,marginBottom:32}}>Register your business to activate your license. Point-of-sale, tables, inventory, VAT reporting and e-invoicing — all in one place.</div>
+        <div style={{fontSize:"clamp(24px,2.2vw,30px)",fontWeight:800,color:"#fff",lineHeight:1.25,marginBottom:14}}>{tr("Run your restaurant or supermarket, fully ZATCA-compliant.")}</div>
+        <div style={{fontSize:15,color:"rgba(255,255,255,0.55)",lineHeight:1.6,marginBottom:32}}>{tr("Register your business to activate your license. Point-of-sale, tables, inventory, VAT reporting and e-invoicing — all in one place.")}</div>
         <div style={{display:"flex",flexDirection:"column",gap:16}}>
           {[["🧾","Phase 2 e-invoicing","Cryptographic stamps, QR codes and reporting built in"],["☁️","Automatic cloud backup","Your data is safe and restores onto any licensed terminal"],["📊","Full business suite","POS, tables, CRM, inventory, reports and VAT dashboard"]].map(([icon,title,desc])=>(
             <div key={title} style={{display:"flex",gap:14,alignItems:"flex-start"}}>
-              <span style={{fontSize:22,lineHeight:1.2}}>{icon}</span>
-              <div><div style={{fontSize:15,fontWeight:700,color:"#fff"}}>{title}</div><div style={{fontSize:13,color:"rgba(255,255,255,0.5)",lineHeight:1.5}}>{desc}</div></div>
+              <span style={{fontSize:22,lineHeight:1.2,flexShrink:0}}>{icon}</span>
+              <div><div style={{fontSize:15,fontWeight:700,color:"#fff"}}>{tr(title)}</div><div style={{fontSize:13,color:"rgba(255,255,255,0.5)",lineHeight:1.5}}>{tr(desc)}</div></div>
             </div>
           ))}
         </div>
@@ -3481,27 +3583,27 @@ function BusinessRegistration({onNext,onLogin,onTryTrial,initial}){
         <div className="reg-form-inner">
           {/* Compact logo — shows on narrow screens where the hero is hidden */}
           <div className="reg-hero-mobile" style={{display:"flex",alignItems:"center",gap:12,marginBottom:24}}>
-            <div style={{width:44,height:44,background:"linear-gradient(135deg,#1A6B4A,#F0A500)",borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,fontWeight:900,color:"#fff"}}>R</div>
-            <div><div style={{fontSize:22,fontWeight:900,color:"#fff",lineHeight:1}}>RestoPOS</div><div style={{fontSize:9,color:"rgba(255,255,255,0.5)",letterSpacing:"0.15em"}}>ZATCA PHASE 2 READY · KSA</div></div>
+            <div style={{width:44,height:44,background:"linear-gradient(135deg,#1A6B4A,#F0A500)",borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,fontWeight:900,color:"#fff",flexShrink:0}}>R</div>
+            <div><div style={{fontSize:22,fontWeight:900,color:"#fff",lineHeight:1}}>RestoPOS</div><div style={{fontSize:9,color:"rgba(255,255,255,0.5)",letterSpacing:"0.12em"}}>{tr("ZATCA PHASE 2 READY · KSA")}</div></div>
           </div>
 
-          {onTryTrial&&<TrialInviteSection onStart={onTryTrial}/>}
+          {onTryTrial&&<TrialInviteSection onStart={onTryTrial} lang={lang}/>}
 
-          <div style={{background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:20,padding:"clamp(24px,4vw,36px)",backdropFilter:"blur(12px)"}}>
-            <div style={{fontSize:20,fontWeight:800,color:"#fff",marginBottom:6}}>Business Registration</div>
-            <div style={{fontSize:13,color:"rgba(255,255,255,0.5)",marginBottom:22}}>Step 1 of 2 — Enter your business details</div>
+          <div style={{background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:20,padding:"clamp(20px,3.5vw,36px)",backdropFilter:"blur(12px)"}}>
+            <div style={{fontSize:20,fontWeight:800,color:"#fff",marginBottom:6}}>{tr("Business Registration")}</div>
+            <div style={{fontSize:13,color:"rgba(255,255,255,0.5)",marginBottom:22}}>{tr("Step 1 of 2 — Enter your business details")}</div>
 
             <div className="reg-selectors">
               {/* BUSINESS TYPE — drives Restaurant vs Supermarket mode */}
               <div style={{padding:"14px 16px",background:"rgba(26,107,74,0.12)",border:"1px solid rgba(26,107,74,0.35)",borderRadius:12}}>
-                <div style={{fontSize:13,fontWeight:700,color:"#7FFAB5",marginBottom:10}}>🏬 What type of business is this?</div>
+                <div style={{fontSize:13,fontWeight:700,color:"#7FFAB5",marginBottom:10}}>{tr("🏬 What type of business is this?")}</div>
                 <div style={{display:"flex",gap:10}}>
                   {[["restaurant","🍽️","Restaurant","Tables, dine-in, kitchen tickets"],["supermarket","🛒","Supermarket","Barcode checkout, weighed items"]].map(([v,icon,label,desc])=>(
                     <button key={v} onClick={()=>set("businessType",v)} type="button"
-                      style={{flex:1,padding:"12px 12px",borderRadius:10,border:`2px solid ${form.businessType===v?"#1A6B4A":"rgba(255,255,255,0.15)"}`,background:form.businessType===v?"rgba(26,107,74,0.25)":"rgba(255,255,255,0.05)",color:form.businessType===v?"#7FFAB5":"rgba(255,255,255,0.6)",fontFamily:"inherit",cursor:"pointer",textAlign:"left"}}>
+                      style={{flex:1,padding:"12px 12px",borderRadius:10,border:`2px solid ${form.businessType===v?"#1A6B4A":"rgba(255,255,255,0.15)"}`,background:form.businessType===v?"rgba(26,107,74,0.25)":"rgba(255,255,255,0.05)",color:form.businessType===v?"#7FFAB5":"rgba(255,255,255,0.6)",fontFamily:"inherit",cursor:"pointer",textAlign:"start"}}>
                       <div style={{fontSize:20,marginBottom:4}}>{icon}</div>
-                      <div style={{fontSize:13,fontWeight:800}}>{label}</div>
-                      <div style={{fontSize:10,opacity:0.75,marginTop:2,lineHeight:1.3}}>{desc}</div>
+                      <div style={{fontSize:13,fontWeight:800}}>{tr(label)}</div>
+                      <div style={{fontSize:10,opacity:0.75,marginTop:2,lineHeight:1.3}}>{tr(desc)}</div>
                     </button>
                   ))}
                 </div>
@@ -3509,36 +3611,35 @@ function BusinessRegistration({onNext,onLogin,onTryTrial,initial}){
 
               {/* ARE YOU THE OWNER? */}
               <div style={{padding:"14px 16px",background:"rgba(240,165,0,0.1)",border:"1px solid rgba(240,165,0,0.3)",borderRadius:12,display:"flex",flexDirection:"column"}}>
-                <div style={{fontSize:13,fontWeight:700,color:"#F0A500",marginBottom:10}}>🏢 Are you the owner of this business?</div>
+                <div style={{fontSize:13,fontWeight:700,color:"#F0A500",marginBottom:10}}>{tr("🏢 Are you the owner of this business?")}</div>
                 <div style={{display:"flex",gap:10,flex:1}}>
                   {[["yes","✅ Yes, I am the owner"],["no","👤 No, I am a staff member"]].map(([v,label])=>(
                     <button key={v} onClick={()=>setIsOwner(v==="yes")}
                       style={{flex:1,padding:"9px 12px",borderRadius:8,border:`2px solid ${isOwner===(v==="yes")?"#F0A500":"rgba(255,255,255,0.15)"}`,background:isOwner===(v==="yes")?"rgba(240,165,0,0.2)":"rgba(255,255,255,0.05)",color:isOwner===(v==="yes")?"#F0A500":"rgba(255,255,255,0.6)",fontFamily:"inherit",fontSize:12,fontWeight:600,cursor:"pointer"}}>
-                      {label}
+                      {tr(label)}
                     </button>
                   ))}
                 </div>
               </div>
             </div>
 
-            {/* Business detail fields — responsive 2-column grid */}
+            {/* Business detail fields — responsive auto-flow grid */}
             <div className="reg-grid">
               {FIELDS.map(([k,label,ph,span])=>(
                 <div key={k} className={span===2?"reg-field-full":"reg-field-half"}>
-                  <label style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.6)",display:"block",marginBottom:5}}>{label}</label>
+                  <label style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.6)",display:"block",marginBottom:5}}>{tr(label)}</label>
                   {k==="crNumber"?(
                     <div style={{position:"relative"}}>
                       <input value={form[k]} onChange={e=>{const v=e.target.value.replace(/\D/g,"").slice(0,12);set(k,v);}}
-                        placeholder={ph} inputMode="numeric"
+                        placeholder={tr(ph)} inputMode="numeric" dir="ltr"
                         className="reg-input"
-                        style={{fontSize:16,fontFamily:"monospace",fontWeight:700,letterSpacing:"0.1em",borderColor:form.crNumber.length>0&&form.crNumber.length<10?"rgba(240,165,0,0.5)":form.crNumber.length>=10?"rgba(46,204,113,0.5)":undefined}}/>
-                      <span style={{position:"absolute",right:12,top:"50%",transform:"translateY(-50%)",fontSize:10,color:"rgba(255,255,255,0.35)",fontWeight:600}}>{form.crNumber.length}/12</span>
+                        style={{fontSize:16,fontFamily:"monospace",fontWeight:700,letterSpacing:"0.1em",paddingInlineEnd:44,borderColor:form.crNumber.length>0&&form.crNumber.length<10?"rgba(240,165,0,0.5)":form.crNumber.length>=10?"rgba(46,204,113,0.5)":undefined}}/>
+                      <span style={{position:"absolute",insetInlineEnd:12,top:"50%",transform:"translateY(-50%)",fontSize:10,color:"rgba(255,255,255,0.35)",fontWeight:600}}>{form.crNumber.length}/12</span>
                     </div>
                   ):(
                     <input value={form[k]} onChange={e=>{set(k,e.target.value);}}
-                      placeholder={ph}
-                      className="reg-input"
-                      style={{direction:k==="businessNameAr"?"rtl":"ltr"}}/>
+                      placeholder={tr(ph)} dir={fieldDir(k)}
+                      className="reg-input"/>
                   )}
                 </div>
               ))}
@@ -3548,32 +3649,32 @@ function BusinessRegistration({onNext,onLogin,onTryTrial,initial}){
 
             {/* Document Upload */}
             <div style={{background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:12,padding:"16px 18px",marginTop:18}}>
-              <div style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.7)",marginBottom:12}}>📎 Upload Documents <span style={{color:"rgba(255,255,255,0.35)",fontWeight:400}}>(Optional — speeds up approval)</span></div>
+              <div style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.7)",marginBottom:12}}>{tr("📎 Upload Documents")} <span style={{color:"rgba(255,255,255,0.35)",fontWeight:400}}>{tr("(Optional — speeds up approval)")}</span></div>
               {fileError&&<div style={{fontSize:11,color:"#ff8080",marginBottom:8}}>⚠️ {fileError}</div>}
-              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(240px,1fr))",gap:10}}>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(min(240px,100%),1fr))",gap:10}}>
                 <div>
-                  <label style={{fontSize:11,fontWeight:600,color:"rgba(255,255,255,0.55)",display:"block",marginBottom:5}}>🏢 Commercial Registration (CR) — JPG, PNG or PDF, max 10MB</label>
+                  <label style={{fontSize:11,fontWeight:600,color:"rgba(255,255,255,0.55)",display:"block",marginBottom:5}}>{tr("🏢 Commercial Registration (CR) — JPG, PNG or PDF, max 10MB")}</label>
                   <label style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",background:"rgba(255,255,255,0.06)",border:`1.5px dashed ${crFile?"rgba(46,204,113,0.5)":"rgba(255,255,255,0.2)"}`,borderRadius:8,cursor:"pointer"}}>
-                    <span style={{fontSize:20}}>{crFile?"✅":"📄"}</span>
-                    <span style={{fontSize:12,color:crFile?"#7FFAB5":"rgba(255,255,255,0.4)"}}>{crFile?crFile.name:"Click to upload CR document"}</span>
+                    <span style={{fontSize:20,flexShrink:0}}>{crFile?"✅":"📄"}</span>
+                    <span style={{fontSize:12,color:crFile?"#7FFAB5":"rgba(255,255,255,0.4)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{crFile?crFile.name:tr("Click to upload CR document")}</span>
                     <input type="file" accept=".jpg,.jpeg,.png,.pdf" onChange={e=>handleFile(e,"cr")} style={{display:"none"}}/>
                   </label>
                 </div>
                 <div>
-                  <label style={{fontSize:11,fontWeight:600,color:"rgba(255,255,255,0.55)",display:"block",marginBottom:5}}>🧾 VAT Registration Certificate — JPG, PNG or PDF, max 10MB</label>
+                  <label style={{fontSize:11,fontWeight:600,color:"rgba(255,255,255,0.55)",display:"block",marginBottom:5}}>{tr("🧾 VAT Registration Certificate — JPG, PNG or PDF, max 10MB")}</label>
                   <label style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",background:"rgba(255,255,255,0.06)",border:`1.5px dashed ${vatFile?"rgba(46,204,113,0.5)":"rgba(255,255,255,0.2)"}`,borderRadius:8,cursor:"pointer"}}>
-                    <span style={{fontSize:20}}>{vatFile?"✅":"📄"}</span>
-                    <span style={{fontSize:12,color:vatFile?"#7FFAB5":"rgba(255,255,255,0.4)"}}>{vatFile?vatFile.name:"Click to upload VAT certificate"}</span>
+                    <span style={{fontSize:20,flexShrink:0}}>{vatFile?"✅":"📄"}</span>
+                    <span style={{fontSize:12,color:vatFile?"#7FFAB5":"rgba(255,255,255,0.4)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{vatFile?vatFile.name:tr("Click to upload VAT certificate")}</span>
                     <input type="file" accept=".jpg,.jpeg,.png,.pdf" onChange={e=>handleFile(e,"vat")} style={{display:"none"}}/>
                   </label>
                 </div>
               </div>
             </div>
 
-            <button onClick={handleNext} style={{width:"100%",marginTop:20,padding:15,background:"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:12,fontSize:15,fontWeight:800,cursor:"pointer",fontFamily:"inherit"}}>Next: Enter License Key →</button>
+            <button onClick={handleNext} style={{width:"100%",marginTop:20,padding:15,background:"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:12,fontSize:15,fontWeight:800,cursor:"pointer",fontFamily:"inherit"}}>{isAr?"التالي: إدخال مفتاح الترخيص ←":"Next: Enter License Key →"}</button>
             <div style={{textAlign:"center",marginTop:16,paddingTop:16,borderTop:"1px solid rgba(255,255,255,0.1)"}}>
-              <span style={{fontSize:12,color:"rgba(255,255,255,0.4)"}}>Already a customer? </span>
-              <button onClick={onLogin} style={{background:"none",border:"none",color:"rgba(46,204,113,0.8)",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit",textDecoration:"underline"}}>Log In</button>
+              <span style={{fontSize:12,color:"rgba(255,255,255,0.4)"}}>{tr("Already a customer?")} </span>
+              <button onClick={onLogin} style={{background:"none",border:"none",color:"rgba(46,204,113,0.8)",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit",textDecoration:"underline"}}>{tr("Log In")}</button>
             </div>
           </div>
         </div>
