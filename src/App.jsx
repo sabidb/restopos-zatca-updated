@@ -5639,7 +5639,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     // kitchen ticket. Tries QZ Tray → ESC/POS serial → browser popup.
     // Skip for KOT Only — it has its own dedicated KOT print below.
     const kp=LS.get("restopos_kitchen_printer")||{};
-    if(kp.autoKOT&&!isKotOnly){
+    if(kp.autoKOT&&!isKotOnly&&!superMode){ // supermarket has no kitchen — never auto-print a KOT
       try{
         const newKot2=kotNo+1;LS.set("restopos_kot",newKot2);setKotNo(newKot2);
         const kotCart=[...cart];const kType=extraData.orderType||orderType;const kTable=selectedTable;
@@ -5676,6 +5676,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     // Window already closed by handleConfirm — just clear state
     setCart([]);
     setCustomerName("");setCustomerPhone("");setCustomerAddress("");setSelectedRow(null);
+    if(superMode)focusScanner(); // ready for the next customer's scan, hands-free
     // Sync to cloud
     try{
       const lk=LS.get("restopos_license_v2")?.licenseKey;
@@ -6017,6 +6018,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
       if(v==="⌫")setBarcodeInput(s=>s.slice(0,-1));
       else if(v==="↵"){if(barcodeInput.trim())handleBarcodeSearch(barcodeInput);}
       else setBarcodeInput(s=>s+v);
+      if(v!=="↵")focusScanner(); // keep the hardware scanner live after a tap
     };
     const keyStyle=(special)=>({padding:"14px 0",borderRadius:9,border:`1px solid ${C.border}`,background:special==="ent"?C.primaryLight:special==="del"?C.dangerLight:"#fff",color:special==="ent"?C.primary:special==="del"?C.danger:C.text,fontSize:18,fontWeight:800,cursor:"pointer",fontFamily:"inherit"});
     return(
