@@ -6528,6 +6528,88 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// GLOBAL BARCODE LISTENER
+// A hardware scanner works anywhere in the app — Settings, Advanced,
+// Inventory, anywhere except the billing POS (which handles scans itself).
+// On a scan it pops a small item-info window that auto-closes after 3s.
+// Detection is by keystroke speed: scanners fire far faster than a human
+// types, and fast characters are kept out of any focused field so a scan
+// while editing settings won't corrupt what you're typing.
+// ═══════════════════════════════════════════════════════════════════
+function GlobalScanPopup({items,active}){
+  const [hit,setHit]=useState(null); // {item,t} on a match · {miss,t} on unknown code
+  const buf=useRef({str:"",last:0});
+  const timer=useRef(null);
+  useEffect(()=>{
+    if(!active){setHit(null);return;}
+    const INTERVAL=50; // ms between keys — slower than any scanner, faster than any human
+    const MIN=3;       // shortest string we'll treat as a scanned code
+    function onKey(e){
+      if(e.ctrlKey||e.metaKey||e.altKey)return;
+      const b=buf.current;const now=performance.now();
+      if(e.key==="Enter"){
+        const code=b.str;b.str="";
+        if(code.length>=MIN){e.preventDefault();e.stopPropagation();show(code);}
+        return;
+      }
+      if(e.key&&e.key.length===1){
+        const gap=now-b.last;b.last=now;
+        if(gap>INTERVAL){b.str=e.key;} // new burst / human keystroke — leave the field alone
+        else{b.str+=e.key;e.preventDefault();e.stopPropagation();} // fast run = scanner; keep out of inputs
+      }
+    }
+    document.addEventListener("keydown",onKey,true);
+    return ()=>{document.removeEventListener("keydown",onKey,true);if(timer.current)clearTimeout(timer.current);};
+  },[active,items]);
+  function show(codeRaw){
+    const code=codeRaw.trim();
+    const item=items.find(i=>String(i.barcode||"")===code)||items.find(i=>i.name?.toLowerCase()===code.toLowerCase());
+    setHit(item?{item,t:Date.now()}:{miss:code,t:Date.now()});
+    if(timer.current)clearTimeout(timer.current);
+    timer.current=setTimeout(()=>setHit(null),3000);
+  }
+  if(!hit)return null;
+  const it=hit.item;
+  const low=it&&it.stock!=null&&Number(it.stock)<=(LS.get("restopos_low_stock_threshold")||5);
+  return(
+    <div key={hit.t} onClick={()=>setHit(null)} style={{position:"fixed",top:64,left:"50%",transform:"translateX(-50%)",zIndex:100000,width:340,maxWidth:"92vw",background:"#fff",borderRadius:14,boxShadow:"0 16px 50px rgba(0,0,0,0.35)",border:`1px solid ${C.border}`,overflow:"hidden",cursor:"pointer",animation:"scanPop 0.18s ease"}}>
+      <style>{`@keyframes scanPop{from{opacity:0;transform:translate(-50%,-10px)}to{opacity:1;transform:translate(-50%,0)}}@keyframes scanBar{from{width:100%}to{width:0%}}`}</style>
+      {it?(
+        <>
+          <div style={{padding:"12px 16px",background:C.zatcaLight,borderBottom:`1px solid ${C.border}`,display:"flex",alignItems:"center",gap:10}}>
+            <div style={{fontSize:24,width:42,height:42,borderRadius:10,background:"#fff",border:`1px solid ${C.border}`,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{it.image?<img src={it.image} alt="" style={{width:"100%",height:"100%",objectFit:"cover",borderRadius:10}}/>:"📦"}</div>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:15,fontWeight:800,color:C.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{it.name}</div>
+              {it.nameAr&&<div style={{fontSize:12,color:C.textMid,direction:"rtl"}}>{it.nameAr}</div>}
+            </div>
+            <span style={{fontSize:9,fontWeight:800,color:C.zatca,background:"#fff",border:`1px solid ${C.zatca}44`,padding:"3px 7px",borderRadius:6,flexShrink:0}}>SCANNED</span>
+          </div>
+          <div style={{padding:"12px 16px",display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+            {[["Price",fmtSAR(it.price)+(it.weighed?" / kg":"")],["In stock",(it.stock!=null?it.stock:"—")+(it.weighed?" kg":" pcs")],["Category",it.category||"—"],["Barcode",it.barcode||"—"]].map(([k,v])=>(
+              <div key={k}>
+                <div style={{fontSize:10,fontWeight:700,letterSpacing:"0.05em",textTransform:"uppercase",color:C.textLight}}>{k}</div>
+                <div style={{fontSize:14,fontWeight:700,color:k==="Price"?C.primary:C.text,fontFamily:k==="Barcode"?"monospace":"inherit"}}>{v}</div>
+              </div>
+            ))}
+          </div>
+          {low&&<div style={{margin:"0 16px 12px",fontSize:12,fontWeight:700,color:C.danger,background:C.dangerLight,borderRadius:8,padding:"6px 10px"}}>⚠️ Low stock</div>}
+        </>
+      ):(
+        <div style={{padding:"16px 18px",display:"flex",alignItems:"center",gap:12}}>
+          <div style={{fontSize:24}}>❓</div>
+          <div style={{minWidth:0}}>
+            <div style={{fontSize:14,fontWeight:800,color:C.text}}>No product found</div>
+            <div style={{fontSize:12,color:C.textMid,fontFamily:"monospace",wordBreak:"break-all"}}>{hit.miss}</div>
+          </div>
+        </div>
+      )}
+      {/* countdown bar → auto-closes in 3s */}
+      <div style={{height:3,background:C.primary,animation:"scanBar 3s linear forwards"}}/>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // LIVE CLOCK
 // ═══════════════════════════════════════════════════════════════════
 function LiveClock(){
@@ -17687,6 +17769,8 @@ export default function App(){
         {screen==="help"&&<Help license={license||undefined} lang={lang} onLogout={()=>{setCurrentUser(null);setStep("login");}}/>}
         </TabBoundary>
       </div>
+      {/* Scanner is live everywhere except the billing POS (which handles scans itself). */}
+      <GlobalScanPopup items={items} active={screen!=="pos"}/>
     </div>
     </ErrorBoundary>
   );
