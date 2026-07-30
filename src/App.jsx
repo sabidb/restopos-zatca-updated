@@ -5420,6 +5420,12 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   const [descModalIdx,setDescModalIdx]=useState(null);
   // Supermarket mode: barcode-first checkout + weighed items, no dine-in/tables/KOT.
   const superMode=isSupermarket();
+  // Which simplified till the client picked in Settings → Checkout: "A" Scan & Go,
+  // "B" Scan + Keypad, "C" Scan + Slim shelf. Read fresh so a Settings change
+  // applies as soon as the cashier returns to the POS.
+  const superLayout=superMode?(LS.get("restopos_super_layout")||"A"):null;
+  const [weighPick,setWeighPick]=useState(false); // ⚖ toolbar → pick a weighed product to weigh
+  const [shelfOpen,setShelfOpen]=useState(true); // Layout C quick-items shelf open/closed
   const [weighItem,setWeighItem]=useState(null);const [weighKg,setWeighKg]=useState("");
   const [scannedItem,setScannedItem]=useState(null);const [scanMiss,setScanMiss]=useState("");
   const [priceCheck,setPriceCheck]=useState(false); // scan-to-view-only (customer-facing)
@@ -5939,6 +5945,92 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
       return ai-bi;
     });
   },[items,activeCat,savedCats,favourites,effOrder]);
+  // ── Supermarket checkout pieces (shared by layouts A / B / C) ──────
+  // Quick-keys = the cashier's favourites; ideal for loose produce, bags and
+  // no-barcode items that can't be scanned.
+  const quickItems=items.filter(i=>i.active&&favourites.includes(i.id));
+  const weighedItems=items.filter(i=>i.active&&i.weighed);
+  const superScanBar=(
+    <input ref={barcodeRef} value={barcodeInput}
+      onChange={e=>setBarcodeInput(e.target.value)}
+      onKeyDown={e=>{if(e.key==="Enter"&&barcodeInput.trim())handleBarcodeSearch(barcodeInput);}}
+      placeholder={priceCheck?"🔍 Price check — scan to view":"🔲 Scan barcode or type code…"}
+      style={{flex:1,minWidth:0,padding:"12px 16px",border:`2px solid ${priceCheck?C.warning:C.primary}`,borderRadius:10,fontSize:16,fontWeight:600,fontFamily:"inherit",background:"#fff",color:C.text}}/>
+  );
+  const superToolBtn=(label,onClick,active=false,accent=C.primary)=>(
+    <button onClick={onClick} style={{flexShrink:0,height:44,padding:"0 14px",borderRadius:10,border:`1.5px solid ${active?accent:C.border}`,background:active?accent+"18":"#fff",color:active?accent:C.textMid,cursor:"pointer",fontSize:13,fontWeight:800,fontFamily:"inherit",whiteSpace:"nowrap"}}>{label}</button>
+  );
+  const superReceipt=(
+    <div style={{flex:1,overflowY:"auto",padding:"10px 12px",display:"flex",flexDirection:"column",gap:6}}>
+      {cart.length===0
+        ? <div style={{margin:"auto",textAlign:"center",color:C.textLight}}><div style={{fontSize:40,opacity:0.5}}>🛒</div><div style={{fontSize:14,marginTop:6}}>Scan an item to start</div></div>
+        : cart.map((item,idx)=>(
+          <div key={idx} onClick={()=>setSelectedRow(idx===selectedRow?null:idx)}
+            style={{display:"flex",alignItems:"center",gap:10,padding:"11px 14px",borderRadius:10,cursor:"pointer",background:selectedRow===idx?C.primaryLight:"#fff",border:`1.5px solid ${selectedRow===idx?C.primary:C.border}`,boxShadow:idx===0&&selectedRow==null?`0 0 0 2px ${C.primary}22`:"none"}}>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:15,fontWeight:700,color:C.text}}>{item.name}</div>
+              <div style={{fontSize:12,color:C.textMid}}>{fmtSAR(item.price)}{item.weighed?"/kg":""} × {item.qty}{item.weighed?" kg":""}</div>
+            </div>
+            <div style={{fontSize:16,fontWeight:900,color:C.primary,minWidth:70,textAlign:"right"}}>{fmtSAR(item.price*item.qty)}</div>
+          </div>
+        ))}
+    </div>
+  );
+  const superQtyBar=(selectedRow!==null&&cart[selectedRow]&&(
+    <div style={{padding:"8px 14px",borderTop:`1px solid ${C.border}`,background:"#fff",display:"flex",gap:8,alignItems:"center"}}>
+      <span style={{fontSize:13,color:C.textMid,flex:1,fontWeight:700}}>{cart[selectedRow]?.name}</span>
+      <button onClick={()=>updateQty(-1)} style={{width:38,height:38,borderRadius:9,border:`1px solid ${C.border}`,background:C.dangerLight,color:C.danger,fontSize:20,fontWeight:700,cursor:"pointer"}}>−</button>
+      <span style={{fontSize:16,fontWeight:800,minWidth:28,textAlign:"center"}}>{cart[selectedRow]?.qty}</span>
+      <button onClick={()=>updateQty(1)} style={{width:38,height:38,borderRadius:9,border:`1px solid ${C.border}`,background:C.successLight,color:C.success,fontSize:20,fontWeight:700,cursor:"pointer"}}>+</button>
+      <button onClick={()=>{setCart(prev=>prev.filter((_,i)=>i!==selectedRow));setSelectedRow(null);}} style={{padding:"0 14px",height:38,borderRadius:9,border:`1px solid ${C.danger}`,background:C.dangerLight,color:C.danger,fontSize:12,fontWeight:800,cursor:"pointer",fontFamily:"inherit"}}>Remove</button>
+    </div>
+  ));
+  const superTotals=(
+    <div style={{padding:"14px 16px",borderTop:`2px solid ${C.border}`,background:"#fff"}}>
+      <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}><span style={{fontSize:12,color:C.textMid}}>Items {cart.length} · Qty {cart.reduce((s,i)=>s+i.qty,0)}</span><span style={{fontSize:12,color:C.zatca,fontWeight:700}}>VAT 15% incl. {fmtSAR(vat)}</span></div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,paddingTop:8,borderTop:`1px solid ${C.border}`}}><span style={{fontSize:17,fontWeight:800}}>Amount Due</span><span style={{fontSize:22,fontWeight:900,color:C.primary}}>{fmtSAR(total)}</span></div>
+      <div style={{display:"flex",gap:8}}>
+        <button onClick={()=>{const printed=(sales||[]).filter(s=>s.status!=="voided");if(!printed.length){alert("No previous bills yet");return;}setPrevAllDays(false);setPrevIndex(0);setShowPrevBill(true);}}
+          title="Previous bill" style={{padding:"14px 16px",background:C.primaryLight,border:`1.5px solid ${C.primary}44`,color:C.primary,borderRadius:11,fontFamily:"inherit",fontSize:13,fontWeight:800,cursor:"pointer",whiteSpace:"nowrap"}}>🕐 Prev</button>
+        {cart.length>0&&<button onClick={()=>{setCart([]);setSelectedRow(null);focusScanner();}} title="Clear cart" style={{padding:"14px 16px",background:"#fff",border:`1.5px solid ${C.danger}44`,color:C.danger,borderRadius:11,fontFamily:"inherit",fontSize:13,fontWeight:800,cursor:"pointer"}}>🗑</button>}
+        <button onClick={()=>{if(cart.length)setShowPayment(true);}} disabled={cart.length===0} style={{flex:1,padding:"14px 0",background:cart.length===0?"#e0e0e0":"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:11,fontFamily:"inherit",fontSize:16,fontWeight:900,cursor:cart.length===0?"not-allowed":"pointer"}}>💳 Pay {cart.length>0?fmtSAR(total):""}</button>
+      </div>
+    </div>
+  );
+  const superQuickGrid=(
+    <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:6,padding:"8px",overflowY:"auto"}}>
+      {quickItems.length===0
+        ? <div style={{gridColumn:"1/-1",textAlign:"center",fontSize:11,color:C.textLight,padding:"14px 6px"}}>No quick items yet — tap ☆ on products to pin them here.</div>
+        : quickItems.map(item=>{
+          const col=colorForCat(effectiveCat(item,savedCats),savedCats);
+          return(
+            <button key={item.id} onClick={()=>addToCart(item)} style={{textAlign:"left",background:"#fff",border:`1px solid ${C.border}`,borderLeft:`4px solid ${col}`,borderRadius:9,padding:"9px 10px",cursor:"pointer",fontFamily:"inherit"}}>
+              <div style={{fontSize:12,fontWeight:700,color:C.text,lineHeight:1.25}}>{item.name}</div>
+              <div style={{fontSize:12,fontWeight:900,color:col,marginTop:2}}>{fmtSAR(item.price)}{item.weighed?"/kg":""}</div>
+            </button>
+          );
+        })}
+    </div>
+  );
+  const superKeypad=(()=>{
+    const press=v=>{
+      if(v==="⌫")setBarcodeInput(s=>s.slice(0,-1));
+      else if(v==="↵"){if(barcodeInput.trim())handleBarcodeSearch(barcodeInput);}
+      else setBarcodeInput(s=>s+v);
+    };
+    const keyStyle=(special)=>({padding:"14px 0",borderRadius:9,border:`1px solid ${C.border}`,background:special==="ent"?C.primaryLight:special==="del"?C.dangerLight:"#fff",color:special==="ent"?C.primary:special==="del"?C.danger:C.text,fontSize:18,fontWeight:800,cursor:"pointer",fontFamily:"inherit"});
+    return(
+      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6,padding:"8px",flexShrink:0,borderTop:`1px solid ${C.border}`}}>
+        {["1","2","3","4","5","6","7","8","9"].map(k=><button key={k} onClick={()=>press(k)} style={keyStyle()}>{k}</button>)}
+        <button onClick={()=>press("⌫")} style={keyStyle("del")}>⌫</button>
+        <button onClick={()=>press("0")} style={keyStyle()}>0</button>
+        <button onClick={()=>press("↵")} style={keyStyle("ent")}>↵</button>
+      </div>
+    );
+  })();
+  const superModeChip=(
+    <span style={{marginLeft:"auto",flexShrink:0,fontSize:11,fontWeight:800,color:"#fff",background:C.primary,padding:"5px 11px",borderRadius:999,whiteSpace:"nowrap"}}>🛒 Supermarket</span>
+  );
   return(
     <div style={{display:"flex",height:`calc(100vh - ${TRIAL?82:52}px)`,overflow:"hidden"}}>
       {/* Previous Bills — step backward through printed invoices */}
@@ -6100,6 +6192,26 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
       <style>{`@keyframes slideDown{from{opacity:0;transform:translateX(-50%) translateY(-20px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}`}</style>
       {showPayment&&<PaymentModal total={total} subtotal={subtotal} vat={vat} promos={promos} license={license} vno={vno} kotNo={kotNo} customers={LS.get("restopos_customers")||[]} customerName={customerName} customerPhone={customerPhone} orderType={orderType} onConfirm={confirmPayment} onClose={()=>setShowPayment(false)}/>}
       {showReceipt&&lastOrder&&<ReceiptModal order={lastOrder} license={license} zatcaInvoice={lastZatcaInvoice} onClose={()=>{setShowReceipt(false);setLastZatcaInvoice(null);}}/>}
+      {/* ⚖ Weigh picker — pick a weighed product when there's no grid to tap (Layout A/C) */}
+      {weighPick&&(
+        <div onClick={()=>setWeighPick(false)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:2000,padding:20}}>
+          <div onClick={e=>e.stopPropagation()} style={{background:"#fff",borderRadius:16,padding:20,width:420,maxWidth:"100%",maxHeight:"80vh",overflow:"auto",fontFamily:"inherit"}}>
+            <div style={{fontSize:16,fontWeight:800,color:C.text,marginBottom:4}}>⚖️ Weigh an item</div>
+            <div style={{fontSize:12.5,color:C.textMid,marginBottom:14}}>Pick a weighed product, then enter its weight.</div>
+            {weighedItems.length===0
+              ? <div style={{textAlign:"center",color:C.textLight,fontSize:13,padding:"20px 0"}}>No weighed products yet.<br/><span style={{fontSize:11}}>Mark items as “Weighed” in Menu / Products.</span></div>
+              : <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:8}}>
+                  {weighedItems.map(item=>(
+                    <button key={item.id} onClick={()=>{setWeighPick(false);addToCart(item);}} style={{textAlign:"left",background:C.bg,border:`1.5px solid ${C.border}`,borderRadius:10,padding:"11px 12px",cursor:"pointer",fontFamily:"inherit"}}>
+                      <div style={{fontSize:13,fontWeight:700,color:C.text}}>{item.name}</div>
+                      <div style={{fontSize:13,fontWeight:900,color:C.warning,marginTop:2}}>{fmtSAR(item.price)}/kg</div>
+                    </button>
+                  ))}
+                </div>}
+            <button onClick={()=>setWeighPick(false)} style={{width:"100%",marginTop:16,padding:"11px",border:`1.5px solid ${C.border}`,background:"#fff",color:C.textMid,borderRadius:10,fontFamily:"inherit",fontSize:14,fontWeight:700,cursor:"pointer"}}>Cancel</button>
+          </div>
+        </div>
+      )}
       {weighItem&&(()=>{const w=parseFloat(weighKg)||0;const lineTotal=(weighItem.price*w);return(
         <div onClick={()=>setWeighItem(null)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:2000,padding:20}}>
           <div onClick={e=>e.stopPropagation()} style={{background:"#fff",borderRadius:16,padding:24,width:360,maxWidth:"100%",fontFamily:"inherit"}}>
@@ -6219,6 +6331,69 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
           </div>
         );
       })()}
+      {superMode?(
+        // ═══ SIMPLIFIED SUPERMARKET TILL — Layout A / B / C (Settings → Checkout) ═══
+        <div style={{flex:1,display:"flex",flexDirection:"column",background:C.bg,overflow:"hidden"}}>
+          {/* Toolbar — a handful of buttons, not the full restaurant bar */}
+          <div style={{padding:"9px 12px",background:"#fff",borderBottom:`1px solid ${C.border}`,display:"flex",gap:8,alignItems:"center"}}>
+            <span style={{fontSize:16,fontWeight:900,color:C.primary,flexShrink:0,letterSpacing:"-0.01em"}}>RestoPos</span>
+            {superToolBtn(priceCheck?"🔍 Price Check ON":"🔍 Price check",()=>setPriceCheck(p=>!p),priceCheck,C.warning)}
+            {superToolBtn("⚖ Weigh",()=>setWeighPick(true))}
+            {superModeChip}
+          </div>
+          {/* Scan bar — always the focus of the screen */}
+          <div style={{padding:"10px 12px",display:"flex",gap:8,background:C.bg,flexShrink:0}}>{superScanBar}</div>
+          {superLayout==="B"?(
+            // ── B · Scan + Keypad ──
+            <>
+              <div style={{flex:1,display:"flex",overflow:"hidden"}}>
+                <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",borderRight:`1px solid ${C.border}`}}>
+                  {superReceipt}
+                  {superQtyBar}
+                </div>
+                <div style={{width:290,flexShrink:0,display:"flex",flexDirection:"column",background:C.bg,overflow:"hidden"}}>
+                  <div style={{padding:"8px 10px 2px",fontSize:10,fontWeight:800,letterSpacing:"0.08em",color:C.textLight}}>★ QUICK ITEMS</div>
+                  <div style={{flex:1,overflow:"hidden",display:"flex",flexDirection:"column"}}>{superQuickGrid}</div>
+                  {superKeypad}
+                </div>
+              </div>
+              {superTotals}
+            </>
+          ):superLayout==="C"?(
+            // ── C · Scan + Slim shelf ──
+            <>
+              {superReceipt}
+              {superQtyBar}
+              <div style={{background:"#fff",borderTop:`1px solid ${C.border}`,flexShrink:0}}>
+                <button onClick={()=>setShelfOpen(o=>!o)} style={{width:"100%",display:"flex",alignItems:"center",gap:6,padding:"7px 12px",background:"transparent",border:"none",cursor:"pointer",fontFamily:"inherit"}}>
+                  <span style={{fontSize:10,fontWeight:800,letterSpacing:"0.08em",color:C.textLight}}>★ QUICK ITEMS</span>
+                  <span style={{marginLeft:"auto",fontSize:12,color:C.textMid}}>{shelfOpen?"▾":"▸"}</span>
+                </button>
+                {shelfOpen&&(
+                  <div style={{display:"flex",gap:6,padding:"0 12px 10px",overflowX:"auto"}}>
+                    {quickItems.length===0
+                      ? <div style={{fontSize:11,color:C.textLight,padding:"6px 0"}}>No quick items — tap ☆ on products to pin them here.</div>
+                      : quickItems.map(item=>{const col=colorForCat(effectiveCat(item,savedCats),savedCats);return(
+                          <button key={item.id} onClick={()=>addToCart(item)} style={{flexShrink:0,minWidth:96,textAlign:"left",background:C.bg,border:`1px solid ${C.border}`,borderLeft:`4px solid ${col}`,borderRadius:9,padding:"9px 11px",cursor:"pointer",fontFamily:"inherit"}}>
+                            <div style={{fontSize:12,fontWeight:700,color:C.text,whiteSpace:"nowrap"}}>{item.name}</div>
+                            <div style={{fontSize:12,fontWeight:900,color:col,marginTop:2}}>{fmtSAR(item.price)}{item.weighed?"/kg":""}</div>
+                          </button>
+                        );})}
+                  </div>
+                )}
+              </div>
+              {superTotals}
+            </>
+          ):(
+            // ── A · Scan & Go (default) ──
+            <>
+              {superReceipt}
+              {superQtyBar}
+              {superTotals}
+            </>
+          )}
+        </div>
+      ):(<>
       {/* LEFT — Menu */}
       <div style={{flex:1,display:"flex",flexDirection:"column",borderRight:`1px solid ${C.border}`,background:C.bg,overflow:"hidden"}}>
         <div style={{padding:"8px 12px",background:C.zatcaLight,borderBottom:`1px solid ${C.border}`,display:"flex",gap:8,alignItems:"center"}}>
@@ -6345,6 +6520,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
           <button onClick={()=>{setCart([]);setSelectedRow(null);}} style={{width:"100%",marginTop:8,padding:"8px 0",background:"transparent",color:C.danger,border:`1px solid ${C.danger}30`,borderRadius:8,fontFamily:"inherit",fontSize:12,fontWeight:600,cursor:"pointer"}}>🗑 Clear Cart</button>
         </div>
       </div>
+      </>)}
     </div>
   );
 }
@@ -7910,10 +8086,70 @@ function KitchenPrinterSettings(){
     </Card>);
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// CHECKOUT LAYOUT PICKER (supermarket only) — choose the till layout A/B/C
+// ═══════════════════════════════════════════════════════════════════
+function CheckoutLayoutTab(){
+  const [choice,setChoice]=useState(()=>LS.get("restopos_super_layout")||"A");
+  function pick(id){setChoice(id);LS.set("restopos_super_layout",id);}
+  const OPTS=[
+    {id:"A",icon:"🧾",title:"Scan & Go",tagline:"Simplest — one scan, one list, one Pay",
+     desc:"No product grid at all. The scan box stays focused and the receipt fills the screen. Best for a fast lane where nearly everything has a barcode.",
+     bullets:["Scanner always focused","Big receipt + one giant Pay","⚖ Weigh button for loose items"]},
+    {id:"B",icon:"⌨️",title:"Scan + Keypad",tagline:"Receipt on the left, keypad + quick keys on the right",
+     desc:"Adds an on-screen number pad for typing codes / PLUs, plus quick-key buttons for your pinned items. Best when you mix scanned goods with lots of weighed produce.",
+     bullets:["Everything in Scan & Go","On-screen numeric keypad","Quick keys from your ★ favourites"]},
+    {id:"C",icon:"🗂️",title:"Scan + Slim shelf",tagline:"Scan-first, with a small shelf of favourites",
+     desc:"Closest to the old screen but stripped down: scan bar and receipt lead, with one collapsible row of your favourite / no-barcode items underneath. Least retraining for staff.",
+     bullets:["Scan bar + receipt lead","One collapsible ★ quick-items row","Reuses your existing favourites"]},
+  ];
+  const preview={
+    A:["🔲 Scan box","🧾 Receipt (full width)","💳 Pay"],
+    B:["🔲 Scan box","🧾 Receipt","⌨️ Keypad + ★ keys","💳 Pay"],
+    C:["🔲 Scan box","🧾 Receipt","★ Quick-items shelf","💳 Pay"],
+  };
+  return(
+    <Card style={{maxWidth:760}}>
+      <div style={{fontSize:15,fontWeight:800,marginBottom:4}}>🛒 Supermarket Checkout Layout</div>
+      <div style={{fontSize:13,color:C.textMid,marginBottom:20}}>Pick how the till looks for your cashiers. Your products, sales, and ZATCA invoices are unchanged — only the checkout screen changes. Applies next time you open the POS.</div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:14}}>
+        {OPTS.map(o=>{
+          const on=choice===o.id;
+          return(
+            <div key={o.id} onClick={()=>pick(o.id)} style={{border:`2px solid ${on?C.primary:C.border}`,background:on?C.primaryLight:"#fff",borderRadius:14,padding:16,cursor:"pointer",transition:"all 0.15s",position:"relative"}}>
+              <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+                <div style={{fontSize:26,flexShrink:0}}>{o.icon}</div>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:11,fontWeight:800,color:C.textLight,letterSpacing:"0.06em"}}>OPTION {o.id}</div>
+                  <div style={{fontSize:15,fontWeight:800,color:on?C.primary:C.text}}>{o.title}</div>
+                </div>
+                <div style={{width:20,height:20,borderRadius:"50%",border:`2px solid ${on?C.primary:C.border}`,background:on?C.primary:"#fff",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{on&&<div style={{width:8,height:8,borderRadius:"50%",background:"#fff"}}/>}</div>
+              </div>
+              <div style={{fontSize:12,fontWeight:700,color:on?C.primary:C.textMid,marginBottom:8}}>{o.tagline}</div>
+              {/* mini wireframe */}
+              <div style={{display:"flex",flexDirection:"column",gap:4,background:C.bg,border:`1px solid ${C.border}`,borderRadius:8,padding:8,marginBottom:10}}>
+                {preview[o.id].map((r,i)=>(
+                  <div key={i} style={{fontSize:10,fontWeight:700,color:C.textMid,background:"#fff",border:`1px solid ${C.border}`,borderRadius:5,padding:"4px 7px"}}>{r}</div>
+                ))}
+              </div>
+              <div style={{fontSize:12,color:C.textMid,lineHeight:1.5,marginBottom:8}}>{o.desc}</div>
+              <ul style={{margin:0,paddingLeft:16,display:"flex",flexDirection:"column",gap:3}}>
+                {o.bullets.map((b,i)=><li key={i} style={{fontSize:11.5,color:C.text}}>{b}</li>)}
+              </ul>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{marginTop:16,padding:"11px 14px",background:C.successLight,border:`1px solid ${C.success}44`,borderRadius:10,fontSize:12.5,color:C.success,fontWeight:700}}>✓ Saved — “{OPTS.find(o=>o.id===choice)?.title}” is now your checkout layout.</div>
+    </Card>
+  );
+}
+
 function Settings({company,setCompany,tables,setTables,license,onClearLicense,onSwitchAccount,pins,setPins,invoiceFormat,setInvoiceFormat,lang="en",onLangChange,sales=[],items=[]}){
   const [tab,setTab]=useState("company");const [newTableCount,setNewTableCount]=useState(tables.length);const [companySaved,setCompanySaved]=useState(false);
   const TAB_LABELS={"company":"🏢 "+t("Company",lang),"dashboard":"📊 "+t("Dashboard",lang),"tables":"🪑 "+t("Tables",lang),"printers":"🖨️ "+t("Bill Printer",lang),"invoices":"📄 "+t("Invoices",lang),"backup":"💾 "+t("Backup",lang),"security":"🔐 "+t("Security",lang),"license":"📋 "+t("License",lang),"language":"🌐 "+t("Language",lang)};
-  const tabs=[[`company`,`🏢 ${t("Company",lang)}`],[`dashboard`,`📊 ${t("Dashboard",lang)}`],[`tables`,`🪑 ${t("Tables",lang)}`],[`printers`,`🖨️ ${t("Bill Printer",lang)}`],[`invoices`,`📄 ${t("Invoices",lang)}`],[`presets`,`🎨 ${t("Preset Bills",lang)}`],[`backup`,`💾 ${t("Backup",lang)}`],[`security`,`🔐 ${t("Security",lang)}`],[`license`,`📋 ${t("License",lang)}`],[`language`,`🌐 ${t("Language",lang)}`]];
+  const superMode=isSupermarket();
+  const tabs=[[`company`,`🏢 ${t("Company",lang)}`],[`dashboard`,`📊 ${t("Dashboard",lang)}`],...(superMode?[[`checkout`,`🛒 ${t("Checkout",lang)}`]]:[[`tables`,`🪑 ${t("Tables",lang)}`]]),[`printers`,`🖨️ ${t("Bill Printer",lang)}`],[`invoices`,`📄 ${t("Invoices",lang)}`],[`presets`,`🎨 ${t("Preset Bills",lang)}`],[`backup`,`💾 ${t("Backup",lang)}`],[`security`,`🔐 ${t("Security",lang)}`],[`license`,`📋 ${t("License",lang)}`],[`language`,`🌐 ${t("Language",lang)}`]];
   return(<div dir={lang==="ar"?"rtl":"ltr"} style={{fontFamily:lang==="ar"?"'Tajawal',sans-serif":"inherit"}}>
     <div style={{display:"flex",gap:8,marginBottom:20,flexWrap:"wrap"}}>{tabs.map(([id,label])=><button key={id} onClick={()=>setTab(id)} style={{padding:"8px 16px",borderRadius:8,border:`1.5px solid ${tab===id?C.primary:C.border}`,background:tab===id?C.primaryLight:"#fff",color:tab===id?C.primary:C.textMid,fontFamily:"inherit",fontSize:13,fontWeight:600,cursor:"pointer"}}>{TAB_LABELS[id]||label}</button>)}</div>
     {tab==="company"&&<Card style={{maxWidth:640}}>
@@ -7928,6 +8164,7 @@ function Settings({company,setCompany,tables,setTables,license,onClearLicense,on
       <div style={{display:"flex",alignItems:"center",gap:12,marginTop:16}}><Btn onClick={()=>{LS.set("restopos_company",company);setCompanySaved(true);}}>💾 Save Settings</Btn>{companySaved&&<span style={{fontSize:12,color:C.success,fontWeight:700}}>✓ Saved successfully</span>}</div>
     </Card>}
     {tab==="dashboard"&&<DashboardEditor sales={sales} items={items}/>}
+    {tab==="checkout"&&<CheckoutLayoutTab/>}
     {tab==="tables"&&<Card style={{maxWidth:500}}>
       <div style={{fontSize:15,fontWeight:700,marginBottom:16}}>Table Configuration</div>
       <div style={{display:"flex",gap:10,marginBottom:20,alignItems:"flex-end"}}><Inp label="Number of Tables" value={newTableCount} onChange={v=>setNewTableCount(parseInt(v)||1)} type="number"/><Btn onClick={()=>setTables(Array.from({length:newTableCount},(_,i)=>({id:i+1,status:"free",capacity:4})))}>Update</Btn></div>
