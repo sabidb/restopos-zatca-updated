@@ -17,10 +17,18 @@ import { TERMS_VERSION, TERMS_TITLE, TERMS_DATE, TERMS_PDF_PATH, TERMS_PREAMBLE,
 import { C } from "./lib/theme.js";
 import { LS } from "./lib/storage.js";
 import { fmtSAR, fmtDate, fmtDateTime } from "./lib/format.js";
+import { TODAY } from "./lib/date.js";
 import { getLang, setLangStore, t, dir } from "./i18n/index.js";
 import { BUSINESS_TYPES, DEFAULT_BUSINESS_TYPE, getBusinessType, bizProfile, bizFeature, isSupermarket } from "./config/businessTypes.js";
 import { Card, Btn, Inp, Sel, TextArea, Slider, ToggleRow, Badge, StatCard, Modal, DataTable } from "./components/ui.jsx";
 import { TabBoundary, ErrorBoundary } from "./components/boundaries.jsx";
+import { AuditTrail } from "./screens/AuditTrail.jsx";
+import { UserAdmin } from "./screens/UserAdmin.jsx";
+import { StockTakes } from "./screens/StockTakes.jsx";
+import { RecipeCosting } from "./screens/RecipeCosting.jsx";
+import { AdvancedReports } from "./screens/AdvancedReports.jsx";
+import { ProfitLoss } from "./screens/ProfitLoss.jsx";
+import { Accounts } from "./screens/Accounts.jsx";
 
 // ═══════════════════════════════════════════════════════════════════
 // TRIAL MODE — see src/trial.js. TRIAL is fixed for the life of the page:
@@ -2540,7 +2548,6 @@ const SEED_ITEMS=[{id:1,name:"Broasted Chicken Half",nameAr:"دجاج مبروس
 const SEED_CATEGORIES=["Broasted","Grills","Sides","Drinks","Desserts","Combos"];
 const TABLES_INIT=Array.from({length:12},(_,i)=>({id:i+1,status:i<3?"occupied":"free",capacity:4}));
 const DEFAULT_PINS={Admin:"1234",Manager:"2345",Cashier:"3456"};
-const TODAY=new Date().toISOString().split("T")[0];
 
 // ── Stable per-device ID (persists in localStorage) ──────────────────
 // Used for the "approve new device" flow: each physical device gets one
@@ -8663,27 +8670,6 @@ function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,arch
 // ═══════════════════════════════════════════════════════════════════
 // ACCOUNTS
 // ═══════════════════════════════════════════════════════════════════
-function Accounts({sales,items}){
-  const [period,setPeriod]=useState("today");const now=new Date();
-  const periodSales=sales.filter(s=>{const d=new Date(s.date);if(period==="today")return s.date===TODAY;if(period==="week"){const w=new Date();w.setDate(w.getDate()-7);return d>=w;}if(period==="month")return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear();return true;});
-  const totalSale=periodSales.reduce((s,o)=>s+o.total,0);const vatCollected=periodSales.reduce((s,o)=>s+o.vat,0);
-  const todayTotal=sales.filter(s=>s.date===TODAY).reduce((s,o)=>s+o.total,0);
-  const prev7=Array.from({length:7},(_,i)=>{const d=new Date();d.setDate(d.getDate()-(i+1));const ds=d.toISOString().split("T")[0];return sales.filter(s=>s.date===ds).reduce((s,o)=>s+o.total,0);});
-  const prev7avg=prev7.reduce((a,b)=>a+b,0)/7;const avgPct=prev7avg>0?(((todayTotal-prev7avg)/prev7avg)*100).toFixed(1):todayTotal>0?"100.0":"0.0";const avgUp=parseFloat(avgPct)>=0;
-  const periodLabel={today:"Today",week:"Last 7 Days",month:"This Month",all:"All Time"}[period];
-  return(<div>
-    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:24,flexWrap:"wrap",gap:10}}>
-      <div><div style={{fontSize:20,fontWeight:800,color:C.text}}>📈 Accounts</div><div style={{fontSize:13,color:C.textMid,marginTop:2}}>Period: {periodLabel} · {periodSales.length} orders</div></div>
-      <div style={{display:"flex",gap:6}}>{[["today","Today"],["week","Week"],["month","Month"],["all","All"]].map(([id,label])=><button key={id} onClick={()=>setPeriod(id)} style={{padding:"8px 16px",borderRadius:8,border:`1px solid ${period===id?C.primary:C.border}`,background:period===id?C.primary:"#fff",color:period===id?"#fff":C.textMid,fontFamily:"inherit",fontSize:13,fontWeight:600,cursor:"pointer"}}>{label}</button>)}</div>
-    </div>
-    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill, minmax(260px, 1fr))",gap:20}}>
-      <Card style={{padding:28,borderLeft:`5px solid ${C.primary}`}}><div style={{fontSize:13,fontWeight:700,color:C.textMid,marginBottom:10,textTransform:"uppercase",letterSpacing:"0.06em"}}>💰 Total Sale</div><div style={{fontSize:34,fontWeight:900,color:C.primary,lineHeight:1}}>{fmtSAR(totalSale)}</div><div style={{fontSize:12,color:C.textLight,marginTop:8}}>Including VAT · {periodSales.length} orders</div></Card>
-      <Card style={{padding:28,borderLeft:`5px solid ${C.zatca}`}}><div style={{fontSize:13,fontWeight:700,color:C.textMid,marginBottom:10,textTransform:"uppercase",letterSpacing:"0.06em"}}>⬛ VAT Collected</div><div style={{fontSize:34,fontWeight:900,color:C.zatca,lineHeight:1}}>{fmtSAR(vatCollected)}</div><div style={{fontSize:12,color:C.textLight,marginTop:8}}>15% VAT · {periodLabel}</div></Card>
-      <Card style={{padding:28,borderLeft:`5px solid ${avgUp?C.success:C.danger}`}}><div style={{fontSize:13,fontWeight:700,color:C.textMid,marginBottom:10,textTransform:"uppercase",letterSpacing:"0.06em"}}>📊 Avg Sale vs Prev 7 Days</div><div style={{fontSize:34,fontWeight:900,color:avgUp?C.success:C.danger,lineHeight:1}}>{avgUp?"+":""}{avgPct}%</div><div style={{fontSize:12,color:C.textLight,marginTop:8}}>Today: {fmtSAR(todayTotal)} · 7-day avg: {fmtSAR(prev7avg)}</div></Card>
-    </div>
-    {periodSales.length===0&&<Card style={{marginTop:24,textAlign:"center",padding:"48px 0"}}><div style={{fontSize:40,marginBottom:12}}>📊</div><div style={{fontSize:15,fontWeight:700,color:C.textMid}}>No sales data for this period</div></Card>}
-  </div>);
-}
 
 // ═══════════════════════════════════════════════════════════════════
 // REPORTS
@@ -9988,29 +9974,6 @@ function Tools({sales,items,setItems}){
 // ═══════════════════════════════════════════════════════════════════
 // USER ADMIN
 // ═══════════════════════════════════════════════════════════════════
-function UserAdmin({users,setUsers}){
-  const [showModal,setShowModal]=useState(false);const [editUser,setEditUser]=useState(null);const blank={name:"",username:"",role:"Cashier",active:true};const [form,setForm]=useState(blank);
-    function openModal(u=null){setEditUser(u);setForm(u?{...u}:{...blank});setShowModal(true);}
-  function save(){if(!form.name||!form.username)return alert("Name and username required");setUsers(prev=>editUser?prev.map(u=>u.id===editUser.id?{...form,id:editUser.id}:u):[...prev,{...form,id:Date.now(),lastLogin:"Never"}]);setShowModal(false);}
-  return(<div>
-    {showModal&&<Modal title={editUser?"Edit User":"New User"} onClose={()=>setShowModal(false)} width={420}>
-      <div style={{display:"flex",flexDirection:"column",gap:12}}>
-        <Inp label="Full Name" value={form.name} onChange={v=>setForm(f=>({...f,name:v}))}/><Inp label="Username" value={form.username} onChange={v=>setForm(f=>({...f,username:v}))}/>
-        <Sel label="Role" value={form.role} onChange={v=>setForm(f=>({...f,role:v}))} options={["Admin","Manager","Cashier"]}/>
-        <div style={{display:"flex",alignItems:"center",gap:8}}><input type="checkbox" checked={form.active} onChange={e=>setForm(f=>({...f,active:e.target.checked}))} id="ua"/><label htmlFor="ua" style={{fontSize:13}}>Active</label></div>
-      </div>
-      <div style={{display:"flex",gap:10,marginTop:16}}><Btn variant="ghost" onClick={()=>setShowModal(false)} style={{flex:1}}>Cancel</Btn><Btn onClick={save} style={{flex:1}}>Save</Btn></div>
-    </Modal>}
-    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20,flexWrap:"wrap",gap:10}}>
-      <div style={{fontSize:18,fontWeight:800,color:C.text}}>👤 User Management</div>
-      <div style={{display:"flex",gap:10}}>
-
-        <Btn size="sm" onClick={()=>openModal()}>+ New User</Btn>
-      </div>
-    </div>
-    <Card><DataTable headers={["Name","Username","Role","Status","Actions"]} rows={users.map(u=>[u.name,<span style={{fontFamily:"monospace"}}>{u.username}</span>,<Badge color={u.role==="Admin"?C.danger:u.role==="Manager"?C.warning:C.info} bg={u.role==="Admin"?C.dangerLight:u.role==="Manager"?C.warningLight:C.infoLight}>{u.role}</Badge>,<Badge color={u.active?C.success:C.danger} bg={u.active?C.successLight:C.dangerLight}>{u.active?"Active":"Off"}</Badge>,<div style={{display:"flex",gap:5}}><Btn size="sm" variant="ghost" onClick={()=>openModal(u)}>Edit</Btn><Btn size="sm" variant="danger" onClick={()=>{if(confirm("Delete?"))setUsers(prev=>prev.filter(x=>x.id!==u.id));}}>Del</Btn></div>])}/></Card>
-  </div>);
-}
 
 // ═══════════════════════════════════════════════════════════════════
 // OWNER DASHBOARD INLINE (for modal inside UserAdmin)
@@ -13595,171 +13558,10 @@ function BackupManager({sales,items,lang="en"}){
 // ═══════════════════════════════════════════════════════════════════
 // PROFIT & LOSS MODULE
 // ═══════════════════════════════════════════════════════════════════
-function ProfitLoss({sales,items}){
-  const [period,setPeriod]=useState("month");
-  const now=new Date();
-  const expenses=LS.get("restopos_expenses")||[];
-  const filteredSales=sales.filter(s=>{
-    const d=new Date(s.date);
-    if(period==="today")return s.date===TODAY;
-    if(period==="week"){const w=new Date();w.setDate(w.getDate()-7);return d>=w;}
-    if(period==="month")return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear();
-    return true;
-  });
-  const filteredExp=expenses.filter(e=>{
-    const d=new Date(e.date);
-    if(period==="today")return e.date===TODAY;
-    if(period==="week"){const w=new Date();w.setDate(w.getDate()-7);return d>=w;}
-    if(period==="month")return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear();
-    return true;
-  });
-  const revenue=filteredSales.reduce((s,o)=>s+(o.total||0),0);
-  const vatCollected=filteredSales.reduce((s,o)=>s+(o.vat||0),0);
-  const revenueExclVat=revenue-vatCollected;
-  const cogs=filteredSales.reduce((s,o)=>s+(o.items||[]).reduce((ss,it)=>{const item=items.find(i=>i.id===it.id);return ss+(item?.cost||0)*it.qty;},0),0);
-  const opExpenses=filteredExp.reduce((s,e)=>s+e.amount,0);
-  const grossProfit=revenueExclVat-cogs;
-  const netProfit=grossProfit-opExpenses;
-  const grossMargin=revenueExclVat>0?((grossProfit/revenueExclVat)*100).toFixed(1):0;
-  const netMargin=revenueExclVat>0?((netProfit/revenueExclVat)*100).toFixed(1):0;
-  const payBreakdown=["Cash","Card","Both"].map(m=>({method:m,total:filteredSales.filter(s=>s.payMethod===m).reduce((s,o)=>s+o.total,0),count:filteredSales.filter(s=>s.payMethod===m).length}));
-  return(
-    <div>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:24,flexWrap:"wrap",gap:10}}>
-        <div><div style={{fontSize:20,fontWeight:800}}>📈 Profit & Loss</div><div style={{fontSize:13,color:C.textMid,marginTop:2}}>{{"today":"Today","week":"Last 7 Days","month":"This Month","all":"All Time"}[period]}</div></div>
-        <div style={{display:"flex",gap:6}}>{[["today","Today"],["week","Week"],["month","Month"],["all","All"]].map(([id,lbl])=>(
-          <button key={id} onClick={()=>setPeriod(id)} style={{padding:"7px 14px",borderRadius:8,border:`1.5px solid ${period===id?C.primary:C.border}`,background:period===id?C.primary:"#fff",color:period===id?"#fff":C.textMid,fontFamily:"inherit",fontSize:13,fontWeight:600,cursor:"pointer"}}>{lbl}</button>
-        ))}</div>
-      </div>
-      {filteredSales.length===0?(
-        <Card><div style={{textAlign:"center",padding:"60px 20px",color:C.textLight}}>
-          <div style={{fontSize:48,marginBottom:12}}>📊</div>
-          <div style={{fontSize:16,fontWeight:700,marginBottom:6}}>No sales data yet</div>
-          <div style={{fontSize:13}}>Complete orders in the POS screen to see P&L data here.</div>
-        </div></Card>
-      ):(
-      <>
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))",gap:16,marginBottom:24}}>
-        <StatCard icon="💰" label="Total Revenue (incl. VAT)" value={fmtSAR(revenue)} color={C.primary} bg={C.primaryLight}/>
-        <StatCard icon="🧾" label="VAT Collected (15%)" value={fmtSAR(vatCollected)} sub="Extracted from revenue" color={C.zatca} bg={C.zatcaLight}/>
-        <StatCard icon="📦" label="Cost of Goods (COGS)" value={fmtSAR(cogs)} sub="Excl. VAT" color={C.warning} bg={C.warningLight}/>
-        <StatCard icon="💸" label="Operating Expenses" value={fmtSAR(opExpenses)} color={C.danger} bg={C.dangerLight}/>
-        <StatCard icon="📊" label="Gross Profit" value={fmtSAR(grossProfit)} sub={`${grossMargin}% margin`} color={grossProfit>=0?C.success:C.danger} bg={grossProfit>=0?C.successLight:C.dangerLight}/>
-        <StatCard icon="🏆" label="Net Profit" value={fmtSAR(netProfit)} sub={`${netMargin}% margin`} color={netProfit>=0?C.success:C.danger} bg={netProfit>=0?C.successLight:C.dangerLight}/>
-      </div>
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:20}}>
-        <Card>
-          <div style={{fontSize:14,fontWeight:700,marginBottom:16}}>💳 Payment Breakdown</div>
-          {payBreakdown.map(p=>(
-            <div key={p.method} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:`1px solid ${C.border}`}}>
-              <div><div style={{fontSize:13,fontWeight:600}}>{p.method}</div><div style={{fontSize:11,color:C.textLight}}>{p.count} transactions</div></div>
-              <strong style={{color:C.primary}}>{fmtSAR(p.total)}</strong>
-            </div>
-          ))}
-        </Card>
-        <Card>
-          <div style={{fontSize:14,fontWeight:700,marginBottom:16}}>📊 P&L Summary</div>
-          {[["Revenue (excl. VAT)",revenueExclVat,C.primary,false],["Cost of Goods Sold",-cogs,C.warning,false],["Gross Profit",grossProfit,grossProfit>=0?C.success:C.danger,false],["Operating Expenses",-opExpenses,C.danger,false],["Net Profit / (Loss)",netProfit,netProfit>=0?C.success:C.danger,true]].map(([label,val,color,isFinal])=>(
-            <div key={label} style={{display:"flex",justifyContent:"space-between",padding:"10px 0",borderBottom:!isFinal?`1px solid ${C.border}`:"none",borderTop:isFinal?`2px solid ${C.border}`:"none",fontWeight:isFinal?800:400}}>
-              <span style={{fontSize:13,color:isFinal?C.text:C.textMid}}>{label}</span>
-              <span style={{fontWeight:700,color}}>{val<0?"(":""}{fmtSAR(Math.abs(val))}{val<0?")":""}</span>
-            </div>
-          ))}
-        </Card>
-      </div>
-      </>
-      )}
-    </div>
-  );
-}
 
 // ═══════════════════════════════════════════════════════════════════
 // ADVANCED ANALYTICS (Hourly, VAT Reports, Staff Performance)
 // ═══════════════════════════════════════════════════════════════════
-function AdvancedReports({sales,items}){
-  const [tab,setTab]=useState("hourly");
-  const todaySales=sales.filter(s=>s.date===TODAY);
-  const hourly=Array.from({length:24},(_,h)=>{const hrs=todaySales.filter(s=>parseInt(s.time?.slice(0,2)||"0")===h);return{hour:h,count:hrs.length,revenue:hrs.reduce((s,o)=>s+o.total,0)};});
-  const peakHour=hourly.reduce((max,h)=>h.revenue>max.revenue?h:max,hourly[0]);
-  const vatByMonth={};
-  sales.forEach(s=>{const ym=s.date?.slice(0,7)||"Unknown";if(!vatByMonth[ym])vatByMonth[ym]={month:ym,orders:0,revenue:0,vat:0};vatByMonth[ym].orders++;vatByMonth[ym].revenue+=s.subtotal||0;vatByMonth[ym].vat+=s.vat||0;});
-  const vatRows=Object.values(vatByMonth).sort((a,b)=>b.month.localeCompare(a.month));
-  const byUser={};
-  sales.forEach(s=>{const u=s.cashier||s.user||"Unknown";if(!byUser[u])byUser[u]={user:u,count:0,revenue:0};byUser[u].count++;byUser[u].revenue+=s.total||0;});
-  const userRows=Object.values(byUser).sort((a,b)=>b.revenue-a.revenue);
-  const maxRevenue=Math.max(...hourly.map(h=>h.revenue),1);
-  return(
-    <div>
-      <div style={{fontSize:20,fontWeight:800,marginBottom:20}}>📋 Advanced Analytics</div>
-      <div style={{display:"flex",gap:6,marginBottom:20,flexWrap:"wrap"}}>
-        {[["hourly","⏰ Hourly"],["vat","🧾 VAT Reports"],["staff","👤 Staff"],["items","🏆 Top Items"]].map(([id,lbl])=>(
-          <button key={id} onClick={()=>setTab(id)} style={{padding:"7px 16px",borderRadius:8,border:`1.5px solid ${tab===id?C.primary:C.border}`,background:tab===id?C.primaryLight:"#fff",color:tab===id?C.primary:C.textMid,fontFamily:"inherit",fontSize:13,fontWeight:600,cursor:"pointer"}}>{lbl}</button>
-        ))}
-      </div>
-      {tab==="hourly"&&<Card>
-        <div style={{fontSize:14,fontWeight:700,marginBottom:4}}>⏰ Hour-by-Hour Sales — Today</div>
-        <div style={{fontSize:12,color:C.textMid,marginBottom:16}}>Peak hour: {peakHour.hour}:00 — {fmtSAR(peakHour.revenue)}</div>
-        <div style={{display:"flex",gap:3,alignItems:"flex-end",height:160,overflowX:"auto",paddingBottom:8}}>
-          {hourly.map(h=>(
-            <div key={h.hour} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4,minWidth:28}}>
-              <div style={{fontSize:9,color:C.textLight,fontWeight:600}}>{h.revenue>0?h.revenue.toFixed(0):"—"}</div>
-              <div style={{width:22,background:h.hour===peakHour.hour&&h.revenue>0?C.accent:h.revenue>0?C.primary:C.border,borderRadius:"4px 4px 0 0",transition:"height 0.3s",height:`${Math.max(4,(h.revenue/maxRevenue)*120)}px`}}/>
-              <div style={{fontSize:9,color:C.textLight}}>{h.hour}h</div>
-            </div>
-          ))}
-        </div>
-        <div style={{marginTop:16,display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10}}>
-          {[["Peak Hour",`${peakHour.hour}:00`,C.accent],["Today Orders",todaySales.length,C.primary],["Today Revenue",fmtSAR(todaySales.reduce((s,o)=>s+o.total,0)),C.success]].map(([l,v,col])=>(
-            <div key={l} style={{background:C.bg,borderRadius:8,padding:"10px 12px"}}><div style={{fontSize:11,color:C.textMid}}>{l}</div><div style={{fontSize:14,fontWeight:800,color:col}}>{v}</div></div>
-          ))}
-        </div>
-      </Card>}
-      {tab==="vat"&&<Card>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
-          <div style={{fontSize:14,fontWeight:700}}>🧾 Monthly VAT Summary (ZATCA)</div>
-          <Btn size="sm" variant="outline" onClick={()=>{
-            const csv=["Month,Orders,Revenue (excl VAT),VAT 15%,Total",...vatRows.map(r=>`${r.month},${r.orders},${r.revenue.toFixed(2)},${r.vat.toFixed(2)},${(r.revenue+r.vat).toFixed(2)}`)].join("\n");
-            const blob=new Blob([csv],{type:"text/csv"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`vat-summary-${TODAY}.csv`;a.click();
-          }}>📤 Export</Btn>
-        </div>
-        {vatRows.length===0?<div style={{textAlign:"center",padding:"32px 0",color:C.textLight}}>No sales data yet</div>
-        :<DataTable headers={["Month","Orders","Revenue (excl VAT)","VAT 15%","Total"]} rows={vatRows.map(r=>[
-          <strong style={{fontFamily:"monospace"}}>{r.month}</strong>,r.orders,fmtSAR(r.revenue),
-          <span style={{color:C.zatca,fontWeight:700}}>{fmtSAR(r.vat)}</span>,
-          <strong style={{color:C.primary}}>{fmtSAR(r.revenue+r.vat)}</strong>
-        ])}/>}
-        <div style={{marginTop:16,padding:"12px 16px",background:C.zatcaLight,borderRadius:10,fontSize:13}}>
-          <strong style={{color:C.zatca}}>Total VAT Collected (all time): {fmtSAR(sales.reduce((s,o)=>s+o.vat,0))}</strong>
-        </div>
-      </Card>}
-      {tab==="staff"&&<Card>
-        <div style={{fontSize:14,fontWeight:700,marginBottom:16}}>👤 Staff Performance</div>
-        {userRows.length===0?<div style={{textAlign:"center",padding:"32px 0",color:C.textLight}}>No data yet</div>
-        :<DataTable headers={["Cashier / User","Orders","Total Revenue","Avg Order"]} rows={userRows.map(u=>[
-          <strong>{u.user}</strong>,
-          <Badge color={C.info} bg={C.infoLight}>{u.count}</Badge>,
-          <strong style={{color:C.primary}}>{fmtSAR(u.revenue)}</strong>,
-          fmtSAR(u.count>0?u.revenue/u.count:0)
-        ])}/>}
-      </Card>}
-      {tab==="items"&&<Card>
-        <div style={{fontSize:14,fontWeight:700,marginBottom:16}}>🏆 Top Items (All Time)</div>
-        {(()=>{
-          const itemMap={};
-          sales.forEach(s=>(s.items||[]).forEach(it=>{if(!itemMap[it.id])itemMap[it.id]={name:it.name,qty:0,revenue:0};itemMap[it.id].qty+=it.qty;itemMap[it.id].revenue+=it.qty*it.price;}));
-          const ranked=Object.values(itemMap).sort((a,b)=>b.revenue-a.revenue).slice(0,15);
-          return ranked.length===0?<div style={{textAlign:"center",padding:"32px 0",color:C.textLight}}>No items sold yet</div>
-          :<DataTable headers={["#","Item","Units Sold","Revenue"]} rows={ranked.map((it,i)=>[
-            <span style={{fontWeight:800,color:i<3?C.accent:C.textMid}}>{i+1}</span>,
-            <strong>{it.name}</strong>,
-            <Badge color={C.info} bg={C.infoLight}>{it.qty}</Badge>,
-            <strong style={{color:C.primary}}>{fmtSAR(it.revenue)}</strong>
-          ])}/>;
-        })()}
-      </Card>}
-    </div>
-  );
-}
 
 // ═══════════════════════════════════════════════════════════════════
 // SHIFT MANAGEMENT & CASH DRAWER RECONCILIATION
@@ -13929,35 +13731,6 @@ function ShiftManager({sales,currentUser,lang="en"}){
 // ═══════════════════════════════════════════════════════════════════
 // AUDIT TRAIL VIEWER
 // ═══════════════════════════════════════════════════════════════════
-function AuditTrail(){
-  const [logs,setLogs]=useState(()=>LS.get("restopos_activity_log")||[]);
-  const [filter,setFilter]=useState("");
-  const filtered=logs.filter(l=>!filter||l.action?.toLowerCase().includes(filter.toLowerCase())||l.user?.toLowerCase().includes(filter.toLowerCase()));
-  const ACTION_COLORS={SALE_COMPLETED:C.success,ITEM_ADDED:C.info,ITEM_DELETED:C.danger,USER_ADDED:C.info,USER_DELETED:C.danger,SETTINGS_CHANGED:C.warning,PINS_CHANGED:C.warning,LICENSE_TOGGLE:C.accent,PLAN_CHANGE:C.zatca,CLIENT_SUSPENDED:C.danger,SHIFT_STARTED:C.success,SHIFT_ENDED:C.primary,EXPENSE_ADDED:C.danger,CUSTOMER_ADDED:C.info};
-  return(
-    <div>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
-        <div><div style={{fontSize:20,fontWeight:800}}>🔍 Audit Trail</div><div style={{fontSize:13,color:C.textMid,marginTop:2}}>{logs.length} logged events · Last 500 retained</div></div>
-        <Btn variant="danger" size="sm" onClick={()=>{if(confirm("Clear all audit logs?")){{LS.set("restopos_activity_log",[]);setLogs([])}}}}>🗑 Clear Logs</Btn>
-      </div>
-      <Card style={{marginBottom:16}}>
-        <input value={filter} onChange={e=>setFilter(e.target.value)} placeholder="🔍 Filter by action or user..." style={{width:"100%",padding:"9px 14px",border:`1px solid ${C.border}`,borderRadius:8,fontSize:13,fontFamily:"inherit"}}/>
-      </Card>
-      {filtered.length===0?<Card><div style={{textAlign:"center",padding:"40px 0",color:C.textMid}}><div style={{fontSize:32,marginBottom:12}}>🔍</div>No audit logs{filter?" matching filter":""}</div></Card>
-      :<Card><div style={{display:"flex",flexDirection:"column",gap:0}}>
-        {filtered.slice(0,200).map((log,i)=>(
-          <div key={log.id||i} style={{display:"flex",gap:14,padding:"10px 0",borderBottom:`1px solid ${C.border}`,alignItems:"flex-start"}}>
-            <span style={{fontSize:10,padding:"3px 8px",borderRadius:20,fontWeight:700,background:((ACTION_COLORS[log.action]||C.info)+"22"),color:ACTION_COLORS[log.action]||C.info,whiteSpace:"nowrap",flexShrink:0,marginTop:1}}>{log.action}</span>
-            <div style={{flex:1,minWidth:0}}>
-              <div style={{fontSize:12,color:C.text,fontWeight:500,overflow:"hidden",textOverflow:"ellipsis"}}>{JSON.stringify(log.after||log.details||{})}</div>
-              <div style={{fontSize:11,color:C.textLight,marginTop:2}}>by <strong>{log.user}</strong> · {log.timestamp?.slice(0,19).replace("T"," ")}</div>
-            </div>
-          </div>
-        ))}
-      </div></Card>}
-    </div>
-  );
-}
 
 // ═══════════════════════════════════════════════════════════════════
 // OWNER DASHBOARD
@@ -14646,196 +14419,10 @@ function KitchenDisplay({sales}){
 // ═══════════════════════════════════════════════════════════════════
 // STOCK TAKES / AUDITS
 // ═══════════════════════════════════════════════════════════════════
-function StockTakes({items,setItems}){
-  const [audits,setAudits]=useState(()=>JSON.parse(localStorage.getItem("restopos_stock_audits")||"[]"));
-  const [activeAudit,setActiveAudit]=useState(null);
-  const [counts,setCounts]=useState({});
-  const [tab,setTab]=useState("history");
-  function startAudit(){
-    const audit={id:Date.now(),startedAt:new Date().toISOString(),status:"open",items:items.map(it=>({id:it.id,name:it.name,systemQty:it.stock||0,countedQty:null,variance:null}))};
-    setActiveAudit(audit);setCounts({});setTab("audit");
-  }
-  function submitAudit(){
-    if(!activeAudit)return;
-    const auditItems=activeAudit.items.map(it=>({...it,countedQty:parseInt(counts[it.id]??it.systemQty),variance:(parseInt(counts[it.id]??it.systemQty))-(it.systemQty)}));
-    const closed={...activeAudit,status:"completed",completedAt:new Date().toISOString(),items:auditItems,totalVariance:auditItems.reduce((s,i)=>s+Math.abs(i.variance),0)};
-    const updated=[closed,...audits.slice(0,49)];setAudits(updated);localStorage.setItem("restopos_stock_audits",JSON.stringify(updated));
-    // Update actual stock in items
-    setItems(prev=>prev.map(it=>{const counted=auditItems.find(a=>a.id===it.id);return counted?{...it,stock:counted.countedQty}:it;}));
-    setActiveAudit(null);setCounts({});setTab("history");
-    alert("✅ Stock audit completed and inventory updated.");
-  }
-  return(
-    <div>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
-        <div><div style={{fontSize:20,fontWeight:800}}>📦 Stock Takes & Audits</div><div style={{fontSize:13,color:C.textMid,marginTop:2}}>Physical count vs system stock</div></div>
-        <Btn onClick={startAudit}>+ New Stock Take</Btn>
-      </div>
-      <div style={{display:"flex",gap:8,marginBottom:20}}>
-        {[["history","📋 History"],["audit","🔢 Current Audit"]].map(([id,lbl])=>(
-          <button key={id} onClick={()=>setTab(id)} style={{padding:"8px 16px",borderRadius:8,border:`1.5px solid ${tab===id?C.primary:C.border}`,background:tab===id?C.primaryLight:"#fff",color:tab===id?C.primary:C.textMid,fontFamily:"inherit",fontSize:13,fontWeight:600,cursor:"pointer"}}>{lbl}</button>
-        ))}
-      </div>
-      {tab==="audit"&&(
-        activeAudit?(
-          <Card>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
-              <div style={{fontSize:15,fontWeight:700}}>Stock Count — {activeAudit.startedAt.slice(0,10)}</div>
-              <div style={{display:"flex",gap:8}}>
-                <Btn variant="ghost" size="sm" onClick={()=>{setActiveAudit(null);setCounts({});setTab("history");}}>Cancel</Btn>
-                <Btn size="sm" onClick={submitAudit}>✅ Submit Audit</Btn>
-              </div>
-            </div>
-            <div style={{overflowX:"auto"}}>
-              <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
-                <thead><tr style={{background:C.bg}}>{["Item","System Qty","Counted Qty","Variance"].map(h=><th key={h} style={{padding:"10px 14px",textAlign:"left",fontWeight:700,color:C.textMid,fontSize:11,textTransform:"uppercase",borderBottom:`1px solid ${C.border}`}}>{h}</th>)}</tr></thead>
-                <tbody>{activeAudit.items.map((it,i)=>{
-                  const counted=parseInt(counts[it.id]??it.systemQty);
-                  const variance=counted-it.systemQty;
-                  return(
-                    <tr key={it.id} style={{borderBottom:`1px solid ${C.border}`,background:i%2===0?"#fff":"#FAFBFC"}}>
-                      <td style={{padding:"10px 14px",fontWeight:600}}>{it.name}</td>
-                      <td style={{padding:"10px 14px",color:C.textMid}}>{it.systemQty}</td>
-                      <td style={{padding:"10px 14px"}}>
-                        <input type="number" value={counts[it.id]??""} onChange={e=>setCounts(prev=>({...prev,[it.id]:e.target.value}))} placeholder={String(it.systemQty)} style={{width:80,padding:"6px 10px",border:`1.5px solid ${C.border}`,borderRadius:7,fontSize:13,fontFamily:"inherit",textAlign:"center"}}/>
-                      </td>
-                      <td style={{padding:"10px 14px",fontWeight:700,color:variance===0?C.success:variance<0?C.danger:C.warning}}>{variance>0?"+":""}{variance===0?"—":variance}</td>
-                    </tr>
-                  );
-                })}</tbody>
-              </table>
-            </div>
-          </Card>
-        ):<Card><div style={{textAlign:"center",padding:"40px 0",color:C.textLight}}>No active audit. Click "New Stock Take" to begin.</div></Card>
-      )}
-      {tab==="history"&&(
-        audits.length===0?<Card><div style={{textAlign:"center",padding:"40px 0",color:C.textLight}}>No stock audits yet.</div></Card>:(
-          <div style={{display:"flex",flexDirection:"column",gap:12}}>
-            {audits.map(a=>(
-              <Card key={a.id}>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
-                  <div>
-                    <div style={{fontSize:14,fontWeight:700}}>Audit — {a.startedAt.slice(0,10)}</div>
-                    <div style={{fontSize:12,color:C.textMid}}>Completed: {a.completedAt?.slice(0,16).replace("T"," ")} · Items: {a.items?.length||0}</div>
-                  </div>
-                  <Badge color={a.totalVariance===0?C.success:C.warning} bg={a.totalVariance===0?C.successLight:C.warningLight}>Variance: {a.totalVariance||0} units</Badge>
-                </div>
-                {a.items?.filter(it=>it.variance!==0).length>0&&(
-                  <div style={{marginTop:12,paddingTop:12,borderTop:`1px solid ${C.border}`}}>
-                    <div style={{fontSize:12,fontWeight:700,color:C.textMid,marginBottom:6}}>VARIANCES:</div>
-                    <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
-                      {a.items.filter(it=>it.variance!==0).map(it=>(
-                        <span key={it.id} style={{padding:"3px 10px",borderRadius:20,fontSize:11,fontWeight:700,background:it.variance<0?C.dangerLight:C.warningLight,color:it.variance<0?C.danger:C.warning}}>{it.name}: {it.variance>0?"+":""}{it.variance}</span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </Card>
-            ))}
-          </div>
-        )
-      )}
-    </div>
-  );
-}
 
 // ═══════════════════════════════════════════════════════════════════
 // RECIPE COSTING
 // ═══════════════════════════════════════════════════════════════════
-function RecipeCosting({items}){
-  const [selectedItem,setSelectedItem]=useState(null);
-  const [recipes,setRecipes]=useState(()=>JSON.parse(localStorage.getItem("restopos_recipes")||"{}"));
-  const [editMode,setEditMode]=useState(false);
-  const [draftIngredients,setDraftIngredients]=useState([]);
-  function openItem(item){
-    setSelectedItem(item);
-    setDraftIngredients(recipes[item.id]||[{name:"",unit:"g",qty:"",cost:""}]);
-    setEditMode(false);
-  }
-  function addIngredient(){setDraftIngredients(prev=>[...prev,{name:"",unit:"g",qty:"",cost:""}]);}
-  function removeIngredient(i){setDraftIngredients(prev=>prev.filter((_,j)=>j!==i));}
-  function updateIngredient(i,field,val){setDraftIngredients(prev=>prev.map((ing,j)=>j===i?{...ing,[field]:val}:ing));}
-  function saveRecipe(){
-    const updated={...recipes,[selectedItem.id]:draftIngredients};
-    setRecipes(updated);localStorage.setItem("restopos_recipes",JSON.stringify(updated));
-    setEditMode(false);
-  }
-  function totalCost(itemId){
-    const ings=recipes[itemId]||[];
-    return ings.reduce((s,ing)=>s+parseFloat(ing.cost||0),0);
-  }
-  return(
-    <div style={{display:"flex",gap:20}}>
-      <div style={{width:280,flexShrink:0}}>
-        <Card style={{padding:12}}>
-          <div style={{fontSize:14,fontWeight:700,marginBottom:12}}>Menu Items</div>
-          <div style={{display:"flex",flexDirection:"column",gap:4}}>
-            {items.map(it=>{
-              const cost=totalCost(it.id);
-              const margin=it.price>0?((it.price-cost)/it.price*100).toFixed(0):0;
-              return(
-                <button key={it.id} onClick={()=>openItem(it)} style={{padding:"10px 12px",borderRadius:8,border:`1.5px solid ${selectedItem?.id===it.id?C.primary:C.border}`,background:selectedItem?.id===it.id?C.primaryLight:"#fff",textAlign:"left",cursor:"pointer",fontFamily:"inherit"}}>
-                  <div style={{fontSize:13,fontWeight:700,color:C.text}}>{it.name}</div>
-                  <div style={{fontSize:11,color:C.textMid,marginTop:2}}>SAR {it.price} · Cost: SAR {cost.toFixed(2)} · Margin: <span style={{color:margin>60?C.success:margin>30?C.warning:C.danger,fontWeight:700}}>{margin}%</span></div>
-                </button>
-              );
-            })}
-          </div>
-        </Card>
-      </div>
-      <div style={{flex:1}}>
-        {selectedItem?(
-          <Card>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
-              <div>
-                <div style={{fontSize:16,fontWeight:800}}>{selectedItem.name}</div>
-                <div style={{fontSize:13,color:C.textMid}}>Selling price: SAR {selectedItem.price}</div>
-              </div>
-              <Btn size="sm" variant={editMode?"ghost":"outline"} onClick={()=>setEditMode(e=>!e)}>{editMode?"Cancel":"✏️ Edit Recipe"}</Btn>
-            </div>
-            {editMode?(
-              <>
-                <div style={{overflowX:"auto"}}>
-                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
-                    <thead><tr style={{background:C.bg}}>{["Ingredient","Unit","Qty","Cost (SAR)",""].map(h=><th key={h} style={{padding:"8px 12px",textAlign:"left",fontWeight:700,color:C.textMid,fontSize:11,borderBottom:`1px solid ${C.border}`}}>{h}</th>)}</tr></thead>
-                    <tbody>{draftIngredients.map((ing,i)=>(
-                      <tr key={i} style={{borderBottom:`1px solid ${C.border}`}}>
-                        <td style={{padding:"8px 12px"}}><input value={ing.name} onChange={e=>updateIngredient(i,"name",e.target.value)} placeholder="e.g. Chicken" style={{padding:"6px 10px",border:`1px solid ${C.border}`,borderRadius:6,fontSize:12,fontFamily:"inherit",width:140}}/></td>
-                        <td style={{padding:"8px 12px"}}><select value={ing.unit} onChange={e=>updateIngredient(i,"unit",e.target.value)} style={{padding:"6px",border:`1px solid ${C.border}`,borderRadius:6,fontSize:12}}>{["g","kg","ml","L","pcs","tsp","tbsp"].map(u=><option key={u}>{u}</option>)}</select></td>
-                        <td style={{padding:"8px 12px"}}><input type="number" value={ing.qty} onChange={e=>updateIngredient(i,"qty",e.target.value)} placeholder="0" style={{padding:"6px 10px",border:`1px solid ${C.border}`,borderRadius:6,fontSize:12,fontFamily:"inherit",width:70}}/></td>
-                        <td style={{padding:"8px 12px"}}><input type="number" value={ing.cost} onChange={e=>updateIngredient(i,"cost",e.target.value)} placeholder="0.00" style={{padding:"6px 10px",border:`1px solid ${C.border}`,borderRadius:6,fontSize:12,fontFamily:"inherit",width:80}}/></td>
-                        <td style={{padding:"8px 12px"}}><button onClick={()=>removeIngredient(i)} style={{background:C.dangerLight,color:C.danger,border:"none",borderRadius:6,padding:"4px 8px",cursor:"pointer",fontWeight:700}}>✕</button></td>
-                      </tr>
-                    ))}</tbody>
-                  </table>
-                </div>
-                <div style={{display:"flex",gap:10,marginTop:14}}>
-                  <Btn variant="ghost" size="sm" onClick={addIngredient}>+ Add Ingredient</Btn>
-                  <Btn size="sm" onClick={saveRecipe}>💾 Save Recipe</Btn>
-                </div>
-              </>
-            ):(
-              <>
-                {(recipes[selectedItem.id]||[]).length===0?(
-                  <div style={{textAlign:"center",padding:"30px 0",color:C.textLight}}>No recipe added yet. Click "Edit Recipe" to add ingredients.</div>
-                ):(
-                  <>
-                    <DataTable headers={["Ingredient","Unit","Qty","Cost (SAR)"]} rows={(recipes[selectedItem.id]||[]).map(ing=>[ing.name,ing.unit,ing.qty,fmtSAR(parseFloat(ing.cost||0))])}/>
-                    <div style={{marginTop:16,padding:"14px 16px",background:C.bg,borderRadius:10,display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
-                      {[["Total Recipe Cost",fmtSAR(totalCost(selectedItem.id)),C.danger],["Selling Price",fmtSAR(selectedItem.price),C.primary],["Gross Margin",((selectedItem.price-totalCost(selectedItem.id))/selectedItem.price*100).toFixed(1)+"%",C.success]].map(([l,v,c])=>(
-                        <div key={l} style={{textAlign:"center"}}><div style={{fontSize:11,color:C.textMid}}>{l}</div><div style={{fontSize:18,fontWeight:800,color:c}}>{v}</div></div>
-                      ))}
-                    </div>
-                  </>
-                )}
-              </>
-            )}
-          </Card>
-        ):<Card><div style={{textAlign:"center",padding:"60px 0",color:C.textLight}}><div style={{fontSize:40,marginBottom:12}}>📋</div><div>Select a menu item to view or edit its recipe</div></div></Card>}
-      </div>
-    </div>
-  );
-}
 
 // ═══════════════════════════════════════════════════════════════════
 // GIFT CARD SYSTEM
