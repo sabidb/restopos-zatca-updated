@@ -2587,7 +2587,7 @@ function trialDetailsFromDoc(key,d){
     ownerName:d.ownerName||"",
     email:d.email||"",
     city:d.city||"Riyadh",
-    businessType:d.businessType==="supermarket"?"supermarket":"restaurant",
+    businessType:BUSINESS_TYPES[d.businessType]?d.businessType:"restaurant",
     startedAt:d.trialStartedAt||d.activatedAt||d.submittedAt||new Date().toISOString(),
     endsAt:d.customExpiryDate?new Date(d.customExpiryDate+"T23:59:59").toISOString():new Date(Date.now()+TRIAL_DAYS*86400000).toISOString(),
   };
@@ -2866,7 +2866,7 @@ function TrialSignup({onClose}){
 
             <label style={labelStyle}>What are you running?</label>
             <div style={{display:"flex",gap:10}}>
-              {[["restaurant","🍽️","Restaurant","Tables, dine-in, kitchen tickets"],["supermarket","🛒","Supermarket","Barcode checkout, weighed items"]].map(([v,icon,label,desc])=>(
+              {[["restaurant","🍽️","Restaurant","Tables, dine-in, kitchen tickets"],["supermarket","🛒","Supermarket","Barcode checkout, weighed items"],["hypermarket","🏬","Hypermarket","Supervisor approvals, loyalty rewards"]].map(([v,icon,label,desc])=>(
                 <button key={v} onClick={()=>set("businessType",v)} type="button"
                   style={{flex:1,padding:"12px",borderRadius:10,border:`2px solid ${form.businessType===v?"#1A6B4A":"rgba(255,255,255,0.15)"}`,background:form.businessType===v?"rgba(26,107,74,0.25)":"rgba(255,255,255,0.05)",color:form.businessType===v?"#7FFAB5":"rgba(255,255,255,0.6)",fontFamily:"inherit",cursor:"pointer",textAlign:"left"}}>
                   <div style={{fontSize:20,marginBottom:4}}>{icon}</div>
@@ -3292,7 +3292,7 @@ function BusinessRegistration({onNext,onLogin,onTryTrial,initial}){
               <div style={{padding:"14px 16px",background:"rgba(26,107,74,0.12)",border:"1px solid rgba(26,107,74,0.35)",borderRadius:12}}>
                 <div style={{fontSize:13,fontWeight:700,color:"#7FFAB5",marginBottom:10}}>{tr("🏬 What type of business is this?")}</div>
                 <div style={{display:"flex",gap:10}}>
-                  {[["restaurant","🍽️","Restaurant","Tables, dine-in, kitchen tickets"],["supermarket","🛒","Supermarket","Barcode checkout, weighed items"]].map(([v,icon,label,desc])=>(
+                  {[["restaurant","🍽️","Restaurant","Tables, dine-in, kitchen tickets"],["supermarket","🛒","Supermarket","Barcode checkout, weighed items"],["hypermarket","🏬","Hypermarket","Supervisor approvals, loyalty rewards"]].map(([v,icon,label,desc])=>(
                     <button key={v} onClick={()=>set("businessType",v)} type="button"
                       style={{flex:1,padding:"12px 12px",borderRadius:10,border:`2px solid ${form.businessType===v?"#1A6B4A":"rgba(255,255,255,0.15)"}`,background:form.businessType===v?"rgba(26,107,74,0.25)":"rgba(255,255,255,0.05)",color:form.businessType===v?"#7FFAB5":"rgba(255,255,255,0.6)",fontFamily:"inherit",cursor:"pointer",textAlign:"start"}}>
                       <div style={{fontSize:20,marginBottom:4}}>{icon}</div>
