@@ -16,6 +16,7 @@ import { TERMS_VERSION, TERMS_TITLE, TERMS_DATE, TERMS_PDF_PATH, TERMS_PREAMBLE,
   printAcceptanceCertificate } from "./terms.js";
 import { C } from "./lib/theme.js";
 import { LS } from "./lib/storage.js";
+import { fmtSAR, fmtDate, fmtDateTime } from "./lib/format.js";
 
 // ═══════════════════════════════════════════════════════════════════
 // TRIAL MODE — see src/trial.js. TRIAL is fixed for the life of the page:
@@ -2828,10 +2829,6 @@ function saveItemOrder(map){LS.set("restopos_item_order",map);const lic=LS.get("
 // POS item-box height (px). Lower = flatter/rectangular, higher = taller/square.
 function getPosBoxHeight(){const h=parseInt(LS.get("restopos_pos_box_height"));return (h>=44&&h<=160)?h:96;}
 function savePosBoxHeight(h){LS.set("restopos_pos_box_height",h);const lic=LS.get("restopos_license_v2")?.licenseKey;if(lic)debouncedSync(lic,"restopos_pos_box_height",h);}
-
-function fmtSAR(n){return"SAR "+Number(n).toFixed(2);}
-function fmtDate(d){return new Date(d).toLocaleDateString("en-SA",{day:"2-digit",month:"short",year:"numeric"});}
-function fmtDateTime(d){return new Date(d).toLocaleString("en-SA",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit",second:"2-digit"});}
 
 // ═══════════════════════════════════════════════════════════════════
 // REUSABLE UI COMPONENTS
