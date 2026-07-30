@@ -25,6 +25,9 @@ import { BUSINESS_TYPES, DEFAULT_BUSINESS_TYPE, getBusinessType, bizProfile, biz
 import { rolesForProfile, DEFAULT_PINS } from "./config/roles.js";
 import { requiresApproval } from "./lib/permissions.js";
 import { ApprovalGate } from "./components/ApprovalGate.jsx";
+import { loyaltyRulesForProfile } from "./config/loyalty.js";
+import { LoyaltyPanel } from "./components/LoyaltyPanel.jsx";
+import { earnPoints, redeemValue, nextLoyaltyPoints } from "./lib/loyalty.js";
 import { Card, Btn, Inp, Sel, TextArea, Slider, ToggleRow, Badge, StatCard, Modal, DataTable } from "./components/ui.jsx";
 import { TabBoundary, ErrorBoundary } from "./components/boundaries.jsx";
 import { AuditTrail } from "./screens/AuditTrail.jsx";
@@ -3680,6 +3683,9 @@ function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1
   const [custName,setCustName]=useState(initCustName||"");
   const [custPhone,setCustPhone]=useState(initCustPhone||"");
   const [custSuggestions,setCustSuggestions]=useState([]);
+  // Loyalty points chosen to redeem on this sale (0 unless a loyalty-enabled
+  // type shows the LoyaltyPanel and the cashier redeems).
+  const [loyaltyRedeemPts,setLoyaltyRedeemPts]=useState(0);
   const [invoiceNote,setInvoiceNote]=useState("");
   const [localOrderType,setOrderTypeLocal]=useState(initOrderType||"takeaway");
   const [localBillType,setLocalBillType]=useState("normal");
@@ -3736,8 +3742,19 @@ function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1
     ?(appliedPromo.type==="%"?subtotal*appliedPromo.value/100:Math.min(subtotal,appliedPromo.value))
     :0;
 
+  // Loyalty redemption — only when the active type enables loyalty AND a saved
+  // customer is attached. For every other type loyaltyRules is null, so
+  // loyaltyRedeemAmt is 0 and nothing here changes the total.
+  const _origTotal=(typeof total==="number"?total:(subtotal+(vat||0)));
+  const loyaltyRules=loyaltyRulesForProfile(bizProfile(license));
+  const loyaltyCustomer=(loyaltyRules&&(custPhone||custName))
+    ? (customers.find(c=>(custPhone&&c.phone===custPhone)||(custName&&c.name===custName&&!custPhone))||null)
+    : null;
+  const preLoyaltyTotal=Math.max(0,_origTotal-manualDiscountAmt-promoDiscountAmt);
+  const loyaltyRedeemAmt=(loyaltyRules&&loyaltyCustomer)?redeemValue(loyaltyRedeemPts,loyaltyRules):0;
+
   // Combined discount
-  const totalDiscountAmt=manualDiscountAmt+promoDiscountAmt;
+  const totalDiscountAmt=manualDiscountAmt+promoDiscountAmt+loyaltyRedeemAmt;
 
   // Prices are VAT-INCLUSIVE. With NO discount, the final total must equal the
   // original menu total exactly (35 → 35.00). The old code recomputed VAT as
@@ -3745,7 +3762,6 @@ function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1
   // producing 34.99. Here we keep the original inclusive total and only subtract
   // the discount (which is computed on the subtotal, unchanged), then derive VAT
   // from the resulting inclusive amount with 15/115 so everything stays consistent.
-  const _origTotal=(typeof total==="number"?total:(subtotal+(vat||0)));
   const finalTotal=parseFloat((Math.max(0,_origTotal-totalDiscountAmt)).toFixed(2));
   const finalVat=parseFloat((finalTotal*(15/115)).toFixed(2));
   const discountedSubtotal=parseFloat((finalTotal-finalVat).toFixed(2));
@@ -3859,6 +3875,7 @@ function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1
       shouldPrint,payInfo,manualDiscountAmt,promoDiscountAmt,
       isDraft,
       {customerName:custName,customerPhone:custPhone,invoiceNote,orderType:localOrderType,billType:localBillType,
+       loyaltyRedeemed:(loyaltyRules&&loyaltyCustomer)?loyaltyRedeemPts:0,
        isB2B,buyerName:buyerName.trim(),buyerVat:buyerVat.trim(),
        buyerStreet:buyerStreet.trim(),buyerBuilding:buyerBuilding.trim(),
        buyerDistrict:buyerDistrict.trim(),buyerCity:buyerCity.trim(),buyerPostal:buyerPostal.trim()}
@@ -4040,6 +4057,11 @@ function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1
               </div>
               {custName&&<div style={{marginTop:5,fontSize:10,color:"#1A6B4A",fontWeight:600}}>✓ {custName}{custPhone?" · "+custPhone:""}</div>}
             </div>
+
+            {/* Loyalty — renders only for loyalty-enabled types with a saved customer */}
+            <LoyaltyPanel customer={loyaltyCustomer} billTotal={preLoyaltyTotal} rules={loyaltyRules}
+              redeemedPoints={loyaltyRedeemPts}
+              onRedeemChange={(pts)=>setLoyaltyRedeemPts(pts)}/>
 
 
             {/* Discount */}
@@ -5166,6 +5188,12 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     // AUTO-SAVE CUSTOMER to CRM if phone or name was entered
     const custPhone2=extraData.customerPhone||customerPhone||"";
     const custName2=extraData.customerName||customerName||"";
+    // Loyalty: earn on this sale and subtract any points redeemed at checkout —
+    // ONLY for loyalty-enabled types. For every other type _loyRules is null and
+    // no loyaltyPoints field is written, leaving the customer record unchanged.
+    const _loyRules=loyaltyRulesForProfile(bizProfile(license));
+    const _loyEarn=_loyRules?earnPoints(finalTotal,_loyRules):0;
+    const _loyRedeem=_loyRules?(extraData.loyaltyRedeemed||0):0;
     if(custPhone2||custName2){
       try{
         const existing=LS.get("restopos_customers")||[];
@@ -5181,6 +5209,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
             totalSpent:(c.totalSpent||0)+finalTotal,
             visits:(c.visits||0)+1,
             lastVisit:TODAY,
+            ...(_loyRules?{loyaltyPoints:nextLoyaltyPoints(c.loyaltyPoints,_loyEarn,_loyRedeem)}:{}),
           }:c);
           LS.set("restopos_customers",updated);
           const _lk=LS.get("restopos_license_v2")?.licenseKey;
@@ -5197,6 +5226,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
             lastVisit:TODAY,
             notes:"Auto-saved from POS",
             createdAt:new Date().toISOString(),
+            ...(_loyRules?{loyaltyPoints:nextLoyaltyPoints(0,_loyEarn,_loyRedeem)}:{}),
           };
           const updated=[newCust,...existing];
           LS.set("restopos_customers",updated);
