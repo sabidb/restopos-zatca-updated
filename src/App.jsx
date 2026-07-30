@@ -5420,6 +5420,12 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   const [descModalIdx,setDescModalIdx]=useState(null);
   // Supermarket mode: barcode-first checkout + weighed items, no dine-in/tables/KOT.
   const superMode=isSupermarket();
+  // Which simplified till the client picked in Settings → Checkout: "A" Scan & Go,
+  // "B" Scan + Keypad, "C" Scan + Slim shelf. Read fresh so a Settings change
+  // applies as soon as the cashier returns to the POS.
+  const superLayout=superMode?(LS.get("restopos_super_layout")||"A"):null;
+  const [weighPick,setWeighPick]=useState(false); // ⚖ toolbar → pick a weighed product to weigh
+  const [shelfOpen,setShelfOpen]=useState(true); // Layout C quick-items shelf open/closed
   const [weighItem,setWeighItem]=useState(null);const [weighKg,setWeighKg]=useState("");
   const [scannedItem,setScannedItem]=useState(null);const [scanMiss,setScanMiss]=useState("");
   const [priceCheck,setPriceCheck]=useState(false); // scan-to-view-only (customer-facing)
@@ -5633,7 +5639,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     // kitchen ticket. Tries QZ Tray → ESC/POS serial → browser popup.
     // Skip for KOT Only — it has its own dedicated KOT print below.
     const kp=LS.get("restopos_kitchen_printer")||{};
-    if(kp.autoKOT&&!isKotOnly){
+    if(kp.autoKOT&&!isKotOnly&&!superMode){ // supermarket has no kitchen — never auto-print a KOT
       try{
         const newKot2=kotNo+1;LS.set("restopos_kot",newKot2);setKotNo(newKot2);
         const kotCart=[...cart];const kType=extraData.orderType||orderType;const kTable=selectedTable;
@@ -5670,6 +5676,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     // Window already closed by handleConfirm — just clear state
     setCart([]);
     setCustomerName("");setCustomerPhone("");setCustomerAddress("");setSelectedRow(null);
+    if(superMode)focusScanner(); // ready for the next customer's scan, hands-free
     // Sync to cloud
     try{
       const lk=LS.get("restopos_license_v2")?.licenseKey;
@@ -5939,6 +5946,93 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
       return ai-bi;
     });
   },[items,activeCat,savedCats,favourites,effOrder]);
+  // ── Supermarket checkout pieces (shared by layouts A / B / C) ──────
+  // Quick-keys = the cashier's favourites; ideal for loose produce, bags and
+  // no-barcode items that can't be scanned.
+  const quickItems=items.filter(i=>i.active&&favourites.includes(i.id));
+  const weighedItems=items.filter(i=>i.active&&i.weighed);
+  const superScanBar=(
+    <input ref={barcodeRef} value={barcodeInput}
+      onChange={e=>setBarcodeInput(e.target.value)}
+      onKeyDown={e=>{if(e.key==="Enter"&&barcodeInput.trim())handleBarcodeSearch(barcodeInput);}}
+      placeholder={priceCheck?"🔍 Price check — scan to view":"🔲 Scan barcode or type code…"}
+      style={{flex:1,minWidth:0,padding:"12px 16px",border:`2px solid ${priceCheck?C.warning:C.primary}`,borderRadius:10,fontSize:16,fontWeight:600,fontFamily:"inherit",background:"#fff",color:C.text}}/>
+  );
+  const superToolBtn=(label,onClick,active=false,accent=C.primary)=>(
+    <button onClick={onClick} style={{flexShrink:0,height:44,padding:"0 14px",borderRadius:10,border:`1.5px solid ${active?accent:C.border}`,background:active?accent+"18":"#fff",color:active?accent:C.textMid,cursor:"pointer",fontSize:13,fontWeight:800,fontFamily:"inherit",whiteSpace:"nowrap"}}>{label}</button>
+  );
+  const superReceipt=(
+    <div style={{flex:1,overflowY:"auto",padding:"10px 12px",display:"flex",flexDirection:"column",gap:6}}>
+      {cart.length===0
+        ? <div style={{margin:"auto",textAlign:"center",color:C.textLight}}><div style={{fontSize:40,opacity:0.5}}>🛒</div><div style={{fontSize:14,marginTop:6}}>Scan an item to start</div></div>
+        : cart.map((item,idx)=>(
+          <div key={idx} onClick={()=>setSelectedRow(idx===selectedRow?null:idx)}
+            style={{display:"flex",alignItems:"center",gap:10,padding:"11px 14px",borderRadius:10,cursor:"pointer",background:selectedRow===idx?C.primaryLight:"#fff",border:`1.5px solid ${selectedRow===idx?C.primary:C.border}`,boxShadow:idx===0&&selectedRow==null?`0 0 0 2px ${C.primary}22`:"none"}}>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:15,fontWeight:700,color:C.text}}>{item.name}</div>
+              <div style={{fontSize:12,color:C.textMid}}>{fmtSAR(item.price)}{item.weighed?"/kg":""} × {item.qty}{item.weighed?" kg":""}</div>
+            </div>
+            <div style={{fontSize:16,fontWeight:900,color:C.primary,minWidth:70,textAlign:"right"}}>{fmtSAR(item.price*item.qty)}</div>
+          </div>
+        ))}
+    </div>
+  );
+  const superQtyBar=(selectedRow!==null&&cart[selectedRow]&&(
+    <div style={{padding:"8px 14px",borderTop:`1px solid ${C.border}`,background:"#fff",display:"flex",gap:8,alignItems:"center"}}>
+      <span style={{fontSize:13,color:C.textMid,flex:1,fontWeight:700}}>{cart[selectedRow]?.name}</span>
+      <button onClick={()=>updateQty(-1)} style={{width:38,height:38,borderRadius:9,border:`1px solid ${C.border}`,background:C.dangerLight,color:C.danger,fontSize:20,fontWeight:700,cursor:"pointer"}}>−</button>
+      <span style={{fontSize:16,fontWeight:800,minWidth:28,textAlign:"center"}}>{cart[selectedRow]?.qty}</span>
+      <button onClick={()=>updateQty(1)} style={{width:38,height:38,borderRadius:9,border:`1px solid ${C.border}`,background:C.successLight,color:C.success,fontSize:20,fontWeight:700,cursor:"pointer"}}>+</button>
+      <button onClick={()=>{setCart(prev=>prev.filter((_,i)=>i!==selectedRow));setSelectedRow(null);}} style={{padding:"0 14px",height:38,borderRadius:9,border:`1px solid ${C.danger}`,background:C.dangerLight,color:C.danger,fontSize:12,fontWeight:800,cursor:"pointer",fontFamily:"inherit"}}>Remove</button>
+    </div>
+  ));
+  const superTotals=(
+    <div style={{padding:"14px 16px",borderTop:`2px solid ${C.border}`,background:"#fff"}}>
+      <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}><span style={{fontSize:12,color:C.textMid}}>Items {cart.length} · Qty {cart.reduce((s,i)=>s+i.qty,0)}</span><span style={{fontSize:12,color:C.zatca,fontWeight:700}}>VAT 15% incl. {fmtSAR(vat)}</span></div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,paddingTop:8,borderTop:`1px solid ${C.border}`}}><span style={{fontSize:17,fontWeight:800}}>Amount Due</span><span style={{fontSize:22,fontWeight:900,color:C.primary}}>{fmtSAR(total)}</span></div>
+      <div style={{display:"flex",gap:8}}>
+        <button onClick={()=>{const printed=(sales||[]).filter(s=>s.status!=="voided");if(!printed.length){alert("No previous bills yet");return;}setPrevAllDays(false);setPrevIndex(0);setShowPrevBill(true);}}
+          title="Previous bill" style={{padding:"14px 16px",background:C.primaryLight,border:`1.5px solid ${C.primary}44`,color:C.primary,borderRadius:11,fontFamily:"inherit",fontSize:13,fontWeight:800,cursor:"pointer",whiteSpace:"nowrap"}}>🕐 Prev</button>
+        {cart.length>0&&<button onClick={()=>{setCart([]);setSelectedRow(null);focusScanner();}} title="Clear cart" style={{padding:"14px 16px",background:"#fff",border:`1.5px solid ${C.danger}44`,color:C.danger,borderRadius:11,fontFamily:"inherit",fontSize:13,fontWeight:800,cursor:"pointer"}}>🗑</button>}
+        <button onClick={()=>{if(cart.length)setShowPayment(true);}} disabled={cart.length===0} style={{flex:1,padding:"14px 0",background:cart.length===0?"#e0e0e0":"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:11,fontFamily:"inherit",fontSize:16,fontWeight:900,cursor:cart.length===0?"not-allowed":"pointer"}}>💳 Pay {cart.length>0?fmtSAR(total):""}</button>
+      </div>
+    </div>
+  );
+  const superQuickGrid=(
+    <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:6,padding:"8px",overflowY:"auto"}}>
+      {quickItems.length===0
+        ? <div style={{gridColumn:"1/-1",textAlign:"center",fontSize:11,color:C.textLight,padding:"14px 6px"}}>No quick items yet — tap ☆ on products to pin them here.</div>
+        : quickItems.map(item=>{
+          const col=colorForCat(effectiveCat(item,savedCats),savedCats);
+          return(
+            <button key={item.id} onClick={()=>addToCart(item)} style={{textAlign:"left",background:"#fff",border:`1px solid ${C.border}`,borderLeft:`4px solid ${col}`,borderRadius:9,padding:"9px 10px",cursor:"pointer",fontFamily:"inherit"}}>
+              <div style={{fontSize:12,fontWeight:700,color:C.text,lineHeight:1.25}}>{item.name}</div>
+              <div style={{fontSize:12,fontWeight:900,color:col,marginTop:2}}>{fmtSAR(item.price)}{item.weighed?"/kg":""}</div>
+            </button>
+          );
+        })}
+    </div>
+  );
+  const superKeypad=(()=>{
+    const press=v=>{
+      if(v==="⌫")setBarcodeInput(s=>s.slice(0,-1));
+      else if(v==="↵"){if(barcodeInput.trim())handleBarcodeSearch(barcodeInput);}
+      else setBarcodeInput(s=>s+v);
+      if(v!=="↵")focusScanner(); // keep the hardware scanner live after a tap
+    };
+    const keyStyle=(special)=>({padding:"14px 0",borderRadius:9,border:`1px solid ${C.border}`,background:special==="ent"?C.primaryLight:special==="del"?C.dangerLight:"#fff",color:special==="ent"?C.primary:special==="del"?C.danger:C.text,fontSize:18,fontWeight:800,cursor:"pointer",fontFamily:"inherit"});
+    return(
+      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6,padding:"8px",flexShrink:0,borderTop:`1px solid ${C.border}`}}>
+        {["1","2","3","4","5","6","7","8","9"].map(k=><button key={k} onClick={()=>press(k)} style={keyStyle()}>{k}</button>)}
+        <button onClick={()=>press("⌫")} style={keyStyle("del")}>⌫</button>
+        <button onClick={()=>press("0")} style={keyStyle()}>0</button>
+        <button onClick={()=>press("↵")} style={keyStyle("ent")}>↵</button>
+      </div>
+    );
+  })();
+  const superModeChip=(
+    <span style={{marginLeft:"auto",flexShrink:0,fontSize:11,fontWeight:800,color:"#fff",background:C.primary,padding:"5px 11px",borderRadius:999,whiteSpace:"nowrap"}}>🛒 Supermarket</span>
+  );
   return(
     <div style={{display:"flex",height:`calc(100vh - ${TRIAL?82:52}px)`,overflow:"hidden"}}>
       {/* Previous Bills — step backward through printed invoices */}
@@ -6100,6 +6194,26 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
       <style>{`@keyframes slideDown{from{opacity:0;transform:translateX(-50%) translateY(-20px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}`}</style>
       {showPayment&&<PaymentModal total={total} subtotal={subtotal} vat={vat} promos={promos} license={license} vno={vno} kotNo={kotNo} customers={LS.get("restopos_customers")||[]} customerName={customerName} customerPhone={customerPhone} orderType={orderType} onConfirm={confirmPayment} onClose={()=>setShowPayment(false)}/>}
       {showReceipt&&lastOrder&&<ReceiptModal order={lastOrder} license={license} zatcaInvoice={lastZatcaInvoice} onClose={()=>{setShowReceipt(false);setLastZatcaInvoice(null);}}/>}
+      {/* ⚖ Weigh picker — pick a weighed product when there's no grid to tap (Layout A/C) */}
+      {weighPick&&(
+        <div onClick={()=>setWeighPick(false)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:2000,padding:20}}>
+          <div onClick={e=>e.stopPropagation()} style={{background:"#fff",borderRadius:16,padding:20,width:420,maxWidth:"100%",maxHeight:"80vh",overflow:"auto",fontFamily:"inherit"}}>
+            <div style={{fontSize:16,fontWeight:800,color:C.text,marginBottom:4}}>⚖️ Weigh an item</div>
+            <div style={{fontSize:12.5,color:C.textMid,marginBottom:14}}>Pick a weighed product, then enter its weight.</div>
+            {weighedItems.length===0
+              ? <div style={{textAlign:"center",color:C.textLight,fontSize:13,padding:"20px 0"}}>No weighed products yet.<br/><span style={{fontSize:11}}>Mark items as “Weighed” in Menu / Products.</span></div>
+              : <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:8}}>
+                  {weighedItems.map(item=>(
+                    <button key={item.id} onClick={()=>{setWeighPick(false);addToCart(item);}} style={{textAlign:"left",background:C.bg,border:`1.5px solid ${C.border}`,borderRadius:10,padding:"11px 12px",cursor:"pointer",fontFamily:"inherit"}}>
+                      <div style={{fontSize:13,fontWeight:700,color:C.text}}>{item.name}</div>
+                      <div style={{fontSize:13,fontWeight:900,color:C.warning,marginTop:2}}>{fmtSAR(item.price)}/kg</div>
+                    </button>
+                  ))}
+                </div>}
+            <button onClick={()=>setWeighPick(false)} style={{width:"100%",marginTop:16,padding:"11px",border:`1.5px solid ${C.border}`,background:"#fff",color:C.textMid,borderRadius:10,fontFamily:"inherit",fontSize:14,fontWeight:700,cursor:"pointer"}}>Cancel</button>
+          </div>
+        </div>
+      )}
       {weighItem&&(()=>{const w=parseFloat(weighKg)||0;const lineTotal=(weighItem.price*w);return(
         <div onClick={()=>setWeighItem(null)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:2000,padding:20}}>
           <div onClick={e=>e.stopPropagation()} style={{background:"#fff",borderRadius:16,padding:24,width:360,maxWidth:"100%",fontFamily:"inherit"}}>
@@ -6219,6 +6333,69 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
           </div>
         );
       })()}
+      {superMode?(
+        // ═══ SIMPLIFIED SUPERMARKET TILL — Layout A / B / C (Settings → Checkout) ═══
+        <div style={{flex:1,display:"flex",flexDirection:"column",background:C.bg,overflow:"hidden"}}>
+          {/* Toolbar — a handful of buttons, not the full restaurant bar */}
+          <div style={{padding:"9px 12px",background:"#fff",borderBottom:`1px solid ${C.border}`,display:"flex",gap:8,alignItems:"center"}}>
+            <span style={{fontSize:16,fontWeight:900,color:C.primary,flexShrink:0,letterSpacing:"-0.01em"}}>RestoPos</span>
+            {superToolBtn(priceCheck?"🔍 Price Check ON":"🔍 Price check",()=>setPriceCheck(p=>!p),priceCheck,C.warning)}
+            {superToolBtn("⚖ Weigh",()=>setWeighPick(true))}
+            {superModeChip}
+          </div>
+          {/* Scan bar — always the focus of the screen */}
+          <div style={{padding:"10px 12px",display:"flex",gap:8,background:C.bg,flexShrink:0}}>{superScanBar}</div>
+          {superLayout==="B"?(
+            // ── B · Scan + Keypad ──
+            <>
+              <div style={{flex:1,display:"flex",overflow:"hidden"}}>
+                <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",borderRight:`1px solid ${C.border}`}}>
+                  {superReceipt}
+                  {superQtyBar}
+                </div>
+                <div style={{width:290,flexShrink:0,display:"flex",flexDirection:"column",background:C.bg,overflow:"hidden"}}>
+                  <div style={{padding:"8px 10px 2px",fontSize:10,fontWeight:800,letterSpacing:"0.08em",color:C.textLight}}>★ QUICK ITEMS</div>
+                  <div style={{flex:1,overflow:"hidden",display:"flex",flexDirection:"column"}}>{superQuickGrid}</div>
+                  {superKeypad}
+                </div>
+              </div>
+              {superTotals}
+            </>
+          ):superLayout==="C"?(
+            // ── C · Scan + Slim shelf ──
+            <>
+              {superReceipt}
+              {superQtyBar}
+              <div style={{background:"#fff",borderTop:`1px solid ${C.border}`,flexShrink:0}}>
+                <button onClick={()=>setShelfOpen(o=>!o)} style={{width:"100%",display:"flex",alignItems:"center",gap:6,padding:"7px 12px",background:"transparent",border:"none",cursor:"pointer",fontFamily:"inherit"}}>
+                  <span style={{fontSize:10,fontWeight:800,letterSpacing:"0.08em",color:C.textLight}}>★ QUICK ITEMS</span>
+                  <span style={{marginLeft:"auto",fontSize:12,color:C.textMid}}>{shelfOpen?"▾":"▸"}</span>
+                </button>
+                {shelfOpen&&(
+                  <div style={{display:"flex",gap:6,padding:"0 12px 10px",overflowX:"auto"}}>
+                    {quickItems.length===0
+                      ? <div style={{fontSize:11,color:C.textLight,padding:"6px 0"}}>No quick items — tap ☆ on products to pin them here.</div>
+                      : quickItems.map(item=>{const col=colorForCat(effectiveCat(item,savedCats),savedCats);return(
+                          <button key={item.id} onClick={()=>addToCart(item)} style={{flexShrink:0,minWidth:96,textAlign:"left",background:C.bg,border:`1px solid ${C.border}`,borderLeft:`4px solid ${col}`,borderRadius:9,padding:"9px 11px",cursor:"pointer",fontFamily:"inherit"}}>
+                            <div style={{fontSize:12,fontWeight:700,color:C.text,whiteSpace:"nowrap"}}>{item.name}</div>
+                            <div style={{fontSize:12,fontWeight:900,color:col,marginTop:2}}>{fmtSAR(item.price)}{item.weighed?"/kg":""}</div>
+                          </button>
+                        );})}
+                  </div>
+                )}
+              </div>
+              {superTotals}
+            </>
+          ):(
+            // ── A · Scan & Go (default) ──
+            <>
+              {superReceipt}
+              {superQtyBar}
+              {superTotals}
+            </>
+          )}
+        </div>
+      ):(<>
       {/* LEFT — Menu */}
       <div style={{flex:1,display:"flex",flexDirection:"column",borderRight:`1px solid ${C.border}`,background:C.bg,overflow:"hidden"}}>
         <div style={{padding:"8px 12px",background:C.zatcaLight,borderBottom:`1px solid ${C.border}`,display:"flex",gap:8,alignItems:"center"}}>
@@ -6345,6 +6522,107 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
           <button onClick={()=>{setCart([]);setSelectedRow(null);}} style={{width:"100%",marginTop:8,padding:"8px 0",background:"transparent",color:C.danger,border:`1px solid ${C.danger}30`,borderRadius:8,fontFamily:"inherit",fontSize:12,fontWeight:600,cursor:"pointer"}}>🗑 Clear Cart</button>
         </div>
       </div>
+      </>)}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// GLOBAL BARCODE LISTENER
+// A hardware scanner works anywhere in the app — Settings, Advanced,
+// Inventory, anywhere except the billing POS (which handles scans itself).
+// On a scan it pops a small item-info window that auto-closes after 3s.
+// Detection is by keystroke speed: scanners fire far faster than a human
+// types, and fast characters are kept out of any focused field so a scan
+// while editing settings won't corrupt what you're typing.
+// ═══════════════════════════════════════════════════════════════════
+function GlobalScanPopup({items,active}){
+  const [hit,setHit]=useState(null); // {item,t} on a match · {miss,t} on unknown code
+  const buf=useRef({str:"",last:0});
+  const timer=useRef(null);
+  useEffect(()=>{
+    if(!active){setHit(null);return;}
+    const INTERVAL=50; // ms between keys — slower than any scanner, faster than any human
+    const MIN=3;       // shortest string we'll treat as a scanned code
+    // The first character of a scan can't be judged yet (no gap before it), so
+    // it may land in a focused field. Once we've CONFIRMED a scan, undo that one
+    // stray character. Runs only on a confirmed scan, so normal typing is never
+    // touched; wrapped in try/catch so a quirky field just keeps the char.
+    function undoLeak(code){
+      try{
+        const el=document.activeElement;
+        if(!el||(el.tagName!=="INPUT"&&el.tagName!=="TEXTAREA"))return;
+        const pos=el.selectionStart;
+        if(pos>0&&el.value[pos-1]===code[0]){
+          const proto=el.tagName==="TEXTAREA"?window.HTMLTextAreaElement.prototype:window.HTMLInputElement.prototype;
+          const setter=Object.getOwnPropertyDescriptor(proto,"value").set;
+          setter.call(el,el.value.slice(0,pos-1)+el.value.slice(pos));
+          el.dispatchEvent(new Event("input",{bubbles:true})); // let React pick up the change
+          el.selectionStart=el.selectionEnd=pos-1;
+        }
+      }catch(_){}
+    }
+    function onKey(e){
+      if(e.ctrlKey||e.metaKey||e.altKey)return;
+      const b=buf.current;const now=performance.now();
+      if(e.key==="Enter"){
+        const code=b.str;b.str="";
+        if(code.length>=MIN){e.preventDefault();e.stopPropagation();undoLeak(code);show(code);}
+        return;
+      }
+      if(e.key&&e.key.length===1){
+        const gap=now-b.last;b.last=now;
+        if(gap>INTERVAL){b.str=e.key;} // new burst / human keystroke — leave the field alone
+        else{b.str+=e.key;e.preventDefault();e.stopPropagation();} // fast run = scanner; keep out of inputs
+      }
+    }
+    document.addEventListener("keydown",onKey,true);
+    return ()=>{document.removeEventListener("keydown",onKey,true);if(timer.current)clearTimeout(timer.current);};
+  },[active,items]);
+  function show(codeRaw){
+    const code=codeRaw.trim();
+    const item=items.find(i=>String(i.barcode||"")===code)||items.find(i=>i.name?.toLowerCase()===code.toLowerCase());
+    setHit(item?{item,t:Date.now()}:{miss:code,t:Date.now()});
+    if(timer.current)clearTimeout(timer.current);
+    timer.current=setTimeout(()=>setHit(null),3000);
+  }
+  if(!hit)return null;
+  const it=hit.item;
+  const low=it&&it.stock!=null&&Number(it.stock)<=(LS.get("restopos_low_stock_threshold")||5);
+  return(
+    <div key={hit.t} onClick={()=>setHit(null)} style={{position:"fixed",top:64,left:"50%",transform:"translateX(-50%)",zIndex:100000,width:340,maxWidth:"92vw",background:"#fff",borderRadius:14,boxShadow:"0 16px 50px rgba(0,0,0,0.35)",border:`1px solid ${C.border}`,overflow:"hidden",cursor:"pointer",animation:"scanPop 0.18s ease"}}>
+      <style>{`@keyframes scanPop{from{opacity:0;transform:translate(-50%,-10px)}to{opacity:1;transform:translate(-50%,0)}}@keyframes scanBar{from{width:100%}to{width:0%}}`}</style>
+      {it?(
+        <>
+          <div style={{padding:"12px 16px",background:C.zatcaLight,borderBottom:`1px solid ${C.border}`,display:"flex",alignItems:"center",gap:10}}>
+            <div style={{fontSize:24,width:42,height:42,borderRadius:10,background:"#fff",border:`1px solid ${C.border}`,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{it.image?<img src={it.image} alt="" style={{width:"100%",height:"100%",objectFit:"cover",borderRadius:10}}/>:"📦"}</div>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:15,fontWeight:800,color:C.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{it.name}</div>
+              {it.nameAr&&<div style={{fontSize:12,color:C.textMid,direction:"rtl"}}>{it.nameAr}</div>}
+            </div>
+            <span style={{fontSize:9,fontWeight:800,color:C.zatca,background:"#fff",border:`1px solid ${C.zatca}44`,padding:"3px 7px",borderRadius:6,flexShrink:0}}>SCANNED</span>
+          </div>
+          <div style={{padding:"12px 16px",display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+            {[["Price",fmtSAR(it.price)+(it.weighed?" / kg":"")],["In stock",(it.stock!=null?it.stock:"—")+(it.weighed?" kg":" pcs")],["Category",it.category||"—"],["Barcode",it.barcode||"—"]].map(([k,v])=>(
+              <div key={k}>
+                <div style={{fontSize:10,fontWeight:700,letterSpacing:"0.05em",textTransform:"uppercase",color:C.textLight}}>{k}</div>
+                <div style={{fontSize:14,fontWeight:700,color:k==="Price"?C.primary:C.text,fontFamily:k==="Barcode"?"monospace":"inherit"}}>{v}</div>
+              </div>
+            ))}
+          </div>
+          {low&&<div style={{margin:"0 16px 12px",fontSize:12,fontWeight:700,color:C.danger,background:C.dangerLight,borderRadius:8,padding:"6px 10px"}}>⚠️ Low stock</div>}
+        </>
+      ):(
+        <div style={{padding:"16px 18px",display:"flex",alignItems:"center",gap:12}}>
+          <div style={{fontSize:24}}>❓</div>
+          <div style={{minWidth:0}}>
+            <div style={{fontSize:14,fontWeight:800,color:C.text}}>No product found</div>
+            <div style={{fontSize:12,color:C.textMid,fontFamily:"monospace",wordBreak:"break-all"}}>{hit.miss}</div>
+          </div>
+        </div>
+      )}
+      {/* countdown bar → auto-closes in 3s */}
+      <div style={{height:3,background:C.primary,animation:"scanBar 3s linear forwards"}}/>
     </div>
   );
 }
@@ -7910,10 +8188,70 @@ function KitchenPrinterSettings(){
     </Card>);
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// CHECKOUT LAYOUT PICKER (supermarket only) — choose the till layout A/B/C
+// ═══════════════════════════════════════════════════════════════════
+function CheckoutLayoutTab(){
+  const [choice,setChoice]=useState(()=>LS.get("restopos_super_layout")||"A");
+  function pick(id){setChoice(id);LS.set("restopos_super_layout",id);}
+  const OPTS=[
+    {id:"A",icon:"🧾",title:"Scan & Go",tagline:"Simplest — one scan, one list, one Pay",
+     desc:"No product grid at all. The scan box stays focused and the receipt fills the screen. Best for a fast lane where nearly everything has a barcode.",
+     bullets:["Scanner always focused","Big receipt + one giant Pay","⚖ Weigh button for loose items"]},
+    {id:"B",icon:"⌨️",title:"Scan + Keypad",tagline:"Receipt on the left, keypad + quick keys on the right",
+     desc:"Adds an on-screen number pad for typing codes / PLUs, plus quick-key buttons for your pinned items. Best when you mix scanned goods with lots of weighed produce.",
+     bullets:["Everything in Scan & Go","On-screen numeric keypad","Quick keys from your ★ favourites"]},
+    {id:"C",icon:"🗂️",title:"Scan + Slim shelf",tagline:"Scan-first, with a small shelf of favourites",
+     desc:"Closest to the old screen but stripped down: scan bar and receipt lead, with one collapsible row of your favourite / no-barcode items underneath. Least retraining for staff.",
+     bullets:["Scan bar + receipt lead","One collapsible ★ quick-items row","Reuses your existing favourites"]},
+  ];
+  const preview={
+    A:["🔲 Scan box","🧾 Receipt (full width)","💳 Pay"],
+    B:["🔲 Scan box","🧾 Receipt","⌨️ Keypad + ★ keys","💳 Pay"],
+    C:["🔲 Scan box","🧾 Receipt","★ Quick-items shelf","💳 Pay"],
+  };
+  return(
+    <Card style={{maxWidth:760}}>
+      <div style={{fontSize:15,fontWeight:800,marginBottom:4}}>🛒 Supermarket Checkout Layout</div>
+      <div style={{fontSize:13,color:C.textMid,marginBottom:20}}>Pick how the till looks for your cashiers. Your products, sales, and ZATCA invoices are unchanged — only the checkout screen changes. Applies next time you open the POS.</div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:14}}>
+        {OPTS.map(o=>{
+          const on=choice===o.id;
+          return(
+            <div key={o.id} onClick={()=>pick(o.id)} style={{border:`2px solid ${on?C.primary:C.border}`,background:on?C.primaryLight:"#fff",borderRadius:14,padding:16,cursor:"pointer",transition:"all 0.15s",position:"relative"}}>
+              <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+                <div style={{fontSize:26,flexShrink:0}}>{o.icon}</div>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:11,fontWeight:800,color:C.textLight,letterSpacing:"0.06em"}}>OPTION {o.id}</div>
+                  <div style={{fontSize:15,fontWeight:800,color:on?C.primary:C.text}}>{o.title}</div>
+                </div>
+                <div style={{width:20,height:20,borderRadius:"50%",border:`2px solid ${on?C.primary:C.border}`,background:on?C.primary:"#fff",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{on&&<div style={{width:8,height:8,borderRadius:"50%",background:"#fff"}}/>}</div>
+              </div>
+              <div style={{fontSize:12,fontWeight:700,color:on?C.primary:C.textMid,marginBottom:8}}>{o.tagline}</div>
+              {/* mini wireframe */}
+              <div style={{display:"flex",flexDirection:"column",gap:4,background:C.bg,border:`1px solid ${C.border}`,borderRadius:8,padding:8,marginBottom:10}}>
+                {preview[o.id].map((r,i)=>(
+                  <div key={i} style={{fontSize:10,fontWeight:700,color:C.textMid,background:"#fff",border:`1px solid ${C.border}`,borderRadius:5,padding:"4px 7px"}}>{r}</div>
+                ))}
+              </div>
+              <div style={{fontSize:12,color:C.textMid,lineHeight:1.5,marginBottom:8}}>{o.desc}</div>
+              <ul style={{margin:0,paddingLeft:16,display:"flex",flexDirection:"column",gap:3}}>
+                {o.bullets.map((b,i)=><li key={i} style={{fontSize:11.5,color:C.text}}>{b}</li>)}
+              </ul>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{marginTop:16,padding:"11px 14px",background:C.successLight,border:`1px solid ${C.success}44`,borderRadius:10,fontSize:12.5,color:C.success,fontWeight:700}}>✓ Saved — “{OPTS.find(o=>o.id===choice)?.title}” is now your checkout layout.</div>
+    </Card>
+  );
+}
+
 function Settings({company,setCompany,tables,setTables,license,onClearLicense,onSwitchAccount,pins,setPins,invoiceFormat,setInvoiceFormat,lang="en",onLangChange,sales=[],items=[]}){
   const [tab,setTab]=useState("company");const [newTableCount,setNewTableCount]=useState(tables.length);const [companySaved,setCompanySaved]=useState(false);
   const TAB_LABELS={"company":"🏢 "+t("Company",lang),"dashboard":"📊 "+t("Dashboard",lang),"tables":"🪑 "+t("Tables",lang),"printers":"🖨️ "+t("Bill Printer",lang),"invoices":"📄 "+t("Invoices",lang),"backup":"💾 "+t("Backup",lang),"security":"🔐 "+t("Security",lang),"license":"📋 "+t("License",lang),"language":"🌐 "+t("Language",lang)};
-  const tabs=[[`company`,`🏢 ${t("Company",lang)}`],[`dashboard`,`📊 ${t("Dashboard",lang)}`],[`tables`,`🪑 ${t("Tables",lang)}`],[`printers`,`🖨️ ${t("Bill Printer",lang)}`],[`invoices`,`📄 ${t("Invoices",lang)}`],[`presets`,`🎨 ${t("Preset Bills",lang)}`],[`backup`,`💾 ${t("Backup",lang)}`],[`security`,`🔐 ${t("Security",lang)}`],[`license`,`📋 ${t("License",lang)}`],[`language`,`🌐 ${t("Language",lang)}`]];
+  const superMode=isSupermarket();
+  const tabs=[[`company`,`🏢 ${t("Company",lang)}`],[`dashboard`,`📊 ${t("Dashboard",lang)}`],...(superMode?[[`checkout`,`🛒 ${t("Checkout",lang)}`]]:[[`tables`,`🪑 ${t("Tables",lang)}`]]),[`printers`,`🖨️ ${t("Bill Printer",lang)}`],[`invoices`,`📄 ${t("Invoices",lang)}`],[`presets`,`🎨 ${t("Preset Bills",lang)}`],[`backup`,`💾 ${t("Backup",lang)}`],[`security`,`🔐 ${t("Security",lang)}`],[`license`,`📋 ${t("License",lang)}`],[`language`,`🌐 ${t("Language",lang)}`]];
   return(<div dir={lang==="ar"?"rtl":"ltr"} style={{fontFamily:lang==="ar"?"'Tajawal',sans-serif":"inherit"}}>
     <div style={{display:"flex",gap:8,marginBottom:20,flexWrap:"wrap"}}>{tabs.map(([id,label])=><button key={id} onClick={()=>setTab(id)} style={{padding:"8px 16px",borderRadius:8,border:`1.5px solid ${tab===id?C.primary:C.border}`,background:tab===id?C.primaryLight:"#fff",color:tab===id?C.primary:C.textMid,fontFamily:"inherit",fontSize:13,fontWeight:600,cursor:"pointer"}}>{TAB_LABELS[id]||label}</button>)}</div>
     {tab==="company"&&<Card style={{maxWidth:640}}>
@@ -7928,6 +8266,7 @@ function Settings({company,setCompany,tables,setTables,license,onClearLicense,on
       <div style={{display:"flex",alignItems:"center",gap:12,marginTop:16}}><Btn onClick={()=>{LS.set("restopos_company",company);setCompanySaved(true);}}>💾 Save Settings</Btn>{companySaved&&<span style={{fontSize:12,color:C.success,fontWeight:700}}>✓ Saved successfully</span>}</div>
     </Card>}
     {tab==="dashboard"&&<DashboardEditor sales={sales} items={items}/>}
+    {tab==="checkout"&&<CheckoutLayoutTab/>}
     {tab==="tables"&&<Card style={{maxWidth:500}}>
       <div style={{fontSize:15,fontWeight:700,marginBottom:16}}>Table Configuration</div>
       <div style={{display:"flex",gap:10,marginBottom:20,alignItems:"flex-end"}}><Inp label="Number of Tables" value={newTableCount} onChange={v=>setNewTableCount(parseInt(v)||1)} type="number"/><Btn onClick={()=>setTables(Array.from({length:newTableCount},(_,i)=>({id:i+1,status:"free",capacity:4})))}>Update</Btn></div>
@@ -16642,6 +16981,7 @@ export default function App(){
     return "dashboard";
   });
   function setScreen(s){_setScreen(s);LS.set("restopos_last_screen",s);}
+  const [sidebarOpen,setSidebarOpen]=useState(false); // supermarket ☰ menu drawer
   const [terminated,setTerminated]=useState(null);
   const [showTrialSignup,setShowTrialSignup]=useState(false);
   // Local expiry check so an offline trial still locks on day 15; the
@@ -17262,6 +17602,22 @@ export default function App(){
   function handleSwitchAccount(){LS.del("restopos_license_v2");LS.del("restopos_client_creds");setLicense(null);setCurrentUser(null);setStep("register");}
   const ALL_NAV=[["dashboard","📊","Dashboard",["Admin","Manager"]],["pos","🖥️","POS",["Admin","Manager","Cashier"]],["settings","⚙️","Settings",["Admin"]],["create","➕","Create",["Admin","Manager"]],["transactions","💳","Transactions",["Admin","Manager"]],["financials","🏦","Financials",["Admin","Manager"]],["customers","👥","CRM",["Admin","Manager"]],["reports","📋","Reports",["Admin","Manager"]],["advanced","⚡","Advanced",["Admin","Manager"]],["inventory","📦","Inventory",["Admin","Manager"]],["vat","🧾","VAT",["Admin","Manager"]],["shifts","🔄","Shifts",["Admin","Manager"]],["help","❓","Help",["Admin","Manager","Cashier"]]];
   const NAV=ALL_NAV.filter(([,,,roles])=>currentUser&&roles.includes(currentUser.role));
+  const superMode=isSupermarket();
+  // Supermarket navigation is a ☰ sidebar: the same modules as restaurant,
+  // grouped as a main heading with its branches. Only ids the user's role can
+  // see are shown (NAV is already role-filtered). Kitchen/tables are handled
+  // inside their own screens.
+  const NAV_BY_ID=Object.fromEntries(NAV.map(n=>[n[0],n]));
+  const SUPER_LABELS={create:"Products"}; // clearer wording for a supermarket
+  const SUPER_GROUPS=[
+    ["Sell","🛒",["pos","transactions"]],
+    ["Catalogue","🏷️",["create","inventory"]],
+    ["Reports","📈",["dashboard","reports","financials","vat"]],
+    ["Customers","👥",["customers"]],
+    ["Manage","⚙️",["shifts","advanced","settings","help"]],
+  ].map(([g,ic,ids])=>[g,ic,ids.filter(id=>NAV_BY_ID[id])]).filter(([,,ids])=>ids.length);
+  // Quick tabs always visible on the supermarket top bar (role-permitting).
+  const SUPER_TOP=["pos","transactions"].filter(id=>NAV_BY_ID[id]);
   if(step==="checking")return<div style={{minHeight:"100vh",background:"#0a1628",display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{color:"#fff",fontSize:16}}>Loading…</div></div>;
   // Day 15: the trial locks, but nothing is deleted — the workspace and its
   // cloud copy both stay put, waiting for the client to register. Checked
@@ -17327,13 +17683,18 @@ export default function App(){
       {TRIAL&&<TrialBanner license={license} onModeChange={handleTrialModeChange} onRegister={handleRegisterFromTrial}/>}
       <div style={{display:"flex",alignItems:"stretch",flexShrink:0,zIndex:100,boxShadow:"0 2px 12px rgba(0,0,0,0.18)",minHeight:50,width:"100%",flexWrap:"nowrap"}}>
         <div style={{background:"linear-gradient(135deg,#1A3D2B 0%,#1F4D36 100%)",display:"flex",alignItems:"center",gap:8,padding:"0 12px",flexShrink:0,borderRight:"1px solid rgba(255,255,255,0.1)"}}>
-          <div style={{width:26,height:26,background:"linear-gradient(135deg,#2ECC71,#F0A500)",borderRadius:6,display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontSize:13,fontWeight:900,flexShrink:0}}>R</div>
+          {superMode&&<button onClick={()=>setSidebarOpen(true)} title="Menu" aria-label="Open menu" style={{background:"rgba(255,255,255,0.1)",border:"1px solid rgba(255,255,255,0.18)",borderRadius:7,width:30,height:30,display:"flex",flexDirection:"column",justifyContent:"center",alignItems:"center",gap:3,cursor:"pointer",flexShrink:0,padding:0}}>
+            <span style={{width:15,height:2,background:"#fff",borderRadius:2}}/><span style={{width:15,height:2,background:"#fff",borderRadius:2}}/><span style={{width:15,height:2,background:"#fff",borderRadius:2}}/>
+          </button>}
+          {superMode
+            ? <img src="/brand-logo.png" alt="RestoPOS" style={{width:28,height:28,borderRadius:6,flexShrink:0,objectFit:"cover"}}/>
+            : <div style={{width:26,height:26,background:"linear-gradient(135deg,#2ECC71,#F0A500)",borderRadius:6,display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontSize:13,fontWeight:900,flexShrink:0}}>R</div>}
           <div style={{display:viewport.w<500?"none":"block"}}><div style={{fontSize:12,fontWeight:800,color:"#fff",lineHeight:1,whiteSpace:"nowrap"}}>RestoPOS</div><div style={{fontSize:7,color:"rgba(255,255,255,0.5)",letterSpacing:"0.1em",whiteSpace:"nowrap"}}>{lang==="ar"?`المرحلة 2 · ${APP_VERSION}`:`ZATCA P2 · ${APP_VERSION}`}</div></div>
         </div>
-        <div style={{background:"linear-gradient(90deg,#E8F4EE 0%,#F0F9F4 100%)",flex:1,display:"flex",alignItems:"center",padding:"0 4px",overflowX:"auto",borderRight:"1px solid #C8E6D4",minWidth:0}}>
-          {NAV.map(([id,icon,label])=>(
-            <button key={id} onClick={()=>setScreen(id)} style={{padding:viewport.w<640?"5px 7px":"5px 9px",borderRadius:6,border:screen===id?"1.5px solid #1A6B4A":"1px solid transparent",background:screen===id?"#fff":"transparent",color:screen===id?C.primary:"#2D5A40",fontFamily:"inherit",fontSize:viewport.w<640?10:11,fontWeight:screen===id?700:500,cursor:"pointer",display:"flex",alignItems:"center",gap:3,whiteSpace:"nowrap",transition:"all 0.15s",flexShrink:0,boxShadow:screen===id?"0 1px 4px rgba(26,107,74,0.15)":"none"}}>
-              <span style={{fontSize:11}}>{icon}</span>{viewport.w>=500&&<span>{t(label,lang)}</span>}
+        <div style={{background:"linear-gradient(90deg,#E8F4EE 0%,#F0F9F4 100%)",flex:1,display:"flex",alignItems:"center",gap:superMode?6:0,padding:"0 4px",overflowX:"auto",borderRight:"1px solid #C8E6D4",minWidth:0}}>
+          {(superMode?SUPER_TOP.map(id=>NAV_BY_ID[id]):NAV).map(([id,icon,label])=>(
+            <button key={id} onClick={()=>setScreen(id)} style={{padding:superMode?"6px 14px":(viewport.w<640?"5px 7px":"5px 9px"),borderRadius:6,border:screen===id?"1.5px solid #1A6B4A":"1px solid transparent",background:screen===id?"#fff":"transparent",color:screen===id?C.primary:"#2D5A40",fontFamily:"inherit",fontSize:superMode?12:(viewport.w<640?10:11),fontWeight:screen===id?700:(superMode?600:500),cursor:"pointer",display:"flex",alignItems:"center",gap:4,whiteSpace:"nowrap",transition:"all 0.15s",flexShrink:0,boxShadow:screen===id?"0 1px 4px rgba(26,107,74,0.15)":"none"}}>
+              <span style={{fontSize:superMode?13:11}}>{icon}</span>{(superMode||viewport.w>=500)&&<span>{t(superMode&&SUPER_LABELS[id]?SUPER_LABELS[id]:label,lang)}</span>}
             </button>
           ))}
         </div>
@@ -17392,6 +17753,37 @@ export default function App(){
           <button onClick={()=>setCurrentUser(null)} style={{fontSize:9,background:"rgba(217,64,64,0.25)",color:"#ffaaaa",border:"1px solid rgba(217,64,64,0.35)",padding:"3px 7px",borderRadius:4,cursor:"pointer",fontFamily:"inherit",fontWeight:700,whiteSpace:"nowrap"}}>⎋</button>
         </div>
       </div>
+      {/* ☰ SUPERMARKET SIDEBAR — every module, grouped as a heading with its branches */}
+      {superMode&&sidebarOpen&&(
+        <div onClick={()=>setSidebarOpen(false)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:9000,display:"flex",animation:"sbFade 0.15s ease"}}>
+          <div onClick={e=>e.stopPropagation()} style={{width:290,maxWidth:"85vw",height:"100%",background:"#fff",boxShadow:"4px 0 30px rgba(0,0,0,0.3)",display:"flex",flexDirection:"column",animation:"sbSlide 0.2s ease"}}>
+            <style>{`@keyframes sbFade{from{opacity:0}to{opacity:1}}@keyframes sbSlide{from{transform:translateX(-100%)}to{transform:translateX(0)}}`}</style>
+            <div style={{background:"linear-gradient(135deg,#1A3D2B 0%,#1F4D36 100%)",padding:"14px 16px",display:"flex",alignItems:"center",gap:10}}>
+              <img src="/brand-logo.png" alt="RestoPOS" style={{width:34,height:34,borderRadius:8,objectFit:"cover"}}/>
+              <div style={{flex:1}}>
+                <div style={{fontSize:15,fontWeight:800,color:"#fff",lineHeight:1}}>RestoPOS</div>
+                <div style={{fontSize:9,color:"rgba(255,255,255,0.55)",letterSpacing:"0.1em",marginTop:3}}>🛒 SUPERMARKET</div>
+              </div>
+              <button onClick={()=>setSidebarOpen(false)} aria-label="Close menu" style={{background:"rgba(255,255,255,0.12)",border:"none",borderRadius:"50%",width:30,height:30,color:"#fff",fontSize:18,cursor:"pointer",flexShrink:0,lineHeight:1}}>×</button>
+            </div>
+            <div style={{flex:1,overflowY:"auto",padding:"8px 10px"}}>
+              {SUPER_GROUPS.map(([group,gicon,ids])=>(
+                <div key={group} style={{marginBottom:6}}>
+                  <div style={{fontSize:10,fontWeight:800,letterSpacing:"0.08em",color:C.textLight,padding:"10px 10px 5px",textTransform:"uppercase"}}>{gicon} {t(group,lang)}</div>
+                  {ids.map(id=>{const[,icon,label]=NAV_BY_ID[id];const on=screen===id;return(
+                    <button key={id} onClick={()=>{setScreen(id);setSidebarOpen(false);}} style={{width:"100%",textAlign:"left",display:"flex",alignItems:"center",gap:11,padding:"11px 12px",borderRadius:10,border:"none",background:on?C.primaryLight:"transparent",color:on?C.primary:C.text,fontFamily:"inherit",fontSize:14,fontWeight:on?800:600,cursor:"pointer",marginBottom:1}}>
+                      <span style={{fontSize:17,width:22,textAlign:"center",flexShrink:0}}>{icon}</span>
+                      <span style={{flex:1}}>{t(SUPER_LABELS[id]||label,lang)}</span>
+                      {on&&<span style={{width:7,height:7,borderRadius:"50%",background:C.primary,flexShrink:0}}/>}
+                    </button>
+                  );})}
+                </div>
+              ))}
+            </div>
+            <div style={{padding:"10px 14px",borderTop:`1px solid ${C.border}`,fontSize:10,color:C.textLight,textAlign:"center"}}>RestoPOS · {APP_VERSION}</div>
+          </div>
+        </div>
+      )}
       <div style={{flex:1,padding:screen==="pos"?0:20,overflowY:screen==="pos"?"hidden":"auto",width:"100%",minHeight:0,height:"calc(100vh - 50px)"}}>
         {announcementBanner&&screen!=="pos"&&(
           <div style={{background:"linear-gradient(135deg,#F0A500,#e09000)",color:"#fff",padding:"9px 16px",marginBottom:14,borderRadius:10,display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,boxShadow:"0 2px 12px rgba(240,165,0,0.25)"}}>
@@ -17448,6 +17840,8 @@ export default function App(){
         {screen==="help"&&<Help license={license||undefined} lang={lang} onLogout={()=>{setCurrentUser(null);setStep("login");}}/>}
         </TabBoundary>
       </div>
+      {/* Scanner is live everywhere except the billing POS (which handles scans itself). */}
+      <GlobalScanPopup items={items} active={screen!=="pos"}/>
     </div>
     </ErrorBoundary>
   );
