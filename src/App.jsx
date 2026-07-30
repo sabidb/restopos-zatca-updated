@@ -19,6 +19,7 @@ import { LS } from "./lib/storage.js";
 import { fmtSAR, fmtDate, fmtDateTime } from "./lib/format.js";
 import { TODAY } from "./lib/date.js";
 import { logActivity } from "./lib/activity.js";
+import { initSync, debouncedSync, syncKeyToFirestore } from "./lib/sync.js";
 import { getLang, setLangStore, t, dir } from "./i18n/index.js";
 import { BUSINESS_TYPES, DEFAULT_BUSINESS_TYPE, getBusinessType, bizProfile, bizFeature, isSupermarket } from "./config/businessTypes.js";
 import { Card, Btn, Inp, Sel, TextArea, Slider, ToggleRow, Badge, StatCard, Modal, DataTable } from "./components/ui.jsx";
@@ -94,6 +95,9 @@ if (TRIAL) initTrialMirror({ db, doc, collection, setDoc, writeBatch });
 // Every client's sales history, one document per business day, kept for years.
 // Must also come after db exists.
 initCloudArchive({ db, doc, collection, setDoc, getDoc, getDocs, query, where, orderBy, limit, startAfter, writeBatch });
+// Debounced per-key cloud backup engine (src/lib/sync.js). Inject the Firestore
+// handles the same way; must come after db exists, before any screen renders.
+initSync({ db, doc, setDoc });
 // Support hook. Not temporary any more, and not decoration: the questions it
 // answers are ones nobody can answer from the outside — is this till signed in,
 // and are any of its invoices still missing from the permanent archive. Reading
@@ -1025,47 +1029,6 @@ const SYNC_KEYS=[
   "restopos_stock_movements","restopos_suppliers","restopos_low_stock_threshold", // inventory
 ];
 
-// Debounce helper — only sync after 3s of no changes
-const _syncTimers={};
-function debouncedSync(licenseKey,key,data){
-  if(_syncTimers[key])clearTimeout(_syncTimers[key]);
-  _syncTimers[key]=setTimeout(()=>syncKeyToFirestore(licenseKey,key,data),3000);
-}
-
-// Everything below lands in ONE Firestore document, which is capped at 1 MiB.
-// A single key that grows without limit therefore takes down the backup of
-// every OTHER key with it, and the only symptom is a console warning nobody
-// reads. Refuse the oversized key instead, loudly, and keep the rest working.
-const MAX_SYNC_FIELD_BYTES=350000;
-const _oversizeWarned=new Set();
-async function syncKeyToFirestore(licenseKey,key,data){
-  if(!licenseKey)return;
-  try{
-    const json=JSON.stringify(data);
-    const size=new TextEncoder().encode(json).length;
-    if(size>MAX_SYNC_FIELD_BYTES){
-      if(!_oversizeWarned.has(key)){
-        _oversizeWarned.add(key);
-        console.error(`[Sync] REFUSING to sync "${key}": ${(size/1024).toFixed(0)} KB exceeds the `+
-          `${(MAX_SYNC_FIELD_BYTES/1024).toFixed(0)} KB per-key budget. Syncing it would push `+
-          `client_data/${licenseKey} past Firestore's 1 MiB document limit and stop ALL backup `+
-          `for this client. If this key needs cloud storage it belongs in a subcollection.`);
-      }
-      return;
-    }
-    const docRef=doc(db,"client_data",licenseKey);
-    // Use setDoc with merge so we don't overwrite other keys
-    await setDoc(docRef,{
-      [key]:json,
-      [`${key}_updatedAt`]:new Date().toISOString(),
-      licenseKey,
-      lastSyncAt:new Date().toISOString(),
-    },{merge:true});
-  }catch(e){
-    // Louder than a warning: this is the client's backup failing.
-    console.error("[Sync] Failed to sync",key,":",e.message);
-  }
-}
 
 // Sessions and the day log used to be two of the SYNC_KEYS, so existing
 // clients still have them sitting in client_data/{key} as JSON strings. Once
