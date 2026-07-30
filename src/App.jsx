@@ -22,6 +22,7 @@ import { logActivity } from "./lib/activity.js";
 import { initSync, debouncedSync, syncKeyToFirestore } from "./lib/sync.js";
 import { getLang, setLangStore, t, dir } from "./i18n/index.js";
 import { BUSINESS_TYPES, DEFAULT_BUSINESS_TYPE, getBusinessType, bizProfile, bizFeature, isSupermarket } from "./config/businessTypes.js";
+import { rolesForProfile } from "./config/roles.js";
 import { Card, Btn, Inp, Sel, TextArea, Slider, ToggleRow, Badge, StatCard, Modal, DataTable } from "./components/ui.jsx";
 import { TabBoundary, ErrorBoundary } from "./components/boundaries.jsx";
 import { AuditTrail } from "./screens/AuditTrail.jsx";
@@ -3491,7 +3492,10 @@ function LicenseVerification({businessData,onSuccess,onBack,onLogin,onTryTrial})
 function RoleLogin({license,onLogin,lang="en",onClientLogin}){
   const [selectedRole,setSelectedRole]=useState(null);const [pin,setPin]=useState("");const [error,setError]=useState("");
   const pins=LS.get("restopos_pins")||DEFAULT_PINS;
-  const roles=[{id:"Admin",icon:"👑",desc:"Full access"},{id:"Manager",icon:"📊",desc:"Reports & management"},{id:"Cashier",icon:"🖥️",desc:"POS billing only"}];
+  // Roles come from the registry, ordered high→low authority. For existing
+  // types this is exactly Admin/Manager/Cashier (same icons/descriptions as
+  // before); a type that opts Supervisor in gets it here automatically.
+  const roles=rolesForProfile(bizProfile(license)).slice().reverse();
   function handleLoginWithPin(p){if(p===pins[selectedRole]){onLogin({role:selectedRole,name:selectedRole});}else{setError("Incorrect PIN");setPin("");}}
   // Keyboard support for PIN
   useEffect(()=>{
