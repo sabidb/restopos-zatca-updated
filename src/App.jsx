@@ -35,6 +35,7 @@ import { Expenses } from "./screens/Expenses.jsx";
 import { InventoryManagement } from "./screens/InventoryManagement.jsx";
 import { cloudGapOf, archiveSpanOf } from "./lib/cloudGap.js";
 import { CloudGapBar } from "./components/CloudGapBar.jsx";
+import { _escHTML, _escMultiline } from "./lib/html.js";
 
 // ═══════════════════════════════════════════════════════════════════
 // TRIAL MODE — see src/trial.js. TRIAL is fixed for the life of the page:
@@ -4425,9 +4426,6 @@ const RECEIPT_FONT_MAP={
   "impact":"'Tahoma','Arial','Segoe UI',sans-serif",
   "scheherazade":"'Tahoma','Arial','Times New Roman',serif",
 };
-function _escHTML(s){if(s===0)return"0";if(!s)return"";return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
-// Convert multi-line text (with newlines) into safe HTML with <br> between lines
-function _escMultiline(s){if(!s)return"";return String(s).split(/\r?\n/).map(_escHTML).join("<br/>");}
 function buildReceiptHTML(order,license,zatcaInvoice,fmt,qrImgSrc){
   fmt=fmt||{};
   // If a preset style is active for invoices, use the preset builder (preview === print).
