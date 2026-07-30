@@ -6544,12 +6544,30 @@ function GlobalScanPopup({items,active}){
     if(!active){setHit(null);return;}
     const INTERVAL=50; // ms between keys — slower than any scanner, faster than any human
     const MIN=3;       // shortest string we'll treat as a scanned code
+    // The first character of a scan can't be judged yet (no gap before it), so
+    // it may land in a focused field. Once we've CONFIRMED a scan, undo that one
+    // stray character. Runs only on a confirmed scan, so normal typing is never
+    // touched; wrapped in try/catch so a quirky field just keeps the char.
+    function undoLeak(code){
+      try{
+        const el=document.activeElement;
+        if(!el||(el.tagName!=="INPUT"&&el.tagName!=="TEXTAREA"))return;
+        const pos=el.selectionStart;
+        if(pos>0&&el.value[pos-1]===code[0]){
+          const proto=el.tagName==="TEXTAREA"?window.HTMLTextAreaElement.prototype:window.HTMLInputElement.prototype;
+          const setter=Object.getOwnPropertyDescriptor(proto,"value").set;
+          setter.call(el,el.value.slice(0,pos-1)+el.value.slice(pos));
+          el.dispatchEvent(new Event("input",{bubbles:true})); // let React pick up the change
+          el.selectionStart=el.selectionEnd=pos-1;
+        }
+      }catch(_){}
+    }
     function onKey(e){
       if(e.ctrlKey||e.metaKey||e.altKey)return;
       const b=buf.current;const now=performance.now();
       if(e.key==="Enter"){
         const code=b.str;b.str="";
-        if(code.length>=MIN){e.preventDefault();e.stopPropagation();show(code);}
+        if(code.length>=MIN){e.preventDefault();e.stopPropagation();undoLeak(code);show(code);}
         return;
       }
       if(e.key&&e.key.length===1){
