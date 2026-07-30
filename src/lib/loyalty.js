@@ -1,10 +1,11 @@
 // ═══════════════════════════════════════════════════════════════════
-// LOYALTY CORE — pure points / tiers / redemption math.
+// LOYALTY CORE — pure points earn / redeem math.
 //
-// No React, no storage, no business-type reads. Callers pass in the rules
-// (from loyaltyRulesForProfile) so this stays trivially testable and can't
-// affect any type that hasn't enabled loyalty. A null `rules` means loyalty
-// is off — every function then no-ops safely.
+// Operates on the app's existing `loyaltyPoints` field. No React, no
+// storage, no business-type reads — callers pass the rules (from
+// loyaltyRulesForProfile). A null `rules` means loyalty is off and every
+// function no-ops safely. Tiers live in the CRM (spend-based) and are not
+// this module's concern.
 // ═══════════════════════════════════════════════════════════════════
 
 // Points earned for spending `amount` SAR under `rules`.
@@ -14,16 +15,8 @@ export function earnPoints(amount, rules){
   return n > 0 ? n : 0;
 }
 
-// The tier object a customer with `lifetimePoints` sits in (highest reached).
-export function tierFor(lifetimePoints, rules){
-  if(!rules) return null;
-  const pts = Number(lifetimePoints)||0;
-  let current = rules.tiers[0] || null;
-  for(const tier of rules.tiers){ if(pts >= tier.minPoints) current = tier; }
-  return current;
-}
-
-// SAR value of redeeming `points` under `rules` (respects min-redeem).
+// SAR value of redeeming `points` under `rules` (respects the min-redeem
+// threshold). With redeemPointsPerSAR=10, 100 points → SAR 10.
 export function redeemValue(points, rules){
   if(!rules) return 0;
   const pts = Number(points)||0;
@@ -33,8 +26,8 @@ export function redeemValue(points, rules){
   return Math.floor(pts / per * 100) / 100; // 2dp SAR
 }
 
-// Max points that can be redeemed against a bill of `billTotal` SAR — you
-// can't redeem more value than the bill is worth.
+// Max points redeemable against a bill of `billTotal` SAR — never more value
+// than the bill is worth, never more than the customer holds.
 export function maxRedeemablePoints(points, billTotal, rules){
   if(!rules) return 0;
   const per = rules.redeemPointsPerSAR||0;
@@ -44,25 +37,11 @@ export function maxRedeemablePoints(points, billTotal, rules){
   return Math.max(0, Math.min(pts, capByBill));
 }
 
-// Apply a completed sale to a customer record: add earned points, update
-// lifetime total and tier. Returns a NEW customer object (never mutates).
-// `redeemedPoints` are subtracted from the spendable balance.
-export function applyEarn(customer, saleAmount, rules, redeemedPoints=0){
-  if(!rules) return customer;
-  const base = customer || {};
-  const earned = earnPoints(saleAmount, rules);
-  const lifetime = (Number(base.lifetimePoints)||0) + earned;
-  const points = Math.max(0, (Number(base.points)||0) + earned - (Number(redeemedPoints)||0));
-  const tier = tierFor(lifetime, rules);
-  const history = Array.isArray(base.pointsHistory) ? base.pointsHistory : [];
-  return {
-    ...base,
-    points,
-    lifetimePoints: lifetime,
-    tier: tier?.id || base.tier || null,
-    pointsHistory: [
-      { ts:new Date().toISOString(), earned, redeemed:Number(redeemedPoints)||0, balance:points },
-      ...history,
-    ].slice(0, 200),
-  };
+// New loyaltyPoints balance after a sale: add what was earned, subtract what
+// was redeemed, never below zero. Pure — returns the number, caller persists.
+export function nextLoyaltyPoints(currentPoints, earned, redeemed){
+  const cur = Number(currentPoints)||0;
+  const e = Number(earned)||0;
+  const r = Number(redeemed)||0;
+  return Math.max(0, cur + e - r);
 }

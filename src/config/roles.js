@@ -24,6 +24,12 @@ export const ROLES = {
 // that doesn't say otherwise, so nothing changes for restaurant/supermarket.
 export const LEGACY_ROLES = ["Admin","Manager","Cashier"];
 
+// Default PINs. The original three are unchanged; Supervisor gets a default
+// so a hypermarket (or any type that lists Supervisor) can sign in and
+// approve out of the box. Existing types never show Supervisor at login, so
+// the extra entry is inert for them.
+export const DEFAULT_PINS = { Admin:"1234", Manager:"2345", Supervisor:"4567", Cashier:"3456" };
+
 // The rank of a role id (0 for anything unknown — never throws).
 export function roleRank(roleId){ return ROLES[roleId]?.rank || 0; }
 

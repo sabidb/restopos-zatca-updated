@@ -247,7 +247,7 @@ export function beginTrial(details) {
     email: details.email || "",
     address: details.address || "",
     city: details.city || "Riyadh",
-    businessType: details.businessType === "supermarket" ? "supermarket" : "restaurant",
+    businessType: ["restaurant","supermarket","hypermarket"].includes(details.businessType) ? details.businessType : "restaurant",
     startedAt,
     endsAt,
   };
@@ -327,10 +327,10 @@ export function promoteTrialWorkspace() {
   return { ok: true, moved };
 }
 
-/** Persist a mode change (Restaurant ⇄ Supermarket) into the trial meta. */
+/** Persist a mode change (Restaurant ⇄ Supermarket ⇄ Hypermarket) into the trial meta. */
 export function setTrialBusinessType(businessType) {
   const real = realStore();
-  const bt = businessType === "supermarket" ? "supermarket" : "restaurant";
+  const bt = ["restaurant","supermarket","hypermarket"].includes(businessType) ? businessType : "restaurant";
   if (_meta) _meta = { ..._meta, businessType: bt };
   try { if (_meta) real.setItem(META_KEY, JSON.stringify(_meta)); } catch (e) {}
   return bt;
