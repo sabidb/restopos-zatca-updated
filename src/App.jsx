@@ -18,6 +18,8 @@ import { C } from "./lib/theme.js";
 import { LS } from "./lib/storage.js";
 import { fmtSAR, fmtDate, fmtDateTime } from "./lib/format.js";
 import { TODAY } from "./lib/date.js";
+import { logActivity } from "./lib/activity.js";
+import { initSync, debouncedSync, syncKeyToFirestore } from "./lib/sync.js";
 import { getLang, setLangStore, t, dir } from "./i18n/index.js";
 import { BUSINESS_TYPES, DEFAULT_BUSINESS_TYPE, getBusinessType, bizProfile, bizFeature, isSupermarket } from "./config/businessTypes.js";
 import { Card, Btn, Inp, Sel, TextArea, Slider, ToggleRow, Badge, StatCard, Modal, DataTable } from "./components/ui.jsx";
@@ -29,6 +31,8 @@ import { RecipeCosting } from "./screens/RecipeCosting.jsx";
 import { AdvancedReports } from "./screens/AdvancedReports.jsx";
 import { ProfitLoss } from "./screens/ProfitLoss.jsx";
 import { Accounts } from "./screens/Accounts.jsx";
+import { Expenses } from "./screens/Expenses.jsx";
+import { InventoryManagement } from "./screens/InventoryManagement.jsx";
 
 // ═══════════════════════════════════════════════════════════════════
 // TRIAL MODE — see src/trial.js. TRIAL is fixed for the life of the page:
@@ -93,6 +97,9 @@ if (TRIAL) initTrialMirror({ db, doc, collection, setDoc, writeBatch });
 // Every client's sales history, one document per business day, kept for years.
 // Must also come after db exists.
 initCloudArchive({ db, doc, collection, setDoc, getDoc, getDocs, query, where, orderBy, limit, startAfter, writeBatch });
+// Debounced per-key cloud backup engine (src/lib/sync.js). Inject the Firestore
+// handles the same way; must come after db exists, before any screen renders.
+initSync({ db, doc, setDoc });
 // Support hook. Not temporary any more, and not decoration: the questions it
 // answers are ones nobody can answer from the outside — is this till signed in,
 // and are any of its invoices still missing from the permanent archive. Reading
@@ -1024,47 +1031,6 @@ const SYNC_KEYS=[
   "restopos_stock_movements","restopos_suppliers","restopos_low_stock_threshold", // inventory
 ];
 
-// Debounce helper — only sync after 3s of no changes
-const _syncTimers={};
-function debouncedSync(licenseKey,key,data){
-  if(_syncTimers[key])clearTimeout(_syncTimers[key]);
-  _syncTimers[key]=setTimeout(()=>syncKeyToFirestore(licenseKey,key,data),3000);
-}
-
-// Everything below lands in ONE Firestore document, which is capped at 1 MiB.
-// A single key that grows without limit therefore takes down the backup of
-// every OTHER key with it, and the only symptom is a console warning nobody
-// reads. Refuse the oversized key instead, loudly, and keep the rest working.
-const MAX_SYNC_FIELD_BYTES=350000;
-const _oversizeWarned=new Set();
-async function syncKeyToFirestore(licenseKey,key,data){
-  if(!licenseKey)return;
-  try{
-    const json=JSON.stringify(data);
-    const size=new TextEncoder().encode(json).length;
-    if(size>MAX_SYNC_FIELD_BYTES){
-      if(!_oversizeWarned.has(key)){
-        _oversizeWarned.add(key);
-        console.error(`[Sync] REFUSING to sync "${key}": ${(size/1024).toFixed(0)} KB exceeds the `+
-          `${(MAX_SYNC_FIELD_BYTES/1024).toFixed(0)} KB per-key budget. Syncing it would push `+
-          `client_data/${licenseKey} past Firestore's 1 MiB document limit and stop ALL backup `+
-          `for this client. If this key needs cloud storage it belongs in a subcollection.`);
-      }
-      return;
-    }
-    const docRef=doc(db,"client_data",licenseKey);
-    // Use setDoc with merge so we don't overwrite other keys
-    await setDoc(docRef,{
-      [key]:json,
-      [`${key}_updatedAt`]:new Date().toISOString(),
-      licenseKey,
-      lastSyncAt:new Date().toISOString(),
-    },{merge:true});
-  }catch(e){
-    // Louder than a warning: this is the client's backup failing.
-    console.error("[Sync] Failed to sync",key,":",e.message);
-  }
-}
 
 // Sessions and the day log used to be two of the SYNC_KEYS, so existing
 // clients still have them sitting in client_data/{key} as JSON strings. Once
@@ -2021,11 +1987,6 @@ const SUBSCRIPTION_PLANS={
 };
 
 // Activity log helper
-function logActivity(action,details,user="System"){
-  const logs=LS.get("restopos_activity_log")||[];
-  logs.unshift({id:Date.now(),timestamp:new Date().toISOString(),action,details,user,before:details.before,after:details.after});
-  LS.set("restopos_activity_log",logs.slice(0,500));
-}
 
 // Device fingerprint helper
 function getDeviceInfo(){
@@ -11725,100 +11686,6 @@ function Help({license: helpLicense, lang="en", onLogout}){
 // ═══════════════════════════════════════════════════════════════════
 // EXPENSE TRACKING MODULE
 // ═══════════════════════════════════════════════════════════════════
-const EXPENSE_CATEGORIES=["Rent","Utilities","Salaries","Food Supplies","Kitchen Supplies","Packaging","Marketing","Maintenance","Transport","Other"];
-function Expenses({embedded=false,lang="en"}){
-  const _t=s=>t(s,lang);
-  const [expenses,setExpenses]=useState(()=>LS.get("restopos_expenses")||[]);
-  const [showModal,setShowModal]=useState(false);
-  const [period,setPeriod]=useState("month");
-  const [form,setForm]=useState({description:"",amount:"",category:"Food Supplies",date:TODAY,notes:""});
-  const now=new Date();
-  function saveExpenses(newList){setExpenses(newList);LS.set("restopos_expenses",newList);const _lic_exp=LS.get("restopos_license_v2")?.licenseKey;if(_lic_exp)debouncedSync(_lic_exp,"restopos_expenses",newList);}
-  function addExpense(){
-    if(!form.description||!form.amount)return alert("Description and amount required");
-    const exp={...form,id:Date.now(),amount:parseFloat(form.amount)};
-    const updated=[exp,...expenses];saveExpenses(updated);setShowModal(false);
-    setForm({description:"",amount:"",category:"Food Supplies",date:TODAY,notes:""});
-    logActivity("EXPENSE_ADDED",{after:{description:form.description,amount:form.amount}},"Admin");
-  }
-  function deleteExpense(id){if(confirm("Delete expense?"))saveExpenses(expenses.filter(e=>e.id!==id));}
-  const filtered=expenses.filter(e=>{
-    const d=new Date(e.date);
-    if(period==="today")return e.date===TODAY;
-    if(period==="week"){const w=new Date();w.setDate(w.getDate()-7);return d>=w;}
-    if(period==="month")return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear();
-    return true;
-  });
-  const total=filtered.reduce((s,e)=>s+e.amount,0);
-  const byCat=EXPENSE_CATEGORIES.map(cat=>({cat,total:filtered.filter(e=>e.category===cat).reduce((s,e)=>s+e.amount,0)})).filter(c=>c.total>0);
-  function exportExpenses(){
-    if(!expenses.length)return alert("No expenses to export");
-    const headers=["Date","Description","Category","Amount","Notes"];
-    const rows=filtered.map(e=>[e.date,e.description,e.category,e.amount.toFixed(2),e.notes||""]);
-    const csv=[headers,...rows].map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(",")).join("\n");
-    const blob=new Blob([csv],{type:"text/csv"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`expenses-${TODAY}.csv`;a.click();
-  }
-  return(
-    <div>
-      {showModal&&<Modal title="➕ Add Expense" onClose={()=>setShowModal(false)} width={460}>
-        <div style={{display:"flex",flexDirection:"column",gap:12}}>
-          <Inp label="Description" value={form.description} onChange={v=>setForm(f=>({...f,description:v}))} placeholder="e.g. Chicken supplier invoice"/>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-            <Inp label="Amount (SAR)" value={form.amount} onChange={v=>setForm(f=>({...f,amount:v}))} type="number" placeholder="0.00"/>
-            <Inp label="Date" value={form.date} onChange={v=>setForm(f=>({...f,date:v}))} type="date"/>
-          </div>
-          <Sel label="Category" value={form.category} onChange={v=>setForm(f=>({...f,category:v}))} options={EXPENSE_CATEGORIES}/>
-          <div style={{display:"flex",flexDirection:"column",gap:4}}>
-            <label style={{fontSize:12,fontWeight:600,color:C.textMid}}>Notes (optional)</label>
-            <textarea value={form.notes} onChange={e=>setForm(f=>({...f,notes:e.target.value}))} rows={2} placeholder="Extra details..." style={{padding:"9px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontSize:13,fontFamily:"inherit",resize:"none"}}/>
-          </div>
-        </div>
-        <div style={{display:"flex",gap:10,marginTop:16}}>
-          <Btn variant="ghost" onClick={()=>setShowModal(false)} style={{flex:1}}>Cancel</Btn>
-          <Btn onClick={addExpense} style={{flex:1}}>💾 Save Expense</Btn>
-        </div>
-      </Modal>}
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20,flexWrap:"wrap",gap:10}}>
-        <div><div style={{fontSize:20,fontWeight:800}}>💸 Expense Tracking</div><div style={{fontSize:13,color:C.textMid,marginTop:2}}>{filtered.length} entries · Total: <strong style={{color:C.danger}}>{fmtSAR(total)}</strong></div></div>
-        <div style={{display:"flex",gap:8}}>
-          <Btn variant="outline" size="sm" onClick={exportExpenses}>📤 Export CSV</Btn>
-          <Btn onClick={()=>setShowModal(true)}>+ Add Expense</Btn>
-        </div>
-      </div>
-      <div style={{display:"flex",gap:6,marginBottom:16,flexWrap:"wrap"}}>
-        {[["today","Today"],["week","This Week"],["month","This Month"],["all","All Time"]].map(([id,lbl])=>(
-          <button key={id} onClick={()=>setPeriod(id)} style={{padding:"7px 16px",borderRadius:8,border:`1.5px solid ${period===id?C.danger:C.border}`,background:period===id?"#FDE8E8":"#fff",color:period===id?C.danger:C.textMid,fontFamily:"inherit",fontSize:13,fontWeight:600,cursor:"pointer"}}>{lbl}</button>
-        ))}
-      </div>
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:20,marginBottom:20}}>
-        <Card>
-          <div style={{fontSize:13,fontWeight:700,color:C.textMid,marginBottom:12}}>BY CATEGORY</div>
-          {byCat.length===0?<div style={{color:C.textLight,fontSize:13}}>No expenses</div>:byCat.map(c=>(
-            <div key={c.cat} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:`1px solid ${C.border}`}}>
-              <span style={{fontSize:13,color:C.text}}>{c.cat}</span>
-              <span style={{fontSize:13,fontWeight:700,color:C.danger}}>{fmtSAR(c.total)}</span>
-            </div>
-          ))}
-        </Card>
-        <Card>
-          <div style={{fontSize:13,fontWeight:700,color:C.textMid,marginBottom:12}}>SUMMARY</div>
-          <div style={{fontSize:32,fontWeight:900,color:C.danger,marginBottom:8}}>{fmtSAR(total)}</div>
-          <div style={{fontSize:12,color:C.textLight}}>Total expenses · {filtered.length} entries</div>
-          <div style={{marginTop:16,fontSize:13,color:C.textMid}}>Period: {{"today":"Today","week":"Last 7 Days","month":"This Month","all":"All Time"}[period]}</div>
-        </Card>
-      </div>
-      {filtered.length===0?<Card><div style={{textAlign:"center",padding:"40px 0",color:C.textMid}}><div style={{fontSize:40,marginBottom:12}}>💸</div><div>No expenses in this period</div></div></Card>
-      :<Card><DataTable headers={["Date","Description","Category","Amount","Notes","Action"]} rows={filtered.map(e=>[
-        <span style={{fontFamily:"monospace",fontSize:12}}>{e.date}</span>,
-        <span style={{fontWeight:600}}>{e.description}</span>,
-        <Badge color={C.info} bg={C.infoLight}>{e.category}</Badge>,
-        <strong style={{color:C.danger}}>{fmtSAR(e.amount)}</strong>,
-        <span style={{fontSize:12,color:C.textLight}}>{e.notes||"—"}</span>,
-        <Btn size="sm" variant="danger" onClick={()=>deleteExpense(e.id)}>Del</Btn>
-      ])}/></Card>}
-    </div>
-  );
-}
 
 // ═══════════════════════════════════════════════════════════════════
 
@@ -15540,208 +15407,6 @@ function PrintTypeSettings({onGoToQZ}){
 // item (item.stock), so updates go through setItems → auto localStorage
 // + cloud sync. Movements & suppliers have their own stores.
 // ═══════════════════════════════════════════════════════════════════
-function InventoryManagement({items,setItems,lang="en"}){
-  const _t=s=>t(s,lang);
-  const [tab,setTab]=useState("overview");
-  const [search,setSearch]=useState("");
-  const [lowThreshold,setLowThreshold]=useState(()=>parseInt(localStorage.getItem("restopos_low_stock_threshold")||"10"));
-  const [movements,setMovements]=useState(()=>LS.get("restopos_stock_movements")||[]);
-  const [suppliers,setSuppliers]=useState(()=>LS.get("restopos_suppliers")||[]);
-  const [adjItem,setAdjItem]=useState(null); // item being adjusted
-  const [adjQty,setAdjQty]=useState("");
-  const [adjType,setAdjType]=useState("in"); // in | out
-  const [adjReason,setAdjReason]=useState("");
-  const [adjSupplier,setAdjSupplier]=useState("");
-  const [newSupplier,setNewSupplier]=useState({name:"",phone:"",email:"",notes:""});
-  const [showSupplierModal,setShowSupplierModal]=useState(false);
-
-  function saveMovements(list){setMovements(list);LS.set("restopos_stock_movements",list);const lk=LS.get("restopos_license_v2")?.licenseKey;if(lk)debouncedSync(lk,"restopos_stock_movements",list);}
-  function saveSuppliers(list){setSuppliers(list);LS.set("restopos_suppliers",list);const lk=LS.get("restopos_license_v2")?.licenseKey;if(lk)debouncedSync(lk,"restopos_suppliers",list);}
-  function saveThreshold(v){setLowThreshold(v);localStorage.setItem("restopos_low_stock_threshold",String(v));}
-
-  // Derived stats — recompute live from items so data is always current.
-  const totalItems=items.length;
-  const totalUnits=items.reduce((s,i)=>s+(Number(i.stock)||0),0);
-  const totalValue=items.reduce((s,i)=>s+(Number(i.stock)||0)*(Number(i.cost)||Number(i.price)||0),0);
-  const retailValue=items.reduce((s,i)=>s+(Number(i.stock)||0)*(Number(i.price)||0),0);
-  const lowStock=items.filter(i=>(Number(i.stock)||0)>0&&(Number(i.stock)||0)<=lowThreshold);
-  const outOfStock=items.filter(i=>(Number(i.stock)||0)<=0);
-
-  const filtered=items.filter(i=>{
-    const q=search.trim().toLowerCase();
-    return !q||i.name?.toLowerCase().includes(q)||String(i.barcode||"").includes(q)||i.category?.toLowerCase().includes(q);
-  });
-
-  // Apply a stock adjustment (in/out) → updates item.stock (syncs) + logs a movement.
-  function applyAdjustment(){
-    const qty=parseInt(adjQty);
-    if(!adjItem||!qty||qty<=0)return alert("Enter a valid quantity.");
-    const delta=adjType==="in"?qty:-qty;
-    const current=Number(adjItem.stock)||0;
-    const next=Math.max(0,current+delta);
-    setItems(prev=>prev.map(i=>i.id===adjItem.id?{...i,stock:next}:i));
-    const movement={
-      id:"MV-"+Date.now(),itemId:adjItem.id,itemName:adjItem.name,
-      type:adjType,qty,before:current,after:next,
-      reason:adjReason||(adjType==="in"?"Stock received":"Stock removed"),
-      supplier:adjType==="in"?adjSupplier:"",
-      at:new Date().toISOString(),
-    };
-    saveMovements([movement,...movements].slice(0,5000));
-    setAdjItem(null);setAdjQty("");setAdjReason("");setAdjSupplier("");
-  }
-
-  function addSupplier(){
-    if(!newSupplier.name.trim())return alert("Supplier name required.");
-    saveSuppliers([{id:"SUP-"+Date.now(),...newSupplier},...suppliers]);
-    setNewSupplier({name:"",phone:"",email:"",notes:""});setShowSupplierModal(false);
-  }
-
-  const tabs=[["overview","📊 "+_t("Overview")],["stock","📦 "+_t("Stock Levels")],["movements","🔄 "+_t("Movements")],["suppliers","🏭 "+_t("Suppliers")]];
-  const statCard=(label,value,color,sub)=>(
-    <div style={{background:"#fff",border:`1px solid ${C.border}`,borderLeft:`4px solid ${color}`,borderRadius:12,padding:"14px 16px",flex:1,minWidth:150}}>
-      <div style={{fontSize:11,color:C.textMid,fontWeight:700}}>{label}</div>
-      <div style={{fontSize:22,fontWeight:900,color,marginTop:3}}>{value}</div>
-      {sub&&<div style={{fontSize:10,color:C.textLight,marginTop:2}}>{sub}</div>}
-    </div>
-  );
-
-  return(
-    <div>
-      <div style={{fontSize:20,fontWeight:900,marginBottom:4}}>📦 {_t("Inventory Management")}</div>
-      <div style={{fontSize:12.5,color:C.textMid,marginBottom:18}}>{_t("Live stock levels, alerts, movements, suppliers and value. Every change syncs automatically.")}</div>
-
-      <div style={{display:"flex",gap:8,marginBottom:18,flexWrap:"wrap"}}>
-        {tabs.map(([id,label])=><button key={id} onClick={()=>setTab(id)} style={{padding:"8px 16px",borderRadius:8,border:`1.5px solid ${tab===id?C.primary:C.border}`,background:tab===id?C.primaryLight:"#fff",color:tab===id?C.primary:C.textMid,fontFamily:"inherit",fontSize:13,fontWeight:600,cursor:"pointer"}}>{label}</button>)}
-      </div>
-
-      {/* OVERVIEW */}
-      {tab==="overview"&&<div style={{display:"flex",flexDirection:"column",gap:14}}>
-        <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
-          {statCard(_t("Total Items"),totalItems,C.info)}
-          {statCard(_t("Units in Stock"),totalUnits.toLocaleString(),C.primary)}
-          {statCard(_t("Stock Value (cost)"),fmtSAR(totalValue),C.zatca,_t("Based on cost price"))}
-          {statCard(_t("Retail Value"),fmtSAR(retailValue),C.success,_t("Based on selling price"))}
-        </div>
-        <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
-          {statCard("⚠️ "+_t("Low Stock"),lowStock.length,C.warning,_t("At or below")+" "+lowThreshold)}
-          {statCard("⛔ "+_t("Out of Stock"),outOfStock.length,C.danger)}
-        </div>
-        <Card>
-          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
-            <div style={{fontSize:13,fontWeight:800}}>⚠️ {_t("Low-Stock Threshold")}</div>
-            <input type="number" value={lowThreshold} min={1} onChange={e=>saveThreshold(parseInt(e.target.value)||1)} style={{width:80,padding:"6px 10px",border:`1px solid ${C.border}`,borderRadius:8,fontFamily:"inherit",fontSize:13}}/>
-            <span style={{fontSize:11,color:C.textMid}}>{_t("units or fewer = low stock")}</span>
-          </div>
-          {lowStock.length===0&&outOfStock.length===0?(
-            <div style={{padding:"14px",background:C.successLight,borderRadius:8,fontSize:13,color:C.success,fontWeight:600}}>✅ {_t("All items are well stocked.")}</div>
-          ):(
-            <div style={{display:"flex",flexDirection:"column",gap:6}}>
-              {[...outOfStock,...lowStock].slice(0,30).map(i=>(
-                <div key={i.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 12px",background:(Number(i.stock)||0)<=0?C.dangerLight:C.warningLight,borderRadius:8}}>
-                  <div><span style={{fontSize:13,fontWeight:700}}>{i.name}</span> <span style={{fontSize:11,color:C.textMid}}>· {i.category}</span></div>
-                  <div style={{display:"flex",alignItems:"center",gap:10}}>
-                    <span style={{fontSize:13,fontWeight:800,color:(Number(i.stock)||0)<=0?C.danger:C.warning}}>{Number(i.stock)||0} {_t("left")}</span>
-                    <Btn size="sm" variant="outline" onClick={()=>{setAdjItem(i);setAdjType("in");setTab("stock");}}>+ {_t("Restock")}</Btn>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </Card>
-      </div>}
-
-      {/* STOCK LEVELS */}
-      {tab==="stock"&&<Card>
-        <div style={{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap"}}>
-          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder={"🔍 "+_t("Search items")} style={{flex:1,minWidth:180,padding:"9px 12px",border:`1px solid ${C.border}`,borderRadius:9,fontSize:13,fontFamily:"inherit"}}/>
-        </div>
-        <DataTable headers={[_t("Item"),_t("Category"),_t("Stock"),_t("Cost"),_t("Value"),_t("Actions")]} rows={filtered.map(i=>{
-          const st=Number(i.stock)||0;
-          const stColor=st<=0?C.danger:st<=lowThreshold?C.warning:C.success;
-          return[
-            i.name,
-            <Badge color={C.info} bg={C.infoLight}>{i.category}</Badge>,
-            <strong style={{color:stColor}}>{st}</strong>,
-            fmtSAR(Number(i.cost)||0),
-            fmtSAR(st*(Number(i.cost)||Number(i.price)||0)),
-            <div style={{display:"flex",gap:5}}>
-              <Btn size="sm" variant="outline" onClick={()=>{setAdjItem(i);setAdjType("in");}}>➕ {_t("In")}</Btn>
-              <Btn size="sm" variant="ghost" onClick={()=>{setAdjItem(i);setAdjType("out");}}>➖ {_t("Out")}</Btn>
-            </div>
-          ];
-        })} emptyMsg={_t("No items")}/>
-      </Card>}
-
-      {/* MOVEMENTS */}
-      {tab==="movements"&&<Card>
-        <div style={{fontSize:14,fontWeight:800,marginBottom:12}}>🔄 {_t("Stock Movements")} ({movements.length})</div>
-        {movements.length===0?(
-          <div style={{padding:"20px",textAlign:"center",color:C.textMid,fontSize:13}}>{_t("No stock movements yet. Use + In / – Out on the Stock Levels tab.")}</div>
-        ):(
-          <DataTable headers={[_t("Date"),_t("Item"),_t("Type"),_t("Qty"),_t("Before"),_t("After"),_t("Reason"),_t("Supplier")]} rows={movements.slice(0,200).map(m=>[
-            new Date(m.at).toLocaleString("en-SA",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}),
-            m.itemName,
-            <Badge color={m.type==="in"?C.success:C.danger} bg={m.type==="in"?C.successLight:C.dangerLight}>{m.type==="in"?"IN":"OUT"}</Badge>,
-            m.qty,m.before,m.after,m.reason||"—",m.supplier||"—"
-          ])}/>
-        )}
-      </Card>}
-
-      {/* SUPPLIERS */}
-      {tab==="suppliers"&&<Card>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
-          <div style={{fontSize:14,fontWeight:800}}>🏭 {_t("Suppliers")} ({suppliers.length})</div>
-          <Btn size="sm" onClick={()=>setShowSupplierModal(true)}>+ {_t("New Supplier")}</Btn>
-        </div>
-        {suppliers.length===0?(
-          <div style={{padding:"20px",textAlign:"center",color:C.textMid,fontSize:13}}>{_t("No suppliers yet.")}</div>
-        ):(
-          <DataTable headers={[_t("Name"),_t("Phone"),_t("Email"),_t("Notes"),_t("Actions")]} rows={suppliers.map(s=>[
-            <strong>{s.name}</strong>,s.phone||"—",s.email||"—",s.notes||"—",
-            <Btn size="sm" variant="danger" onClick={()=>{if(confirm(_t("Delete supplier")+"?"))saveSuppliers(suppliers.filter(x=>x.id!==s.id));}}>{_t("Delete")}</Btn>
-          ])}/>
-        )}
-      </Card>}
-
-      {/* ADJUSTMENT MODAL */}
-      {adjItem&&<Modal title={(adjType==="in"?"➕ "+_t("Stock In"):"➖ "+_t("Stock Out"))+" — "+adjItem.name} onClose={()=>setAdjItem(null)} width={420}>
-        <div style={{fontSize:12.5,color:C.textMid,marginBottom:14}}>{_t("Current stock")}: <strong>{Number(adjItem.stock)||0}</strong></div>
-        <div style={{display:"flex",gap:8,marginBottom:12}}>
-          <button onClick={()=>setAdjType("in")} style={{flex:1,padding:10,borderRadius:8,border:`1.5px solid ${adjType==="in"?C.success:C.border}`,background:adjType==="in"?C.successLight:"#fff",color:adjType==="in"?C.success:C.text,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>➕ {_t("Stock In")}</button>
-          <button onClick={()=>setAdjType("out")} style={{flex:1,padding:10,borderRadius:8,border:`1.5px solid ${adjType==="out"?C.danger:C.border}`,background:adjType==="out"?C.dangerLight:"#fff",color:adjType==="out"?C.danger:C.text,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>➖ {_t("Stock Out")}</button>
-        </div>
-        <div style={{display:"flex",flexDirection:"column",gap:10}}>
-          <input type="number" value={adjQty} onChange={e=>setAdjQty(e.target.value)} placeholder={_t("Quantity")} min={1} style={{padding:"10px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontFamily:"inherit",fontSize:14}}/>
-          <input value={adjReason} onChange={e=>setAdjReason(e.target.value)} placeholder={_t("Reason (optional)")} style={{padding:"10px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontFamily:"inherit",fontSize:14}}/>
-          {adjType==="in"&&<select value={adjSupplier} onChange={e=>setAdjSupplier(e.target.value)} style={{padding:"10px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontFamily:"inherit",fontSize:14,background:"#fff"}}>
-            <option value="">{_t("Supplier (optional)")}</option>
-            {suppliers.map(s=><option key={s.id} value={s.name}>{s.name}</option>)}
-          </select>}
-          {adjQty&&parseInt(adjQty)>0&&<div style={{fontSize:12,color:C.textMid,padding:"8px 12px",background:C.bg,borderRadius:8}}>{_t("New stock will be")}: <strong style={{color:adjType==="in"?C.success:C.danger}}>{Math.max(0,(Number(adjItem.stock)||0)+(adjType==="in"?parseInt(adjQty):-parseInt(adjQty)))}</strong></div>}
-        </div>
-        <div style={{display:"flex",gap:10,marginTop:16}}>
-          <Btn variant="ghost" style={{flex:1}} onClick={()=>setAdjItem(null)}>{_t("Cancel")}</Btn>
-          <Btn style={{flex:1}} onClick={applyAdjustment}>{_t("Apply")}</Btn>
-        </div>
-      </Modal>}
-
-      {/* SUPPLIER MODAL */}
-      {showSupplierModal&&<Modal title={"🏭 "+_t("New Supplier")} onClose={()=>setShowSupplierModal(false)} width={420}>
-        <div style={{display:"flex",flexDirection:"column",gap:10}}>
-          <input value={newSupplier.name} onChange={e=>setNewSupplier(s=>({...s,name:e.target.value}))} placeholder={_t("Supplier name")+" *"} style={{padding:"10px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontFamily:"inherit",fontSize:14}}/>
-          <input value={newSupplier.phone} onChange={e=>setNewSupplier(s=>({...s,phone:e.target.value}))} placeholder={_t("Phone")} style={{padding:"10px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontFamily:"inherit",fontSize:14}}/>
-          <input value={newSupplier.email} onChange={e=>setNewSupplier(s=>({...s,email:e.target.value}))} placeholder={_t("Email")} style={{padding:"10px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontFamily:"inherit",fontSize:14}}/>
-          <input value={newSupplier.notes} onChange={e=>setNewSupplier(s=>({...s,notes:e.target.value}))} placeholder={_t("Notes")} style={{padding:"10px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontFamily:"inherit",fontSize:14}}/>
-        </div>
-        <div style={{display:"flex",gap:10,marginTop:16}}>
-          <Btn variant="ghost" style={{flex:1}} onClick={()=>setShowSupplierModal(false)}>{_t("Cancel")}</Btn>
-          <Btn style={{flex:1}} onClick={addSupplier}>{_t("Add Supplier")}</Btn>
-        </div>
-      </Modal>}
-    </div>
-  );
-}
 
 function AdvancedFeatures({sales,items,setItems,license,company,invoiceFormat,setInvoiceFormat,users,setUsers,lang="en"}){
   const _t=s=>t(s,lang);
