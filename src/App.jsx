@@ -22,7 +22,7 @@ import { logActivity } from "./lib/activity.js";
 import { initSync, debouncedSync, syncKeyToFirestore } from "./lib/sync.js";
 import { getLang, setLangStore, t, dir } from "./i18n/index.js";
 import { BUSINESS_TYPES, DEFAULT_BUSINESS_TYPE, getBusinessType, bizProfile, bizFeature, isSupermarket } from "./config/businessTypes.js";
-import { rolesForProfile } from "./config/roles.js";
+import { rolesForProfile, DEFAULT_PINS } from "./config/roles.js";
 import { requiresApproval } from "./lib/permissions.js";
 import { ApprovalGate } from "./components/ApprovalGate.jsx";
 import { Card, Btn, Inp, Sel, TextArea, Slider, ToggleRow, Badge, StatCard, Modal, DataTable } from "./components/ui.jsx";
@@ -2515,7 +2515,6 @@ const CHANGELOG=[
 const SEED_ITEMS=[{id:1,name:"Broasted Chicken Half",nameAr:"دجاج مبروست نصف",category:"Broasted",price:28,cost:14,stock:50,active:true,barcode:""},{id:2,name:"Broasted Chicken Full",nameAr:"دجاج مبروست كامل",category:"Broasted",price:52,cost:26,stock:30,active:true,barcode:""},{id:3,name:"Crispy Wings 6pc",nameAr:"أجنحة مقرمشة",category:"Broasted",price:22,cost:10,stock:40,active:true,barcode:""},{id:4,name:"Mixed Grill Platter",nameAr:"مشاوي مشكلة",category:"Grills",price:65,cost:30,stock:20,active:true,barcode:""},{id:5,name:"Shish Tawook",nameAr:"شيش طاووق",category:"Grills",price:38,cost:18,stock:25,active:true,barcode:""},{id:6,name:"French Fries",nameAr:"بطاطس مقلية",category:"Sides",price:10,cost:3,stock:100,active:true,barcode:""},{id:7,name:"Coleslaw",nameAr:"كول سلو",category:"Sides",price:8,cost:2,stock:60,active:true,barcode:""},{id:8,name:"Pepsi Can",nameAr:"بيبسي",category:"Drinks",price:5,cost:2,stock:120,active:true,barcode:""},{id:9,name:"Fresh Lemon Juice",nameAr:"عصير ليمون",category:"Drinks",price:14,cost:4,stock:40,active:true,barcode:""},{id:10,name:"Umm Ali",nameAr:"أم علي",category:"Desserts",price:18,cost:6,stock:15,active:true,barcode:""},{id:11,name:"Family Box",nameAr:"وجبة عائلية",category:"Combos",price:85,cost:40,stock:20,active:true,barcode:""},{id:12,name:"Solo Meal",nameAr:"وجبة فردية",category:"Combos",price:32,cost:15,stock:30,active:true,barcode:""}];
 const SEED_CATEGORIES=["Broasted","Grills","Sides","Drinks","Desserts","Combos"];
 const TABLES_INIT=Array.from({length:12},(_,i)=>({id:i+1,status:i<3?"occupied":"free",capacity:4}));
-const DEFAULT_PINS={Admin:"1234",Manager:"2345",Cashier:"3456"};
 
 // ── Stable per-device ID (persists in localStorage) ──────────────────
 // Used for the "approve new device" flow: each physical device gets one
@@ -3493,7 +3492,10 @@ function LicenseVerification({businessData,onSuccess,onBack,onLogin,onTryTrial})
 // ═══════════════════════════════════════════════════════════════════
 function RoleLogin({license,onLogin,lang="en",onClientLogin}){
   const [selectedRole,setSelectedRole]=useState(null);const [pin,setPin]=useState("");const [error,setError]=useState("");
-  const pins=LS.get("restopos_pins")||DEFAULT_PINS;
+  // Saved PINs win; defaults fill any gap (e.g. a Supervisor PIN on a type
+  // that lists Supervisor but whose saved pins predate it). Existing types
+  // never show Supervisor, so the extra default is inert for them.
+  const pins={...DEFAULT_PINS,...(LS.get("restopos_pins")||{})};
   // Roles come from the registry, ordered high→low authority. For existing
   // types this is exactly Admin/Manager/Cashier (same icons/descriptions as
   // before); a type that opts Supervisor in gets it here automatically.

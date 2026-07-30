@@ -19,7 +19,7 @@ import { C } from "../lib/theme.js";
 import { Btn, Modal } from "./ui.jsx";
 import { LS } from "../lib/storage.js";
 import { logActivity } from "../lib/activity.js";
-import { ROLES, roleAtLeast } from "../config/roles.js";
+import { ROLES, roleAtLeast, DEFAULT_PINS } from "../config/roles.js";
 import { approverRoleFor } from "../lib/permissions.js";
 
 const ACTION_LABELS = {
@@ -34,7 +34,7 @@ export function ApprovalGate({ action, onApproved, onCancel, title }){
   const [error,setError]=useState("");
   const minRole = approverRoleFor(action) || "Manager";
   const minLabel = ROLES[minRole]?.label || minRole;
-  const pins = LS.get("restopos_pins") || {};
+  const pins = { ...DEFAULT_PINS, ...(LS.get("restopos_pins") || {}) };
 
   function submit(){
     const entered=(pin||"").trim();
