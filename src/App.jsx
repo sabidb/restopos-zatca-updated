@@ -3431,7 +3431,7 @@ function BusinessRegistration({onNext,onLogin,onTryTrial,initial}){
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Tajawal:wght@400;500;700&display=swap');
         *{box-sizing:border-box;margin:0;padding:0}
-        .reg-shell{min-height:100vh;width:100%;display:grid;grid-template-columns:1fr;background:linear-gradient(135deg,#0a1628 0%,#1A3A5C 50%,#0a2818 100%);font-family:'Plus Jakarta Sans',sans-serif}
+        .reg-shell{min-height:100vh;width:100%;display:grid;grid-template-columns:1fr;background:linear-gradient(135deg,#0a1628 0%,#1A3A5C 50%,#0a2818 100%);font-family:'Plus Jakarta Sans',sans-serif;text-align:left}
         .reg-hero{display:none}
         .reg-form-col{padding:32px 20px}
         .reg-form-inner{width:100%;max-width:720px;margin:0 auto}
