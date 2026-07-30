@@ -15,6 +15,7 @@ import { TERMS_VERSION, TERMS_TITLE, TERMS_DATE, TERMS_PDF_PATH, TERMS_PREAMBLE,
   TERMS_ACKNOWLEDGMENTS, captureClientIp, buildAcceptanceRecord,
   printAcceptanceCertificate } from "./terms.js";
 import { C } from "./lib/theme.js";
+import { LS } from "./lib/storage.js";
 
 // ═══════════════════════════════════════════════════════════════════
 // TRIAL MODE — see src/trial.js. TRIAL is fixed for the life of the page:
@@ -1420,8 +1421,8 @@ function makeSyncedLS(licenseKey){
 
 // ═══════════════════════════════════════════════════════════════════
 // LOCAL STORAGE HELPERS + CONSTANTS
+// LS lives in src/lib/storage.js (imported at the top of this file).
 // ═══════════════════════════════════════════════════════════════════
-const LS={get:(k)=>{try{return JSON.parse(localStorage.getItem(k));}catch{return null;}},set:(k,v)=>localStorage.setItem(k,JSON.stringify(v)),del:(k)=>localStorage.removeItem(k)};
 
 // ── DAILY TOKEN COUNTER ──────────────────────────────────────────────
 // Independent of KOT/invoice numbers. Increments ONLY on completed normal
