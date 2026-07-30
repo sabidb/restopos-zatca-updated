@@ -18,6 +18,7 @@ import { C } from "./lib/theme.js";
 import { LS } from "./lib/storage.js";
 import { fmtSAR, fmtDate, fmtDateTime } from "./lib/format.js";
 import { TODAY } from "./lib/date.js";
+import { logActivity } from "./lib/activity.js";
 import { getLang, setLangStore, t, dir } from "./i18n/index.js";
 import { BUSINESS_TYPES, DEFAULT_BUSINESS_TYPE, getBusinessType, bizProfile, bizFeature, isSupermarket } from "./config/businessTypes.js";
 import { Card, Btn, Inp, Sel, TextArea, Slider, ToggleRow, Badge, StatCard, Modal, DataTable } from "./components/ui.jsx";
@@ -2021,11 +2022,6 @@ const SUBSCRIPTION_PLANS={
 };
 
 // Activity log helper
-function logActivity(action,details,user="System"){
-  const logs=LS.get("restopos_activity_log")||[];
-  logs.unshift({id:Date.now(),timestamp:new Date().toISOString(),action,details,user,before:details.before,after:details.after});
-  LS.set("restopos_activity_log",logs.slice(0,500));
-}
 
 // Device fingerprint helper
 function getDeviceInfo(){
