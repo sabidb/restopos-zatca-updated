@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useCallback, Component } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { initializeApp } from "firebase/app";
 import { getFirestore, collection, query, where, getDocs, updateDoc, doc, addDoc, getDoc, onSnapshot, setDoc, deleteDoc, orderBy, limit, startAfter, arrayUnion, writeBatch, deleteField, connectFirestoreEmulator } from "firebase/firestore";
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken, connectAuthEmulator } from "firebase/auth";
@@ -14,6 +14,13 @@ import { initCloudArchive, archiveSalesDay, flushArchive, restoreArchiveToDevice
 import { TERMS_VERSION, TERMS_TITLE, TERMS_DATE, TERMS_PDF_PATH, TERMS_PREAMBLE,
   TERMS_ACKNOWLEDGMENTS, captureClientIp, buildAcceptanceRecord,
   printAcceptanceCertificate } from "./terms.js";
+import { C } from "./lib/theme.js";
+import { LS } from "./lib/storage.js";
+import { fmtSAR, fmtDate, fmtDateTime } from "./lib/format.js";
+import { getLang, setLangStore, t, dir } from "./i18n/index.js";
+import { BUSINESS_TYPES, DEFAULT_BUSINESS_TYPE, getBusinessType, bizProfile, bizFeature, isSupermarket } from "./config/businessTypes.js";
+import { Card, Btn, Inp, Sel, TextArea, Slider, ToggleRow, Badge, StatCard, Modal, DataTable } from "./components/ui.jsx";
+import { TabBoundary, ErrorBoundary } from "./components/boundaries.jsx";
 
 // ═══════════════════════════════════════════════════════════════════
 // TRIAL MODE — see src/trial.js. TRIAL is fixed for the life of the page:
@@ -107,50 +114,6 @@ function ensureSignedIn() {
   }
   return _authReadyPromise;
 }
-// ── BUSINESS TYPES ───────────────────────────────────────────────────────
-// Single source of truth for every business type. The whole app reads its
-// behaviour from the active profile instead of scattered `if (isSupermarket())`
-// checks — so adding a new type (pharmacy, salon, café, …) is one entry here
-// plus any screens unique to it, with nothing else to hunt down.
-//
-// Restaurant and Supermarket are defined to match today's behaviour exactly.
-// Fields:
-//   posLayout        "grid" (menu grid + cart) | "scan" (barcode-first till)
-//   nav              "topbar" (flat bar) | "sidebar" (☰ drawer + quick tabs)
-//   features         capability flags the UI switches on
-//   orderTypes       [id, icon, label] shown on the cart order-type toggle
-//   hideAdvancedTabs Advanced-screen tabs this type doesn't use
-//   navLabels        per-type wording overrides for nav items
-const BUSINESS_TYPES={
-  restaurant:{
-    id:"restaurant", label:"Restaurant", labelAr:"مطعم", icon:"🍽️",
-    posLayout:"grid", nav:"topbar",
-    features:{ tables:true, dineIn:true, kot:true, kitchen:true, kds:true, recipes:true, weighing:false, barcodeFirst:false },
-    orderTypes:[["takeaway","🥡","Takeaway"],["dine-in","🍽","Dine-in"],["delivery","🛵","Delivery"]],
-    hideAdvancedTabs:[],
-    navLabels:{},
-  },
-  supermarket:{
-    id:"supermarket", label:"Supermarket", labelAr:"سوبرماركت", icon:"🛒",
-    posLayout:"scan", nav:"sidebar",
-    features:{ tables:false, dineIn:false, kot:false, kitchen:false, kds:false, recipes:false, weighing:true, barcodeFirst:true },
-    orderTypes:[["takeaway","🛒","Sale"],["delivery","🛵","Delivery"]],
-    hideAdvancedTabs:["kitchen","kds","recipes"],
-    navLabels:{ create:"Products" },
-  },
-};
-const DEFAULT_BUSINESS_TYPE="restaurant";
-function getBusinessType(license){
-  const lic = license || (typeof LS!=="undefined" ? LS.get("restopos_license_v2") : null);
-  const t = lic && lic.businessType;
-  return BUSINESS_TYPES[t] ? t : DEFAULT_BUSINESS_TYPE; // unknown/missing → default, never crashes
-}
-// The active type's full profile — the object the UI should read from.
-function bizProfile(license){ return BUSINESS_TYPES[getBusinessType(license)]||BUSINESS_TYPES[DEFAULT_BUSINESS_TYPE]; }
-// One capability flag, e.g. bizFeature("tables") / bizFeature("kot").
-function bizFeature(name,license){ return !!bizProfile(license).features[name]; }
-// Kept for compatibility across the app; now derived from the registry.
-function isSupermarket(license){ return getBusinessType(license)==="supermarket"; }
 
 // Auth headers for calls to the ZATCA signing microservice. The service now
 // requires a valid Firebase ID token and checks that this device's UID is on
@@ -1020,211 +983,6 @@ function ZATCAInvoiceHistory(){
 }
 
 
-// ═══════════════════════════════════════════════════════════════════
-// LANGUAGE SYSTEM — Arabic / English
-// ═══════════════════════════════════════════════════════════════════
-const AR = {
-  // Nav
-  "Dashboard":"لوحة التحكم","POS":"نقطة البيع","Settings":"الإعدادات","Create":"إنشاء",
-  "Transactions":"المعاملات","P&L":"الأرباح والخسائر","Financials":"المالية","Invoices":"الفواتير",
-  "Expenses":"المصروفات","CRM":"إدارة العملاء","Reports":"التقارير","Analytics":"التحليلات",
-  "Advanced":"متقدم","Backup":"النسخ الاحتياطي","Shifts":"الورديات","Audit":"سجل المراجعة",
-  "Tools":"الأدوات","Users":"المستخدمون","Help":"المساعدة",
-  // POS
-  "Search items…":"ابحث عن الأصناف…","All":"الكل","Cart":"السلة","Table":"طاولة",
-  "Dine-in":"داخل المطعم","Takeaway":"خارجي","Delivery":"توصيل","Customer":"العميل",
-  "Order Type":"نوع الطلب","Select Table":"اختر طاولة","Add Note":"أضف ملاحظة",
-  "Clear":"مسح","Charge":"الدفع","Print KOT":"طباعة KOT","Hold":"تعليق",
-  "Discount":"خصم","Promo Code":"كود الخصم","Apply":"تطبيق","Cancel":"إلغاء",
-  "Cash":"نقداً","Card":"بطاقة","Split":"تقسيم","Confirm Payment":"تأكيد الدفع",
-  "Amount Given":"المبلغ المدفوع","Change":"الباقي","Total":"الإجمالي",
-  "Subtotal":"المجموع الفرعي","VAT 15%":"ضريبة 15%","Items":"الأصناف",
-  "Qty":"الكمية","Price":"السعر","Amount":"المبلغ",
-  "Cart is empty":"السلة فارغة","No items found":"لا توجد أصناف","Payment":"الدفع",
-  "Cash + Card":"نقداً + بطاقة","Normal":"عادي","Phone":"هاتف","KOT Only":"KOT فقط",
-  "Bill Type":"نوع الفاتورة","BILL TYPE":"نوع الفاتورة","PAYMENT METHOD":"طريقة الدفع",
-  "Pay":"ادفع","Given":"المدفوع","Balance":"الرصيد","Change Due":"المتبقي",
-  "Description":"الوصف","Done":"تم","No options set yet.":"لم يتم إضافة خيارات بعد.",
-  "Selected":"المختار","Save Only":"حفظ فقط","Print & Save":"طباعة وحفظ",
-  "Hold Order":"تعليق الطلب","Held Orders":"الطلبات المعلقة","Resume":"استئناف",
-  "Invoice Note":"ملاحظة الفاتورة","Customer Name":"اسم العميل","Customer Phone":"هاتف العميل",
-  "Apply Promo":"تطبيق الخصم","Manual Discount":"خصم يدوي","Discount %":"نسبة الخصم %",
-  "Favourites":"المفضلة","All Items":"جميع الأصناف","Categories":"الفئات",
-  // Settings tabs
-  "Company":"الشركة","Tables":"الطاولات","Bill Printer":"طابعة الفاتورة",
-  "Kitchen Printer":"طابعة المطبخ","Invoice Format":"تنسيق الفاتورة",
-  "Security":"الأمان","License":"الترخيص","Language":"اللغة",
-  "Preset Bills":"فواتير نموذجية","Promotions":"العروض",
-  // Settings labels
-  "Company Settings":"إعدادات الشركة","Table Configuration":"إعداد الطاولات",
-  "Number of Tables":"عدد الطاولات","Update":"تحديث","Save Settings":"حفظ الإعدادات",
-  "Saved successfully":"تم الحفظ بنجاح","Business Name (locked)":"اسم المنشأة (مقفل)",
-  "CR Number (locked)":"السجل التجاري (مقفل)","VAT / TRN (locked)":"الرقم الضريبي (مقفل)",
-  "License Key (locked)":"مفتاح الترخيص (مقفل)","Phone":"الهاتف","Email":"البريد الإلكتروني",
-  "City":"المدينة","Address":"العنوان","Save":"حفظ","Saved!":"تم الحفظ!",
-  // Dashboard
-  "Today's Revenue":"إيرادات اليوم","Today's Orders":"طلبات اليوم",
-  "Avg Order Value":"متوسط قيمة الطلب","Top Item":"الصنف الأعلى مبيعاً",
-  "This Week":"هذا الأسبوع","This Month":"هذا الشهر","All Time":"كل الوقت",
-  "Revenue":"الإيرادات","Orders":"الطلبات","VAT Collected":"ضريبة القيمة المضافة",
-  "Today":"اليوم","Weekly":"أسبوعي","Monthly":"شهري","Yearly":"سنوي",
-  "Net Revenue":"صافي الإيرادات","Gross Revenue":"إجمالي الإيرادات",
-  "DAILY GOAL":"الهدف اليومي","Card Sales":"مبيعات البطاقة","Cash Sales":"مبيعات النقد",
-  "Total Sales":"إجمالي المبيعات","Recent Orders":"الطلبات الأخيرة",
-  "Live":"مباشر","No sales today":"لا توجد مبيعات اليوم",
-  // Create/Menu
-  "New Menu Item":"صنف جديد","Edit Item":"تعديل الصنف","Item Name (English) *":"اسم الصنف (إنجليزي) *",
-  "Arabic Name":"الاسم بالعربية","Category":"الفئة","Barcode":"الباركود",
-  "Price (SAR) *":"السعر (ريال) *","Cost (SAR)":"التكلفة (ريال)","Stock":"المخزون",
-  "Active":"نشط","Save Item":"حفظ الصنف","Delete":"حذف","Edit":"تعديل",
-  "Menu Items":"أصناف القائمة","New Category":"فئة جديدة","Add Category":"إضافة فئة",
-  "Promo Codes":"رموز الخصم","New Promo":"خصم جديد","Code":"الرمز","Type":"النوع",
-  "Value":"القيمة","Min Order":"الحد الأدنى للطلب","Status":"الحالة",
-  "Flat":"ثابت","% Off":"خصم %","Minimum Order":"الحد الأدنى للطلب",
-  "Item Image":"صورة الصنف","Upload Image":"رفع صورة","Remove Image":"حذف الصورة",
-  "Has Modifier":"له خيارات","Add Modifier":"إضافة خيار","Modifier Name":"اسم الخيار",
-  "Name":"الاسم","Arabic":"العربية","Off":"إيقاف",
-  // Common
-  "Close":"إغلاق","Back":"رجوع","Next":"التالي","Yes":"نعم","No":"لا",
-  "Loading…":"جاري التحميل…","No data":"لا توجد بيانات","Search":"بحث",
-  "Date":"التاريخ","Time":"الوقت","Actions":"الإجراءات",
-  "Export":"تصدير","Import":"استيراد","Print":"طباعة","Download":"تحميل",
-  "Add":"إضافة","Remove":"إزالة","New":"جديد","View":"عرض",
-  "Confirm":"تأكيد","Reset":"إعادة ضبط","Filter":"تصفية","Sort":"ترتيب",
-  "From":"من","To":"إلى","All Time":"كل الوقت","Today":"اليوم",
-  "No results":"لا توجد نتائج","Error":"خطأ","Success":"نجاح","Warning":"تحذير",
-  // Transactions
-  "Transaction History":"سجل المعاملات","Receipt":"الإيصال","Refund":"استرداد",
-  "Payment Method":"طريقة الدفع","Invoice No":"رقم الفاتورة",
-  "All Orders":"جميع الطلبات","Completed":"مكتمل","Draft":"مسودة","Voided":"ملغي",
-  "View Receipt":"عرض الإيصال","Download XML":"تحميل XML","Report to ZATCA":"إرسال لزاتكا",
-  "Invoice":"فاتورة","Draft Invoice":"فاتورة مسودة","Transactions":"المعاملات",
-  "Filter by date":"تصفية بالتاريخ","Filter by method":"تصفية بالطريقة",
-  "Total Revenue":"إجمالي الإيرادات","Total VAT":"إجمالي الضريبة",
-  "Orders Count":"عدد الطلبات","Average":"المتوسط",
-  // Reports
-  "Daily Report":"التقرير اليومي","Weekly Report":"التقرير الأسبوعي",
-  "Monthly Report":"التقرير الشهري","Sales Report":"تقرير المبيعات",
-  "VAT Report":"تقرير الضريبة","Close Day":"إغلاق اليوم","Day Closed":"تم إغلاق اليوم",
-  "Close Day Report":"تقرير إغلاق اليوم","Sales Summary":"ملخص المبيعات",
-  "Category Breakdown":"تفصيل الفئات","Payment Breakdown":"تفصيل المدفوعات",
-  "Top Items":"الأصناف الأعلى مبيعاً","Best Sellers":"الأكثر مبيعاً",
-  "Draft Bills":"الفواتير المسودة","D-Invoices":"فواتير D","Clear D-Invoices":"مسح فواتير D",
-  "Qty Sold":"الكمية المباعة","Revenue":"الإيرادات","% of Total":"% من الإجمالي",
-  // Shifts
-  "Start Shift":"بدء الوردية","End Shift":"إنهاء الوردية","Current Shift":"الوردية الحالية",
-  "Shift History":"سجل الورديات","Opening Balance":"الرصيد الافتتاحي",
-  "Closing Balance":"الرصيد الختامي","Shift Revenue":"إيرادات الوردية",
-  "Shift Orders":"طلبات الوردية","No active shift":"لا توجد وردية نشطة",
-  "Start new shift":"بدء وردية جديدة","Cash in drawer":"النقد في الدرج",
-  // Expenses
-  "New Expense":"مصروف جديد","Add Expense":"إضافة مصروف","Expense Category":"فئة المصروف",
-  "Expense List":"قائمة المصروفات","Total Expenses":"إجمالي المصروفات",
-  "Notes":"ملاحظات","Supplier":"المورد","Food & Beverage":"طعام وشراب",
-  "Utilities":"المرافق","Maintenance":"الصيانة","Staff":"الموظفون","Other":"أخرى",
-  // CRM / Customers
-  "Customer List":"قائمة العملاء","New Customer":"عميل جديد","Add Customer":"إضافة عميل",
-  "Customer Details":"تفاصيل العميل","Visit Count":"عدد الزيارات","Total Spent":"إجمالي الإنفاق",
-  "Last Visit":"آخر زيارة","Loyalty Points":"نقاط الولاء","Phone Number":"رقم الهاتف",
-  "VIP":"VIP","Regular":"منتظم","First Visit":"الزيارة الأولى",
-  // Users
-  "Add User":"إضافة مستخدم","Username":"اسم المستخدم","Password":"كلمة المرور",
-  "Role":"الدور","Admin":"مدير","Manager":"مشرف","Cashier":"كاشير",
-  "Full Name":"الاسم الكامل","User Management":"إدارة المستخدمين",
-  "PIN":"رمز الدخول","Change PIN":"تغيير رمز الدخول","New PIN":"رمز جديد",
-  "Confirm PIN":"تأكيد الرمز","PIN updated!":"تم تحديث الرمز!",
-  // Help
-  "Need help?":"تحتاج مساعدة؟","Contact Support":"تواصل مع الدعم",
-  "Getting Started":"البداية","Guide":"الدليل","ZATCA":"زاتكا",
-  "AI Help":"مساعد ذكي","Updates":"التحديثات","Live Chat":"دردشة مباشرة",
-  "Upgrade":"ترقية","Live Help":"مساعدة مباشرة","Support":"الدعم","Terms":"الشروط",
-  "Check for Updates & Install":"البحث عن تحديثات وتثبيتها",
-  "Your data is safe — updating never deletes it.":"بياناتك آمنة — التحديث لا يحذفها.",
-  "What's new in each version":"ما الجديد في كل إصدار",
-  "Activate License":"تفعيل الترخيص","Login by Role":"تسجيل الدخول بالدور",
-  "Setup Menu":"إعداد القائمة","Start Billing":"بدء الفوترة","ZATCA Invoice":"فاتورة زاتكا",
-  // Advanced
-  "QZ Tray":"QZ Tray","Silent Printing":"طباعة صامتة","Kitchen Printer":"طابعة المطبخ",
-  "KDS":"شاشة المطبخ","Stock Takes":"جرد المخزون","Recipes":"الوصفات",
-  "Gift Cards":"بطاقات الهدايا","Locations":"المواقع","Accounting":"المحاسبة",
-  "ESC/POS":"ESC/POS","Error Log":"سجل الأخطاء","Audit Trail":"سجل المراجعة",
-  "Description (Item Modifiers)":"وصف الصنف (الخيارات)","Sales Progress Bar":"شريط تقدم المبيعات",
-  "Delivery":"التوصيل","Reports":"التقارير",
-  // Financials / P&L
-  "Profit & Loss":"الأرباح والخسائر","Gross Profit":"الربح الإجمالي",
-  "Net Profit":"صافي الربح","Cost of Goods":"تكلفة البضائع","Operating Expenses":"المصروفات التشغيلية",
-  "Profit Margin":"هامش الربح","Income":"الدخل","Expenditure":"المصروفات",
-  // Backup
-  "Backup & Restore":"النسخ الاحتياطي والاستعادة","Cloud Backup":"نسخ احتياطي سحابي",
-  "Local Backup":"نسخ احتياطي محلي","Restore":"استعادة","Last Backup":"آخر نسخة احتياطية",
-  "Backup Now":"نسخ احتياطي الآن","Restore from backup":"الاستعادة من النسخة الاحتياطية",
-  // Analytics
-  "Sales Analytics":"تحليلات المبيعات","Peak Hours":"ساعات الذروة","Top Categories":"أفضل الفئات",
-  "Revenue Trend":"اتجاه الإيرادات","Order Trends":"اتجاهات الطلبات",
-  "Sales Summary":"ملخص المبيعات","End of Day":"نهاية اليوم","Day History":"سجل الأيام",
-  "Stock Takes":"جرد المخزون","Recipes":"الوصفات","Gift Cards":"بطاقات الهدايا",
-  "Description (Item Modifiers":"وصف الصنف (الخيارات",
-  "Silent Printing":"طباعة صامتة","Progress Bar":"شريط التقدم",
-  "All Invoices":"جميع الفواتير","By Category":"حسب الفئة",
-  "Phase 2":"المرحلة الثانية","Signed":"موقعة","Unsigned":"غير موقعة",
-  "Report":"إبلاغ","Reported":"تم الإبلاغ","Pending":"معلق","Queue":"قائمة الانتظار",
-  // Language screen
-  "Choose Language":"اختر اللغة","Language Settings":"إعدادات اللغة",
-  "English":"الإنجليزية","Arabic":"العربية",
-  "Select your preferred language for the app interface.":"اختر لغتك المفضلة لواجهة التطبيق.",
-  // Auth / login
-  "Sign In":"تسجيل الدخول","Sign Out":"تسجيل الخروج","Log In":"تسجيل الدخول","Logout":"تسجيل الخروج",
-  "License Key":"مفتاح الترخيص","Forgot password?":"نسيت كلمة المرور؟","Your username":"اسم المستخدم",
-  "Your password":"كلمة المرور","Enter your license key":"أدخل مفتاح الترخيص",
-  "Waiting for Approval":"بانتظار الموافقة","Checking approval status…":"جاري التحقق من حالة الموافقة…",
-  "Back to role login":"العودة لتسجيل الدخول بالدور","Business Registration":"تسجيل المنشأة",
-  "Sign in":"تسجيل الدخول","Signing in…":"جاري تسجيل الدخول…",
-  "Are you the owner of this business?":"هل أنت مالك هذه المنشأة؟",
-  "Yes, I am the owner":"نعم، أنا المالك","No, I am a staff member":"لا، أنا موظف",
-  "Enter your business details":"أدخل تفاصيل منشأتك","Next: Enter License Key":"التالي: إدخال مفتاح الترخيص",
-  // Common verbs/labels
-  "Continue":"متابعة","Submit":"إرسال","Send":"إرسال","OK":"موافق","Got it":"فهمت",
-  "Enable":"تفعيل","Disable":"تعطيل","On":"تشغيل","Select":"اختيار","Choose":"اختر",
-  "Upload":"رفع","Refresh":"تحديث","Retry":"إعادة المحاولة","Copy":"نسخ","Share":"مشاركة",
-  "Open":"فتح","Settings":"الإعدادات","Optional":"اختياري","Required":"مطلوب",
-  "Enabled":"مفعّل","Disabled":"معطّل","Connected":"متصل","Disconnected":"غير متصل",
-  "Available":"متاح","Unavailable":"غير متاح","Default":"افتراضي","Custom":"مخصص",
-  "Total:":"الإجمالي:","Saved":"تم الحفظ","Updated":"تم التحديث","Deleted":"تم الحذف",
-  "Are you sure?":"هل أنت متأكد؟","This cannot be undone.":"لا يمكن التراجع عن هذا.",
-  // Close day
-  "Previous Close":"الإغلاق السابق","Period":"الفترة","Days covered":"الأيام المشمولة",
-  "Orders in period":"الطلبات في الفترة","Yes, Close Day":"نعم، إغلاق اليوم",
-  "Day Closed — Summary":"إغلاق اليوم — الملخص","Print A4":"طباعة A4","Thermal":"حراري",
-  "Since last close":"منذ آخر إغلاق","First close (no previous)":"أول إغلاق (لا يوجد سابق)",
-  "Sign out now? You'll need to log back in with a role PIN (Admin / Manager / Cashier).":"تسجيل الخروج الآن؟ ستحتاج لتسجيل الدخول مجدداً برمز الدور (مدير / مشرف / كاشير).",
-  "Signs out the current user. Log back in with Admin, Manager, or Cashier PIN.":"تسجيل خروج المستخدم الحالي. سجّل الدخول مجدداً برمز المدير أو المشرف أو الكاشير.",
-  // Print
-  "Print Type":"نوع الطباعة","Print Settings":"إعدادات الطباعة","Printer":"الطابعة",
-  "Available Printers":"الطابعات المتاحة","Select Printer":"اختر الطابعة","No printers found":"لم يتم العثور على طابعات",
-  "Print Type saved":"تم حفظ نوع الطباعة","A4 Printer":"طابعة A4","Thermal Printer":"طابعة حرارية",
-  // ZATCA / status
-  "Reported to ZATCA":"تم الإبلاغ لزاتكا","ZATCA Pending":"زاتكا معلق","ZATCA Urgent":"زاتكا عاجل",
-  "Total ZATCA Invoices":"إجمالي فواتير زاتكا","Urgent":"عاجل","Cleared":"تمت التصفية",
-  "History":"السجل","Invoice Archive & Audit Export":"أرشيف الفواتير وتصدير التدقيق",
-  "Export Archive":"تصدير الأرشيف","Estimate count":"تقدير العدد","Last Month":"الشهر الماضي",
-  "Last 3 Months":"آخر 3 أشهر","Last Year":"العام الماضي","Last 5 Years":"آخر 5 سنوات",
-  "Custom Report":"تقرير مخصص","Generate Report":"إنشاء التقرير","Retrieving data…":"جاري استرجاع البيانات…",
-  "View":"عرض","End of Day":"نهاية اليوم","Print Kitchen KOT?":"طباعة طلب المطبخ؟",
-};
-
-// Global language state — read/write localStorage directly so it works outside React
-function getLang(){return localStorage.getItem("restopos_lang")||"en";}
-function setLangStore(l){localStorage.setItem("restopos_lang",l);}
-
-// Translation helper — use anywhere: t("Save") returns Arabic if lang=ar, else English
-function t(en,lang){
-  if(!lang)lang=getLang();
-  if(lang==="en")return en;
-  return AR[en]||en; // fallback to English if no translation
-}
-
-// RTL direction helper
-function dir(lang){return lang==="ar"?"rtl":"ltr";}
 
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1419,8 +1177,8 @@ function makeSyncedLS(licenseKey){
 
 // ═══════════════════════════════════════════════════════════════════
 // LOCAL STORAGE HELPERS + CONSTANTS
+// LS lives in src/lib/storage.js (imported at the top of this file).
 // ═══════════════════════════════════════════════════════════════════
-const LS={get:(k)=>{try{return JSON.parse(localStorage.getItem(k));}catch{return null;}},set:(k,v)=>localStorage.setItem(k,JSON.stringify(v)),del:(k)=>localStorage.removeItem(k)};
 
 // ── DAILY TOKEN COUNTER ──────────────────────────────────────────────
 // Independent of KOT/invoice numbers. Increments ONLY on completed normal
@@ -2778,7 +2536,6 @@ const CHANGELOG=[
     ]
   },
 ];
-const C={bg:"#F8F9FB",card:"#FFFFFF",border:"#E8EBF0",primary:"#1A6B4A",primaryLight:"#E8F5EE",primaryDark:"#134D36",accent:"#F0A500",accentLight:"#FEF6E4",danger:"#D94040",dangerLight:"#FDE8E8",info:"#2176AE",infoLight:"#E6F0F8",text:"#1A1D23",textMid:"#5A6070",textLight:"#9AA0AD",success:"#1A8A4A",successLight:"#E6F7ED",warning:"#E07B00",warningLight:"#FFF3E0",zatca:"#6366f1",zatcaLight:"#eef2ff"};
 const SEED_ITEMS=[{id:1,name:"Broasted Chicken Half",nameAr:"دجاج مبروست نصف",category:"Broasted",price:28,cost:14,stock:50,active:true,barcode:""},{id:2,name:"Broasted Chicken Full",nameAr:"دجاج مبروست كامل",category:"Broasted",price:52,cost:26,stock:30,active:true,barcode:""},{id:3,name:"Crispy Wings 6pc",nameAr:"أجنحة مقرمشة",category:"Broasted",price:22,cost:10,stock:40,active:true,barcode:""},{id:4,name:"Mixed Grill Platter",nameAr:"مشاوي مشكلة",category:"Grills",price:65,cost:30,stock:20,active:true,barcode:""},{id:5,name:"Shish Tawook",nameAr:"شيش طاووق",category:"Grills",price:38,cost:18,stock:25,active:true,barcode:""},{id:6,name:"French Fries",nameAr:"بطاطس مقلية",category:"Sides",price:10,cost:3,stock:100,active:true,barcode:""},{id:7,name:"Coleslaw",nameAr:"كول سلو",category:"Sides",price:8,cost:2,stock:60,active:true,barcode:""},{id:8,name:"Pepsi Can",nameAr:"بيبسي",category:"Drinks",price:5,cost:2,stock:120,active:true,barcode:""},{id:9,name:"Fresh Lemon Juice",nameAr:"عصير ليمون",category:"Drinks",price:14,cost:4,stock:40,active:true,barcode:""},{id:10,name:"Umm Ali",nameAr:"أم علي",category:"Desserts",price:18,cost:6,stock:15,active:true,barcode:""},{id:11,name:"Family Box",nameAr:"وجبة عائلية",category:"Combos",price:85,cost:40,stock:20,active:true,barcode:""},{id:12,name:"Solo Meal",nameAr:"وجبة فردية",category:"Combos",price:32,cost:15,stock:30,active:true,barcode:""}];
 const SEED_CATEGORIES=["Broasted","Grills","Sides","Drinks","Desserts","Combos"];
 const TABLES_INIT=Array.from({length:12},(_,i)=>({id:i+1,status:i<3?"occupied":"free",capacity:4}));
@@ -2828,85 +2585,9 @@ function saveItemOrder(map){LS.set("restopos_item_order",map);const lic=LS.get("
 function getPosBoxHeight(){const h=parseInt(LS.get("restopos_pos_box_height"));return (h>=44&&h<=160)?h:96;}
 function savePosBoxHeight(h){LS.set("restopos_pos_box_height",h);const lic=LS.get("restopos_license_v2")?.licenseKey;if(lic)debouncedSync(lic,"restopos_pos_box_height",h);}
 
-function fmtSAR(n){return"SAR "+Number(n).toFixed(2);}
-function fmtDate(d){return new Date(d).toLocaleDateString("en-SA",{day:"2-digit",month:"short",year:"numeric"});}
-function fmtDateTime(d){return new Date(d).toLocaleString("en-SA",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit",second:"2-digit"});}
-
 // ═══════════════════════════════════════════════════════════════════
-// REUSABLE UI COMPONENTS
+// REUSABLE UI COMPONENTS — moved to src/components/ui.jsx (imported above).
 // ═══════════════════════════════════════════════════════════════════
-const Card=({children,style={}})=><div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:20,...style}}>{children}</div>;
-const Btn=({children,onClick,variant="primary",size="md",disabled=false,style={}})=>{
-  const variants={primary:{background:C.primary,color:"#fff",border:"none"},outline:{background:"transparent",color:C.primary,border:`1.5px solid ${C.primary}`},danger:{background:C.danger,color:"#fff",border:"none"},ghost:{background:"transparent",color:C.textMid,border:`1px solid ${C.border}`},accent:{background:C.accent,color:"#fff",border:"none"},zatca:{background:C.zatca,color:"#fff",border:"none"}};
-  const sizes={sm:{padding:"5px 12px",fontSize:12},md:{padding:"8px 18px",fontSize:13},lg:{padding:"12px 28px",fontSize:15}};
-  return<button onClick={onClick} disabled={disabled} style={{...variants[variant],...sizes[size],borderRadius:8,fontFamily:"inherit",fontWeight:600,cursor:disabled?"not-allowed":"pointer",opacity:disabled?0.5:1,transition:"all 0.15s",...style}}>{children}</button>;
-};
-const Inp=({label,value,onChange,type="text",placeholder="",style={},readOnly=false})=>(
-  <div style={{display:"flex",flexDirection:"column",gap:4,...style}}>
-    {label&&<label style={{fontSize:12,fontWeight:600,color:C.textMid}}>{label}</label>}
-    <input type={type} value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder} readOnly={readOnly} style={{padding:"9px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontSize:13,fontFamily:"inherit",color:C.text,background:readOnly?C.bg:"#fff"}}/>
-  </div>
-);
-const Sel=({label,value,onChange,options,style={}})=>(
-  <div style={{display:"flex",flexDirection:"column",gap:4,...style}}>
-    {label&&<label style={{fontSize:12,fontWeight:600,color:C.textMid}}>{label}</label>}
-    <select value={value} onChange={e=>onChange(e.target.value)} style={{padding:"9px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontSize:13,fontFamily:"inherit",color:C.text,background:"#fff"}}>
-      {options.map(o=><option key={o.value??o} value={o.value??o}>{o.label??o}</option>)}
-    </select>
-  </div>
-);
-// Multi-line text input — lets clients type onto the next line (Enter for newline)
-const TextArea=({label,value,onChange,placeholder="",rows=3,style={},dir})=>(
-  <div style={{display:"flex",flexDirection:"column",gap:4,...style}}>
-    {label&&<label style={{fontSize:12,fontWeight:600,color:C.textMid}}>{label}</label>}
-    <textarea value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder} rows={rows} dir={dir} style={{padding:"9px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontSize:13,fontFamily:"inherit",color:C.text,background:"#fff",resize:"vertical",lineHeight:1.5}}/>
-  </div>
-);
-// Slider — client picks any size in a range (e.g. font/QR/logo size)
-const Slider=({label,value,onChange,min,max,step=1,unit="px",style={}})=>(
-  <div style={{display:"flex",flexDirection:"column",gap:6,...style}}>
-    {label&&<div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-      <label style={{fontSize:12,fontWeight:600,color:C.textMid}}>{label}</label>
-      <span style={{fontSize:12,fontWeight:800,color:C.primary,background:C.primaryLight,borderRadius:6,padding:"2px 8px"}}>{value}{unit}</span>
-    </div>}
-    <input type="range" min={min} max={max} step={step} value={value} onChange={e=>onChange(parseInt(e.target.value))} style={{width:"100%",accentColor:C.primary,cursor:"pointer"}}/>
-  </div>
-);
-// Toggle switch row
-const ToggleRow=({label,on,onClick})=>(
-  <label style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"}}>
-    <span style={{fontSize:12,color:C.text}}>{label}</span>
-    <div onClick={onClick} style={{width:40,height:22,borderRadius:11,background:on?C.primary:"#CBD5E0",position:"relative",transition:"background 0.2s",cursor:"pointer",flexShrink:0}}>
-      <div style={{position:"absolute",top:2,left:on?20:2,width:18,height:18,borderRadius:"50%",background:"#fff",transition:"left 0.2s",boxShadow:"0 1px 3px rgba(0,0,0,0.2)"}}/>
-    </div>
-  </label>
-);
-const Badge=({children,color=C.primary,bg=C.primaryLight})=><span style={{padding:"2px 10px",borderRadius:20,fontSize:11,fontWeight:700,color,background:bg,whiteSpace:"nowrap"}}>{children}</span>;
-const StatCard=({label,value,sub,icon,color=C.primary,bg=C.primaryLight})=>(
-  <div style={{background:bg,border:`2px solid ${color}22`,borderRadius:12,padding:20,display:"flex",alignItems:"center",gap:16,boxShadow:`0 2px 8px ${color}18`}}>
-    <div style={{width:48,height:48,borderRadius:12,background:color,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,flexShrink:0,boxShadow:`0 4px 12px ${color}40`}}>{icon}</div>
-    <div><div style={{fontSize:22,fontWeight:800,color}}>{value}</div><div style={{fontSize:12,color:C.text,fontWeight:600,opacity:0.8}}>{label}</div>{sub&&<div style={{fontSize:11,color,marginTop:2,fontWeight:600}}>{sub}</div>}</div>
-  </div>
-);
-const Modal=({title,onClose,children,width=520})=>(
-  <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.45)",zIndex:2000,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
-    <div style={{background:"#fff",borderRadius:16,width,maxWidth:"95vw",maxHeight:"90vh",overflow:"auto",boxShadow:"0 20px 60px rgba(0,0,0,0.2)"}}>
-      <div style={{padding:"20px 24px",borderBottom:`1px solid ${C.border}`,display:"flex",justifyContent:"space-between",alignItems:"center",position:"sticky",top:0,background:"#fff",zIndex:1}}>
-        <span style={{fontSize:16,fontWeight:700,color:C.text}}>{title}</span>
-        <button onClick={onClose} style={{background:"none",border:"none",fontSize:20,cursor:"pointer",color:C.textLight}}>×</button>
-      </div>
-      <div style={{padding:24}}>{children}</div>
-    </div>
-  </div>
-);
-const DataTable=({headers,rows,emptyMsg="No data"})=>(
-  <div style={{overflowX:"auto"}}>
-    <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
-      <thead><tr style={{background:C.bg}}>{headers.map(h=><th key={h} style={{padding:"10px 14px",textAlign:"left",fontWeight:700,color:C.textMid,fontSize:11,textTransform:"uppercase",letterSpacing:"0.05em",borderBottom:`1px solid ${C.border}`,whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
-      <tbody>{rows.length===0?<tr><td colSpan={headers.length} style={{textAlign:"center",padding:32,color:C.textLight}}>{emptyMsg}</td></tr>:rows.map((row,i)=><tr key={i} style={{borderBottom:`1px solid ${C.border}`,background:i%2===0?"#fff":"#FAFBFC"}}>{row.map((cell,j)=><td key={j} style={{padding:"10px 14px",color:C.text,verticalAlign:"middle"}}>{cell}</td>)}</tr>)}</tbody>
-    </table>
-  </div>
-);
 
 // ═══════════════════════════════════════════════════════════════════
 // FREE TRIAL — invitation, signup and in-app banner
@@ -14284,54 +13965,6 @@ function AuditTrail(){
 // ═══════════════════════════════════════════════════════════════════
 // ERROR BOUNDARY
 // ═══════════════════════════════════════════════════════════════════
-// Lightweight per-section boundary — keeps one broken tab from white-screening the app.
-class TabBoundary extends Component {
-  constructor(props){super(props);this.state={hasError:false,msg:""};}
-  static getDerivedStateFromError(error){return{hasError:true,msg:error?.message||"Error"};}
-  componentDidCatch(error,info){
-    try{const logs=JSON.parse(localStorage.getItem("restopos_error_logs")||"[]");logs.unshift({ts:new Date().toISOString(),message:error?.message||"Unknown",where:this.props.name||"tab"});localStorage.setItem("restopos_error_logs",JSON.stringify(logs.slice(0,50)));}catch(e){}
-  }
-  render(){
-    if(this.state.hasError){
-      return(
-        <div style={{padding:30,textAlign:"center",background:"#fff",border:"1px solid #eee",borderRadius:14,maxWidth:460,margin:"20px auto"}}>
-          <div style={{fontSize:38,marginBottom:10}}>⚠️</div>
-          <div style={{fontSize:16,fontWeight:800,color:"#D94040",marginBottom:6}}>This section hit an error</div>
-          <div style={{fontSize:12,color:"#888",marginBottom:18}}>{this.state.msg}</div>
-          <button onClick={()=>{try{localStorage.setItem("restopos_screen","dashboard");}catch(e){}window.location.reload();}}
-            style={{padding:"11px 24px",background:"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:10,fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>Go to Dashboard</button>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
-
-class ErrorBoundary extends Component {
-  constructor(props){super(props);this.state={hasError:false,error:null};}
-  static getDerivedStateFromError(error){return{hasError:true,error};}
-  componentDidCatch(error,info){
-    const logs=JSON.parse(localStorage.getItem("restopos_error_logs")||"[]");
-    logs.unshift({ts:new Date().toISOString(),message:error?.message||"Unknown",stack:error?.stack?.slice(0,400)||"",component:info?.componentStack?.slice(0,200)||""});
-    localStorage.setItem("restopos_error_logs",JSON.stringify(logs.slice(0,50)));
-  }
-  render(){
-    if(this.state.hasError){
-      return(
-        <div style={{minHeight:"100vh",background:"#0a1628",display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"'Plus Jakarta Sans',sans-serif",padding:20}}>
-          <div style={{background:"#1a2332",border:"1px solid rgba(217,64,64,0.4)",borderRadius:20,padding:40,maxWidth:480,textAlign:"center"}}>
-            <div style={{fontSize:48,marginBottom:16}}>⚠️</div>
-            <div style={{fontSize:20,fontWeight:800,color:"#ff6b6b",marginBottom:8}}>Something went wrong</div>
-            <div style={{fontSize:13,color:"rgba(255,255,255,0.5)",marginBottom:24,lineHeight:1.6}}>{this.state.error?.message||"An unexpected error occurred."}</div>
-            <button onClick={()=>{try{localStorage.setItem("restopos_screen","dashboard");}catch(e){}this.setState({hasError:false,error:null});window.location.reload();}} style={{padding:"12px 28px",background:"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:10,fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"inherit",marginRight:10}}>Try Again</button>
-            <button onClick={()=>{try{localStorage.setItem("restopos_screen","dashboard");}catch(e){}window.location.reload();}} style={{padding:"12px 28px",background:"rgba(255,255,255,0.1)",color:"#fff",border:"1px solid rgba(255,255,255,0.2)",borderRadius:10,fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>Reload App</button>
-          </div>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
 
 // ═══════════════════════════════════════════════════════════════════
 // OFFLINE DETECTION + LOCAL CACHE SYNC
