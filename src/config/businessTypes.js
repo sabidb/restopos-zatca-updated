@@ -46,6 +46,18 @@ export const BUSINESS_TYPES={
     hideAdvancedTabs:["kitchen","kds","recipes"],
     navLabels:{ create:"Products" },
   },
+  // Large hypermarket (Lulu-style): supermarket till, plus the Phase-2 shared
+  // systems switched ON — a Supervisor role with manager-approval overrides for
+  // void/refund/price-override, and a customer loyalty/rewards programme.
+  hypermarket:{
+    id:"hypermarket", label:"Hypermarket", labelAr:"هايبر ماركت", icon:"🏬",
+    posLayout:"scan", nav:"sidebar",
+    features:{ tables:false, dineIn:false, kot:false, kitchen:false, kds:false, recipes:false, weighing:true, barcodeFirst:true, approvals:true, loyalty:true },
+    orderTypes:[["takeaway","🛒","Sale"],["delivery","🛵","Delivery"]],
+    hideAdvancedTabs:["kitchen","kds","recipes"],
+    navLabels:{ create:"Products" },
+    roles:["Admin","Manager","Supervisor","Cashier"],
+  },
 };
 export const DEFAULT_BUSINESS_TYPE="restaurant";
 export function getBusinessType(license){
