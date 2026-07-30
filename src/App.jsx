@@ -16981,6 +16981,7 @@ export default function App(){
     return "dashboard";
   });
   function setScreen(s){_setScreen(s);LS.set("restopos_last_screen",s);}
+  const [sidebarOpen,setSidebarOpen]=useState(false); // supermarket ☰ menu drawer
   const [terminated,setTerminated]=useState(null);
   const [showTrialSignup,setShowTrialSignup]=useState(false);
   // Local expiry check so an offline trial still locks on day 15; the
@@ -17601,6 +17602,22 @@ export default function App(){
   function handleSwitchAccount(){LS.del("restopos_license_v2");LS.del("restopos_client_creds");setLicense(null);setCurrentUser(null);setStep("register");}
   const ALL_NAV=[["dashboard","📊","Dashboard",["Admin","Manager"]],["pos","🖥️","POS",["Admin","Manager","Cashier"]],["settings","⚙️","Settings",["Admin"]],["create","➕","Create",["Admin","Manager"]],["transactions","💳","Transactions",["Admin","Manager"]],["financials","🏦","Financials",["Admin","Manager"]],["customers","👥","CRM",["Admin","Manager"]],["reports","📋","Reports",["Admin","Manager"]],["advanced","⚡","Advanced",["Admin","Manager"]],["inventory","📦","Inventory",["Admin","Manager"]],["vat","🧾","VAT",["Admin","Manager"]],["shifts","🔄","Shifts",["Admin","Manager"]],["help","❓","Help",["Admin","Manager","Cashier"]]];
   const NAV=ALL_NAV.filter(([,,,roles])=>currentUser&&roles.includes(currentUser.role));
+  const superMode=isSupermarket();
+  // Supermarket navigation is a ☰ sidebar: the same modules as restaurant,
+  // grouped as a main heading with its branches. Only ids the user's role can
+  // see are shown (NAV is already role-filtered). Kitchen/tables are handled
+  // inside their own screens.
+  const NAV_BY_ID=Object.fromEntries(NAV.map(n=>[n[0],n]));
+  const SUPER_LABELS={create:"Products"}; // clearer wording for a supermarket
+  const SUPER_GROUPS=[
+    ["Sell","🛒",["pos","transactions"]],
+    ["Catalogue","🏷️",["create","inventory"]],
+    ["Reports","📈",["dashboard","reports","financials","vat"]],
+    ["Customers","👥",["customers"]],
+    ["Manage","⚙️",["shifts","advanced","settings","help"]],
+  ].map(([g,ic,ids])=>[g,ic,ids.filter(id=>NAV_BY_ID[id])]).filter(([,,ids])=>ids.length);
+  // Quick tabs always visible on the supermarket top bar (role-permitting).
+  const SUPER_TOP=["pos","transactions"].filter(id=>NAV_BY_ID[id]);
   if(step==="checking")return<div style={{minHeight:"100vh",background:"#0a1628",display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{color:"#fff",fontSize:16}}>Loading…</div></div>;
   // Day 15: the trial locks, but nothing is deleted — the workspace and its
   // cloud copy both stay put, waiting for the client to register. Checked
@@ -17666,13 +17683,18 @@ export default function App(){
       {TRIAL&&<TrialBanner license={license} onModeChange={handleTrialModeChange} onRegister={handleRegisterFromTrial}/>}
       <div style={{display:"flex",alignItems:"stretch",flexShrink:0,zIndex:100,boxShadow:"0 2px 12px rgba(0,0,0,0.18)",minHeight:50,width:"100%",flexWrap:"nowrap"}}>
         <div style={{background:"linear-gradient(135deg,#1A3D2B 0%,#1F4D36 100%)",display:"flex",alignItems:"center",gap:8,padding:"0 12px",flexShrink:0,borderRight:"1px solid rgba(255,255,255,0.1)"}}>
-          <div style={{width:26,height:26,background:"linear-gradient(135deg,#2ECC71,#F0A500)",borderRadius:6,display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontSize:13,fontWeight:900,flexShrink:0}}>R</div>
+          {superMode&&<button onClick={()=>setSidebarOpen(true)} title="Menu" aria-label="Open menu" style={{background:"rgba(255,255,255,0.1)",border:"1px solid rgba(255,255,255,0.18)",borderRadius:7,width:30,height:30,display:"flex",flexDirection:"column",justifyContent:"center",alignItems:"center",gap:3,cursor:"pointer",flexShrink:0,padding:0}}>
+            <span style={{width:15,height:2,background:"#fff",borderRadius:2}}/><span style={{width:15,height:2,background:"#fff",borderRadius:2}}/><span style={{width:15,height:2,background:"#fff",borderRadius:2}}/>
+          </button>}
+          {superMode
+            ? <img src="/icon-192.png" alt="RestoPOS" style={{width:28,height:28,borderRadius:6,flexShrink:0,objectFit:"contain",background:"#fff"}}/>
+            : <div style={{width:26,height:26,background:"linear-gradient(135deg,#2ECC71,#F0A500)",borderRadius:6,display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontSize:13,fontWeight:900,flexShrink:0}}>R</div>}
           <div style={{display:viewport.w<500?"none":"block"}}><div style={{fontSize:12,fontWeight:800,color:"#fff",lineHeight:1,whiteSpace:"nowrap"}}>RestoPOS</div><div style={{fontSize:7,color:"rgba(255,255,255,0.5)",letterSpacing:"0.1em",whiteSpace:"nowrap"}}>{lang==="ar"?`المرحلة 2 · ${APP_VERSION}`:`ZATCA P2 · ${APP_VERSION}`}</div></div>
         </div>
-        <div style={{background:"linear-gradient(90deg,#E8F4EE 0%,#F0F9F4 100%)",flex:1,display:"flex",alignItems:"center",padding:"0 4px",overflowX:"auto",borderRight:"1px solid #C8E6D4",minWidth:0}}>
-          {NAV.map(([id,icon,label])=>(
-            <button key={id} onClick={()=>setScreen(id)} style={{padding:viewport.w<640?"5px 7px":"5px 9px",borderRadius:6,border:screen===id?"1.5px solid #1A6B4A":"1px solid transparent",background:screen===id?"#fff":"transparent",color:screen===id?C.primary:"#2D5A40",fontFamily:"inherit",fontSize:viewport.w<640?10:11,fontWeight:screen===id?700:500,cursor:"pointer",display:"flex",alignItems:"center",gap:3,whiteSpace:"nowrap",transition:"all 0.15s",flexShrink:0,boxShadow:screen===id?"0 1px 4px rgba(26,107,74,0.15)":"none"}}>
-              <span style={{fontSize:11}}>{icon}</span>{viewport.w>=500&&<span>{t(label,lang)}</span>}
+        <div style={{background:"linear-gradient(90deg,#E8F4EE 0%,#F0F9F4 100%)",flex:1,display:"flex",alignItems:"center",gap:superMode?6:0,padding:"0 4px",overflowX:"auto",borderRight:"1px solid #C8E6D4",minWidth:0}}>
+          {(superMode?SUPER_TOP.map(id=>NAV_BY_ID[id]):NAV).map(([id,icon,label])=>(
+            <button key={id} onClick={()=>setScreen(id)} style={{padding:superMode?"6px 14px":(viewport.w<640?"5px 7px":"5px 9px"),borderRadius:6,border:screen===id?"1.5px solid #1A6B4A":"1px solid transparent",background:screen===id?"#fff":"transparent",color:screen===id?C.primary:"#2D5A40",fontFamily:"inherit",fontSize:superMode?12:(viewport.w<640?10:11),fontWeight:screen===id?700:(superMode?600:500),cursor:"pointer",display:"flex",alignItems:"center",gap:4,whiteSpace:"nowrap",transition:"all 0.15s",flexShrink:0,boxShadow:screen===id?"0 1px 4px rgba(26,107,74,0.15)":"none"}}>
+              <span style={{fontSize:superMode?13:11}}>{icon}</span>{(superMode||viewport.w>=500)&&<span>{t(superMode&&SUPER_LABELS[id]?SUPER_LABELS[id]:label,lang)}</span>}
             </button>
           ))}
         </div>
@@ -17731,6 +17753,37 @@ export default function App(){
           <button onClick={()=>setCurrentUser(null)} style={{fontSize:9,background:"rgba(217,64,64,0.25)",color:"#ffaaaa",border:"1px solid rgba(217,64,64,0.35)",padding:"3px 7px",borderRadius:4,cursor:"pointer",fontFamily:"inherit",fontWeight:700,whiteSpace:"nowrap"}}>⎋</button>
         </div>
       </div>
+      {/* ☰ SUPERMARKET SIDEBAR — every module, grouped as a heading with its branches */}
+      {superMode&&sidebarOpen&&(
+        <div onClick={()=>setSidebarOpen(false)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:9000,display:"flex",animation:"sbFade 0.15s ease"}}>
+          <div onClick={e=>e.stopPropagation()} style={{width:290,maxWidth:"85vw",height:"100%",background:"#fff",boxShadow:"4px 0 30px rgba(0,0,0,0.3)",display:"flex",flexDirection:"column",animation:"sbSlide 0.2s ease"}}>
+            <style>{`@keyframes sbFade{from{opacity:0}to{opacity:1}}@keyframes sbSlide{from{transform:translateX(-100%)}to{transform:translateX(0)}}`}</style>
+            <div style={{background:"linear-gradient(135deg,#1A3D2B 0%,#1F4D36 100%)",padding:"14px 16px",display:"flex",alignItems:"center",gap:10}}>
+              <img src="/icon-192.png" alt="RestoPOS" style={{width:34,height:34,borderRadius:8,objectFit:"contain",background:"#fff"}}/>
+              <div style={{flex:1}}>
+                <div style={{fontSize:15,fontWeight:800,color:"#fff",lineHeight:1}}>RestoPOS</div>
+                <div style={{fontSize:9,color:"rgba(255,255,255,0.55)",letterSpacing:"0.1em",marginTop:3}}>🛒 SUPERMARKET</div>
+              </div>
+              <button onClick={()=>setSidebarOpen(false)} aria-label="Close menu" style={{background:"rgba(255,255,255,0.12)",border:"none",borderRadius:"50%",width:30,height:30,color:"#fff",fontSize:18,cursor:"pointer",flexShrink:0,lineHeight:1}}>×</button>
+            </div>
+            <div style={{flex:1,overflowY:"auto",padding:"8px 10px"}}>
+              {SUPER_GROUPS.map(([group,gicon,ids])=>(
+                <div key={group} style={{marginBottom:6}}>
+                  <div style={{fontSize:10,fontWeight:800,letterSpacing:"0.08em",color:C.textLight,padding:"10px 10px 5px",textTransform:"uppercase"}}>{gicon} {t(group,lang)}</div>
+                  {ids.map(id=>{const[,icon,label]=NAV_BY_ID[id];const on=screen===id;return(
+                    <button key={id} onClick={()=>{setScreen(id);setSidebarOpen(false);}} style={{width:"100%",textAlign:"left",display:"flex",alignItems:"center",gap:11,padding:"11px 12px",borderRadius:10,border:"none",background:on?C.primaryLight:"transparent",color:on?C.primary:C.text,fontFamily:"inherit",fontSize:14,fontWeight:on?800:600,cursor:"pointer",marginBottom:1}}>
+                      <span style={{fontSize:17,width:22,textAlign:"center",flexShrink:0}}>{icon}</span>
+                      <span style={{flex:1}}>{t(SUPER_LABELS[id]||label,lang)}</span>
+                      {on&&<span style={{width:7,height:7,borderRadius:"50%",background:C.primary,flexShrink:0}}/>}
+                    </button>
+                  );})}
+                </div>
+              ))}
+            </div>
+            <div style={{padding:"10px 14px",borderTop:`1px solid ${C.border}`,fontSize:10,color:C.textLight,textAlign:"center"}}>RestoPOS · {APP_VERSION}</div>
+          </div>
+        </div>
+      )}
       <div style={{flex:1,padding:screen==="pos"?0:20,overflowY:screen==="pos"?"hidden":"auto",width:"100%",minHeight:0,height:"calc(100vh - 50px)"}}>
         {announcementBanner&&screen!=="pos"&&(
           <div style={{background:"linear-gradient(135deg,#F0A500,#e09000)",color:"#fff",padding:"9px 16px",marginBottom:14,borderRadius:10,display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,boxShadow:"0 2px 12px rgba(240,165,0,0.25)"}}>
