@@ -17687,7 +17687,7 @@ export default function App(){
             <span style={{width:15,height:2,background:"#fff",borderRadius:2}}/><span style={{width:15,height:2,background:"#fff",borderRadius:2}}/><span style={{width:15,height:2,background:"#fff",borderRadius:2}}/>
           </button>}
           {superMode
-            ? <img src="/icon-192.png" alt="RestoPOS" style={{width:28,height:28,borderRadius:6,flexShrink:0,objectFit:"contain",background:"#fff"}}/>
+            ? <img src="/brand-logo.png" alt="RestoPOS" style={{width:28,height:28,borderRadius:6,flexShrink:0,objectFit:"cover"}}/>
             : <div style={{width:26,height:26,background:"linear-gradient(135deg,#2ECC71,#F0A500)",borderRadius:6,display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontSize:13,fontWeight:900,flexShrink:0}}>R</div>}
           <div style={{display:viewport.w<500?"none":"block"}}><div style={{fontSize:12,fontWeight:800,color:"#fff",lineHeight:1,whiteSpace:"nowrap"}}>RestoPOS</div><div style={{fontSize:7,color:"rgba(255,255,255,0.5)",letterSpacing:"0.1em",whiteSpace:"nowrap"}}>{lang==="ar"?`المرحلة 2 · ${APP_VERSION}`:`ZATCA P2 · ${APP_VERSION}`}</div></div>
         </div>
@@ -17759,7 +17759,7 @@ export default function App(){
           <div onClick={e=>e.stopPropagation()} style={{width:290,maxWidth:"85vw",height:"100%",background:"#fff",boxShadow:"4px 0 30px rgba(0,0,0,0.3)",display:"flex",flexDirection:"column",animation:"sbSlide 0.2s ease"}}>
             <style>{`@keyframes sbFade{from{opacity:0}to{opacity:1}}@keyframes sbSlide{from{transform:translateX(-100%)}to{transform:translateX(0)}}`}</style>
             <div style={{background:"linear-gradient(135deg,#1A3D2B 0%,#1F4D36 100%)",padding:"14px 16px",display:"flex",alignItems:"center",gap:10}}>
-              <img src="/icon-192.png" alt="RestoPOS" style={{width:34,height:34,borderRadius:8,objectFit:"contain",background:"#fff"}}/>
+              <img src="/brand-logo.png" alt="RestoPOS" style={{width:34,height:34,borderRadius:8,objectFit:"cover"}}/>
               <div style={{flex:1}}>
                 <div style={{fontSize:15,fontWeight:800,color:"#fff",lineHeight:1}}>RestoPOS</div>
                 <div style={{fontSize:9,color:"rgba(255,255,255,0.55)",letterSpacing:"0.1em",marginTop:3}}>🛒 SUPERMARKET</div>
