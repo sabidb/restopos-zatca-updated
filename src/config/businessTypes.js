@@ -18,6 +18,17 @@ import { LS } from "../lib/storage.js";
 //   orderTypes       [id, icon, label] shown on the cart order-type toggle
 //   hideAdvancedTabs Advanced-screen tabs this type doesn't use
 //   navLabels        per-type wording overrides for nav items
+//
+// Optional Phase-2 fields (absent ⇒ off, so restaurant/supermarket are
+// unaffected; a new type opts in):
+//   roles              e.g. ["Admin","Manager","Supervisor","Cashier"] — which
+//                      staff roles this type uses (default: Admin/Manager/Cashier).
+//                      See src/config/roles.js.
+//   features.approvals true | { "sale.void":true, ... } — require a higher-ranked
+//                      PIN to approve gated till actions. See src/lib/permissions.js.
+//   features.loyalty   true — enable points/tiers/redemptions.
+//   loyalty            optional overrides for the default earn/redeem rules.
+//                      See src/config/loyalty.js.
 export const BUSINESS_TYPES={
   restaurant:{
     id:"restaurant", label:"Restaurant", labelAr:"مطعم", icon:"🍽️",
