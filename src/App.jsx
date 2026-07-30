@@ -107,13 +107,49 @@ function ensureSignedIn() {
   }
   return _authReadyPromise;
 }
-// ── BUSINESS MODE ────────────────────────────────────────────────────────
-// "restaurant" (default) or "supermarket". Supermarket mode hides tables/
-// dine-in/KOT/kitchen and turns on barcode-first checkout + weighed items.
+// ── BUSINESS TYPES ───────────────────────────────────────────────────────
+// Single source of truth for every business type. The whole app reads its
+// behaviour from the active profile instead of scattered `if (isSupermarket())`
+// checks — so adding a new type (pharmacy, salon, café, …) is one entry here
+// plus any screens unique to it, with nothing else to hunt down.
+//
+// Restaurant and Supermarket are defined to match today's behaviour exactly.
+// Fields:
+//   posLayout        "grid" (menu grid + cart) | "scan" (barcode-first till)
+//   nav              "topbar" (flat bar) | "sidebar" (☰ drawer + quick tabs)
+//   features         capability flags the UI switches on
+//   orderTypes       [id, icon, label] shown on the cart order-type toggle
+//   hideAdvancedTabs Advanced-screen tabs this type doesn't use
+//   navLabels        per-type wording overrides for nav items
+const BUSINESS_TYPES={
+  restaurant:{
+    id:"restaurant", label:"Restaurant", labelAr:"مطعم", icon:"🍽️",
+    posLayout:"grid", nav:"topbar",
+    features:{ tables:true, dineIn:true, kot:true, kitchen:true, kds:true, recipes:true, weighing:false, barcodeFirst:false },
+    orderTypes:[["takeaway","🥡","Takeaway"],["dine-in","🍽","Dine-in"],["delivery","🛵","Delivery"]],
+    hideAdvancedTabs:[],
+    navLabels:{},
+  },
+  supermarket:{
+    id:"supermarket", label:"Supermarket", labelAr:"سوبرماركت", icon:"🛒",
+    posLayout:"scan", nav:"sidebar",
+    features:{ tables:false, dineIn:false, kot:false, kitchen:false, kds:false, recipes:false, weighing:true, barcodeFirst:true },
+    orderTypes:[["takeaway","🛒","Sale"],["delivery","🛵","Delivery"]],
+    hideAdvancedTabs:["kitchen","kds","recipes"],
+    navLabels:{ create:"Products" },
+  },
+};
+const DEFAULT_BUSINESS_TYPE="restaurant";
 function getBusinessType(license){
   const lic = license || (typeof LS!=="undefined" ? LS.get("restopos_license_v2") : null);
-  return (lic && lic.businessType) || "restaurant";
+  const t = lic && lic.businessType;
+  return BUSINESS_TYPES[t] ? t : DEFAULT_BUSINESS_TYPE; // unknown/missing → default, never crashes
 }
+// The active type's full profile — the object the UI should read from.
+function bizProfile(license){ return BUSINESS_TYPES[getBusinessType(license)]||BUSINESS_TYPES[DEFAULT_BUSINESS_TYPE]; }
+// One capability flag, e.g. bizFeature("tables") / bizFeature("kot").
+function bizFeature(name,license){ return !!bizProfile(license).features[name]; }
+// Kept for compatibility across the app; now derived from the registry.
 function isSupermarket(license){ return getBusinessType(license)==="supermarket"; }
 
 // Auth headers for calls to the ZATCA signing microservice. The service now
@@ -5418,8 +5454,9 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   // Description popup state
   const [showDescModal,setShowDescModal]=useState(false);
   const [descModalIdx,setDescModalIdx]=useState(null);
-  // Supermarket mode: barcode-first checkout + weighed items, no dine-in/tables/KOT.
-  const superMode=isSupermarket();
+  // Scan-first till (barcode checkout + weighed items, no dine-in/tables/KOT).
+  // Driven by the business-type profile so any "scan" type gets this layout.
+  const superMode=bizProfile().posLayout==="scan";
   // Which simplified till the client picked in Settings → Checkout: "A" Scan & Go,
   // "B" Scan + Keypad, "C" Scan + Slim shelf. Read fresh so a Settings change
   // applies as soon as the cashier returns to the POS.
@@ -5639,7 +5676,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     // kitchen ticket. Tries QZ Tray → ESC/POS serial → browser popup.
     // Skip for KOT Only — it has its own dedicated KOT print below.
     const kp=LS.get("restopos_kitchen_printer")||{};
-    if(kp.autoKOT&&!isKotOnly&&!superMode){ // supermarket has no kitchen — never auto-print a KOT
+    if(kp.autoKOT&&!isKotOnly&&bizFeature("kot")){ // only types with a kitchen auto-print a KOT
       try{
         const newKot2=kotNo+1;LS.set("restopos_kot",newKot2);setKotNo(newKot2);
         const kotCart=[...cart];const kType=extraData.orderType||orderType;const kTable=selectedTable;
@@ -6462,7 +6499,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
       <div style={{width:340,display:"flex",flexDirection:"column",background:"#fff",flexShrink:0}}>
         <div style={{padding:"10px 14px",borderBottom:`1px solid ${C.border}`}}>
           <div style={{display:"flex",gap:6,marginBottom:8}}>
-            {(superMode?[["takeaway","🛒","Sale"],["delivery","🛵","Delivery"]]:[["takeaway","🥡","Takeaway"],["dine-in","🍽","Dine-in"],["delivery","🛵","Delivery"]]).map(([id,icon,label])=>(
+            {bizProfile().orderTypes.map(([id,icon,label])=>(
               <button key={id} onClick={()=>{setOrderType(id);if(id!=="dine-in")setSelectedTable(null);}} style={{flex:1,padding:"7px 4px",border:`1.5px solid ${orderType===id?C.primary:C.border}`,background:orderType===id?C.primaryLight:"#fff",color:orderType===id?C.primary:C.textMid,borderRadius:8,fontFamily:"inherit",fontSize:11,fontWeight:700,cursor:"pointer"}}>{icon} {label}</button>
             ))}
           </div>
@@ -8250,8 +8287,9 @@ function CheckoutLayoutTab(){
 function Settings({company,setCompany,tables,setTables,license,onClearLicense,onSwitchAccount,pins,setPins,invoiceFormat,setInvoiceFormat,lang="en",onLangChange,sales=[],items=[]}){
   const [tab,setTab]=useState("company");const [newTableCount,setNewTableCount]=useState(tables.length);const [companySaved,setCompanySaved]=useState(false);
   const TAB_LABELS={"company":"🏢 "+t("Company",lang),"dashboard":"📊 "+t("Dashboard",lang),"tables":"🪑 "+t("Tables",lang),"printers":"🖨️ "+t("Bill Printer",lang),"invoices":"📄 "+t("Invoices",lang),"backup":"💾 "+t("Backup",lang),"security":"🔐 "+t("Security",lang),"license":"📋 "+t("License",lang),"language":"🌐 "+t("Language",lang)};
-  const superMode=isSupermarket();
-  const tabs=[[`company`,`🏢 ${t("Company",lang)}`],[`dashboard`,`📊 ${t("Dashboard",lang)}`],...(superMode?[[`checkout`,`🛒 ${t("Checkout",lang)}`]]:[[`tables`,`🪑 ${t("Tables",lang)}`]]),[`printers`,`🖨️ ${t("Bill Printer",lang)}`],[`invoices`,`📄 ${t("Invoices",lang)}`],[`presets`,`🎨 ${t("Preset Bills",lang)}`],[`backup`,`💾 ${t("Backup",lang)}`],[`security`,`🔐 ${t("Security",lang)}`],[`license`,`📋 ${t("License",lang)}`],[`language`,`🌐 ${t("Language",lang)}`]];
+  // Tables tab for types that seat guests; Checkout (scan-layout picker) for barcode-first types.
+  const hasTables=bizFeature("tables");
+  const tabs=[[`company`,`🏢 ${t("Company",lang)}`],[`dashboard`,`📊 ${t("Dashboard",lang)}`],...(hasTables?[[`tables`,`🪑 ${t("Tables",lang)}`]]:[[`checkout`,`🛒 ${t("Checkout",lang)}`]]),[`printers`,`🖨️ ${t("Bill Printer",lang)}`],[`invoices`,`📄 ${t("Invoices",lang)}`],[`presets`,`🎨 ${t("Preset Bills",lang)}`],[`backup`,`💾 ${t("Backup",lang)}`],[`security`,`🔐 ${t("Security",lang)}`],[`license`,`📋 ${t("License",lang)}`],[`language`,`🌐 ${t("Language",lang)}`]];
   return(<div dir={lang==="ar"?"rtl":"ltr"} style={{fontFamily:lang==="ar"?"'Tajawal',sans-serif":"inherit"}}>
     <div style={{display:"flex",gap:8,marginBottom:20,flexWrap:"wrap"}}>{tabs.map(([id,label])=><button key={id} onClick={()=>setTab(id)} style={{padding:"8px 16px",borderRadius:8,border:`1.5px solid ${tab===id?C.primary:C.border}`,background:tab===id?C.primaryLight:"#fff",color:tab===id?C.primary:C.textMid,fontFamily:"inherit",fontSize:13,fontWeight:600,cursor:"pointer"}}>{TAB_LABELS[id]||label}</button>)}</div>
     {tab==="company"&&<Card style={{maxWidth:640}}>
@@ -8491,7 +8529,7 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
   function addCategory(){const trimmed=newCat.trim();if(!trimmed)return alert("Category name cannot be empty");if(categories.includes(trimmed))return alert("Category already exists");saveCategories([...categories,trimmed]);setNewCat("");}
   const [showImport,setShowImport]=useState(false);const [importRows,setImportRows]=useState([]);const [importError,setImportError]=useState("");const [importDone,setImportDone]=useState(false);
   const blankItem={name:"",nameAr:"",category:categories[0],price:"",cost:"",stock:"",active:true,barcode:"",weighed:false};const [itemForm,setItemForm]=useState(blankItem);
-  const superMode=isSupermarket();
+  const allowWeighing=bizFeature("weighing"); // show the per-kg option only for types that weigh goods
   const blankPromo={code:"",type:"%",value:"",minOrder:0,active:true};const [promoForm,setPromoForm]=useState(blankPromo);const barcodeRef=useRef();
   function openItemModal(it=null){setEditItem(it);setItemForm(it?{...it}:{...blankItem,category:categories[0]});setShowItemModal(true);setTranslating(false);setTranslateError("");}
   const [translating,setTranslating]=useState(false);
@@ -8576,7 +8614,7 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
           {itemForm.nameAr&&!translating&&<div style={{fontSize:11,color:C.success,marginTop:4,fontFamily:"'Tajawal',sans-serif",direction:"rtl",textAlign:"right"}}>✓ {itemForm.nameAr}</div>}
         </div>
         <Sel label="Category" value={itemForm.category} onChange={v=>setItemForm(f=>({...f,category:v}))} options={[...categories,...(categories.includes(OTHER_CAT)?[]:[OTHER_CAT])]}/><Inp label="Barcode" value={itemForm.barcode} onChange={v=>setItemForm(f=>({...f,barcode:v}))} placeholder="Scan or type barcode"/>
-        {superMode&&<label style={{gridColumn:"1 / -1",display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:C.zatcaLight,border:`1px solid ${C.zatca}30`,borderRadius:8,cursor:"pointer"}}>
+        {allowWeighing&&<label style={{gridColumn:"1 / -1",display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:C.zatcaLight,border:`1px solid ${C.zatca}30`,borderRadius:8,cursor:"pointer"}}>
           <input type="checkbox" checked={!!itemForm.weighed} onChange={e=>setItemForm(f=>({...f,weighed:e.target.checked}))} style={{width:18,height:18,cursor:"pointer"}}/>
           <span style={{fontSize:13,fontWeight:700,color:C.text}}>⚖️ Weighed item — price is per kilogram</span>
         </label>}
@@ -16489,8 +16527,8 @@ function AdvancedFeatures({sales,items,setItems,license,company,invoiceFormat,se
   const _t=s=>t(s,lang);
   const [tab,setTab]=useState("qztray");
   const tabs=[["qztray","🖨️ QZ Tray"],["printtype",`🖨️ ${_t("Print Type")}`],["silentprint",`🔇 ${_t("Silent Printing")}`],["description",`📋 ${_t("Description (Item Modifiers")}`],["progressbar",`📊 ${_t("Sales Progress Bar")}`],["kitchen",`🍽️ ${_t("Kitchen Printer")}`],["users",`👤 ${_t("Users")}`],["kds","🍳 KDS"],["stocktakes",`📦 ${_t("Stock Takes")}`],["recipes",`📋 ${_t("Recipes")}`],["giftcards",`🎁 ${_t("Gift Cards")}`],["delivery",`🛵 ${_t("Delivery")}`],["locations",`🏢 ${_t("Locations")}`],["accounting",`📤 ${_t("Accounting")}`],["reports",`📅 ${_t("Reports")}`],["printer","🖨️ ESC/POS"],["errorlog",`⚠️ ${_t("Error Log")}`],["analytics",`📉 ${_t("Analytics")}`],["audit",`🔍 ${_t("Audit Trail")}`],["tools",`🔧 ${_t("Tools")}`]]
-    // Supermarket mode has no kitchen/KDS/recipes.
-    .filter(([id])=>!(isSupermarket()&&["kitchen","kds","recipes"].includes(id)));
+    // Hide the tabs this business type doesn't use (e.g. supermarket has no kitchen/KDS/recipes).
+    .filter(([id])=>!bizProfile().hideAdvancedTabs.includes(id));
   return(
     <div>
       <div style={{display:"flex",gap:6,marginBottom:20,flexWrap:"wrap"}}>
@@ -17602,13 +17640,13 @@ export default function App(){
   function handleSwitchAccount(){LS.del("restopos_license_v2");LS.del("restopos_client_creds");setLicense(null);setCurrentUser(null);setStep("register");}
   const ALL_NAV=[["dashboard","📊","Dashboard",["Admin","Manager"]],["pos","🖥️","POS",["Admin","Manager","Cashier"]],["settings","⚙️","Settings",["Admin"]],["create","➕","Create",["Admin","Manager"]],["transactions","💳","Transactions",["Admin","Manager"]],["financials","🏦","Financials",["Admin","Manager"]],["customers","👥","CRM",["Admin","Manager"]],["reports","📋","Reports",["Admin","Manager"]],["advanced","⚡","Advanced",["Admin","Manager"]],["inventory","📦","Inventory",["Admin","Manager"]],["vat","🧾","VAT",["Admin","Manager"]],["shifts","🔄","Shifts",["Admin","Manager"]],["help","❓","Help",["Admin","Manager","Cashier"]]];
   const NAV=ALL_NAV.filter(([,,,roles])=>currentUser&&roles.includes(currentUser.role));
-  const superMode=isSupermarket();
-  // Supermarket navigation is a ☰ sidebar: the same modules as restaurant,
-  // grouped as a main heading with its branches. Only ids the user's role can
-  // see are shown (NAV is already role-filtered). Kitchen/tables are handled
-  // inside their own screens.
+  const biz=bizProfile(license);
+  const superMode=biz.nav==="sidebar"; // sidebar-style types get the ☰ drawer + quick tabs
+  // Sidebar navigation: the same modules as the flat bar, grouped as a main
+  // heading with its branches. Only ids the user's role can see are shown (NAV
+  // is already role-filtered). Kitchen/tables etc. are handled inside screens.
   const NAV_BY_ID=Object.fromEntries(NAV.map(n=>[n[0],n]));
-  const SUPER_LABELS={create:"Products"}; // clearer wording for a supermarket
+  const SUPER_LABELS=biz.navLabels||{}; // per-type wording overrides (e.g. supermarket: Create → Products)
   const SUPER_GROUPS=[
     ["Sell","🛒",["pos","transactions"]],
     ["Catalogue","🏷️",["create","inventory"]],
@@ -17762,7 +17800,7 @@ export default function App(){
               <img src="/brand-logo.png" alt="RestoPOS" style={{width:34,height:34,borderRadius:8,objectFit:"cover"}}/>
               <div style={{flex:1}}>
                 <div style={{fontSize:15,fontWeight:800,color:"#fff",lineHeight:1}}>RestoPOS</div>
-                <div style={{fontSize:9,color:"rgba(255,255,255,0.55)",letterSpacing:"0.1em",marginTop:3}}>🛒 SUPERMARKET</div>
+                <div style={{fontSize:9,color:"rgba(255,255,255,0.55)",letterSpacing:"0.1em",marginTop:3}}>{biz.icon} {(lang==="ar"?biz.labelAr:biz.label).toUpperCase()}</div>
               </div>
               <button onClick={()=>setSidebarOpen(false)} aria-label="Close menu" style={{background:"rgba(255,255,255,0.12)",border:"none",borderRadius:"50%",width:30,height:30,color:"#fff",fontSize:18,cursor:"pointer",flexShrink:0,lineHeight:1}}>×</button>
             </div>
