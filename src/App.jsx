@@ -33,6 +33,10 @@ import { ProfitLoss } from "./screens/ProfitLoss.jsx";
 import { Accounts } from "./screens/Accounts.jsx";
 import { Expenses } from "./screens/Expenses.jsx";
 import { InventoryManagement } from "./screens/InventoryManagement.jsx";
+import { cloudGapOf, archiveSpanOf } from "./lib/cloudGap.js";
+import { CloudGapBar } from "./components/CloudGapBar.jsx";
+import { _escHTML, _escMultiline } from "./lib/html.js";
+import { buildReportThermalHTML } from "./lib/reportPrint.js";
 
 // ═══════════════════════════════════════════════════════════════════
 // TRIAL MODE — see src/trial.js. TRIAL is fixed for the life of the page:
@@ -4423,9 +4427,6 @@ const RECEIPT_FONT_MAP={
   "impact":"'Tahoma','Arial','Segoe UI',sans-serif",
   "scheherazade":"'Tahoma','Arial','Times New Roman',serif",
 };
-function _escHTML(s){if(s===0)return"0";if(!s)return"";return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
-// Convert multi-line text (with newlines) into safe HTML with <br> between lines
-function _escMultiline(s){if(!s)return"";return String(s).split(/\r?\n/).map(_escHTML).join("<br/>");}
 function buildReceiptHTML(order,license,zatcaInvoice,fmt,qrImgSrc){
   fmt=fmt||{};
   // If a preset style is active for invoices, use the preset builder (preview === print).
@@ -4693,76 +4694,6 @@ const REPORT_DEFAULTS={
 // monospace <pre> block with a fixed character count per line physically cannot
 // overflow — every column is N characters wide, padded/truncated to fit the paper.
 // Shared by the live preview and the real print, so preview === print.
-function buildReportThermalHTML(data,lic,rfmt){
-  data=data||{};lic=lic||{};
-  const f={...REPORT_DEFAULTS,...(rfmt||{})};
-  const narrow=(f.paperWidth||"80mm")==="58mm";
-  // Total characters per line. The printable area is narrower than the nominal
-  // paper, so we use a value that fits with margin on BOTH sides (left was getting
-  // clipped at 42). Adjustable via the "Characters per line" control.
-  const LINE=parseInt(f.lineChars)||(narrow?30:40);
-  const rowF=parseInt(f.rowFont)|| (narrow?12:13);
-  const totals=data.totals||{};
-  const cats=data.catList||[];
-  const money=n=>(Number(n)||0).toFixed(2);
-  // column widths in characters (right-aligned numbers)
-  const wQty=f.showQty?5:0;
-  const wTax=f.showTax?9:0;
-  const wAmt=f.showAmount?10:0;
-  const wName=LINE-wQty-wTax-wAmt;
-  const padL=(s,n)=>{s=String(s);return s.length>=n?s.slice(0,n):" ".repeat(n-s.length)+s;};
-  const padR=(s,n)=>{s=String(s);return s.length>=n?s.slice(0,n):s+" ".repeat(n-s.length);};
-  const esc=s=>_escHTML(String(s==null?"":s));
-  // numbers segment (right-aligned, fixed widths) — identical for header & rows
-  const numSeg=(q,t,a)=>(f.showQty?padL(q,wQty):"")+(f.showTax?padL(t,wTax):"")+(f.showAmount?padL(a,wAmt):"");
-  const headerLine=padR("ProductName",wName)+numSeg("Qty","Tax","Amount");
-  const sep="-".repeat(LINE);
-  const dsep="=".repeat(LINE);
-  // Each category: if the name fits on the same line as numbers, one line.
-  // If the name is long, print the full name on its own line, then numbers right-aligned below.
-  const bodyLines=cats.map(c=>{
-    const name=esc(c.cat||"");
-    const nums=numSeg(c.qty||0,money(c.tax),money(c.revenue));
-    if(name.length<=wName-1){
-      return padR(name,wName)+nums;
-    }
-    // long name → wrap: name line(s), then a line with numbers right-aligned
-    return name+"\n"+padL(nums,LINE);
-  }).join("\n");
-  // totals — label left, value right, within LINE chars
-  const tLine=(label,val,strong)=>{
-    const v=money(val);
-    const txt=padR(label,LINE-v.length)+v;
-    return strong?`<span style="font-weight:900">${txt}</span>`:txt;
-  };
-  const totalsBlock=[
-    f.showPurchase?tLine("Total Purchase:",totals.purchase||0):null,
-    tLine("Total Sales:",totals.sales||0),
-    f.showTax?tLine("Total Sales Tax:",totals.salesTax||0):null,
-    f.showPurchase?tLine("Total Purchase Tax:",totals.purchaseTax||0):null,
-    f.showPurchase?tLine("(Sales Tax-Purch Tax):",(totals.salesTax||0)-(totals.purchaseTax||0)):null,
-    f.showCardCash?tLine("Total Card Sales:",totals.card||0):null,
-    f.showCardCash?tLine("Total Cash Sale:",totals.cash||0):null,
-    f.showCardCash?tLine("Total Credit Sale:",totals.credit||0):null,
-    f.showDiscount?tLine("Total Discount:",totals.discount||0):null,
-    tLine("Total Payment:",totals.payment||0),
-    tLine("Balance:",totals.balance||0,true),
-  ].filter(Boolean).join("\n");
-  // Header block (centered shop name in Arabic, date/user) sits above the monospace table.
-  const head=`
-<div style="text-align:center;direction:rtl;font-family:${_AR_FONT};font-weight:bold;font-size:${f.headFont}px;margin-bottom:2px">${esc(lic.businessNameAr||lic.businessName||"")}</div>
-${(lic.addressAr||lic.address)?`<div style="text-align:center;direction:rtl;font-family:${_AR_FONT};font-size:${f.metaFont}px;margin-bottom:3px">${esc(lic.addressAr||lic.address)}</div>`:""}
-<div style="text-align:center;font-size:${f.metaFont}px;font-weight:700;margin-bottom:2px">${esc(data.dateRange||data.date||"")}</div>
-${(data.timeRange&&!/[0-9]:[0-9]/.test(data.dateRange||""))?`<div style="text-align:center;font-size:${f.metaFont}px;margin-bottom:3px">${esc(data.timeRange)}</div>`:""}
-<div style="font-size:${f.metaFont}px;margin-bottom:2px">User : ${esc(data.user||"admin")}</div>`;
-  // The whole table + totals as one monospace <pre> — guaranteed to fit the paper.
-  const pre=`<pre style="font-family:'Courier New',monospace;font-size:${rowF}px;font-weight:${f.bold};line-height:1.3;margin:0;white-space:pre;letter-spacing:0;overflow:hidden">${headerLine}
-${dsep}
-${bodyLines}
-${dsep}
-${totalsBlock}</pre>`;
-  return head+pre;
-}
 // fmt extra keys used by presets:
 //   presetStyle (s1..s4), logoUrl, logoSize, headFont (header px), bodyFont (body px),
 //   totalFont (totals px), lineGap (item spacing px), headerColor (s2), paperWidth
@@ -8648,82 +8579,11 @@ function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,arch
 // without fetching a single invoice. Shared, because every range-based screen
 // needs the same answer and each one that lacked it lied independently.
 // ═══════════════════════════════════════════════════════════════════
-function cloudGapOf(sales,archiveIndex,from,to){
-  const have={};
-  for(const s of sales||[]){
-    if(!s||s.isDraft||s.status==="voided")continue;
-    have[s.date]=(have[s.date]||0)+1;
-  }
-  const days=[];let invoices=0;
-  for(const [date,info] of Object.entries(archiveIndex||{})){
-    if(from&&date<from)continue;
-    if(to&&date>to)continue;
-    const missing=(info?.n||0)-(have[date]||0);
-    if(missing>0){days.push(date);invoices+=missing;}
-  }
-  days.sort();
-  return{days,invoices,from:days[0],to:days[days.length-1]};
-}
-
-function archiveSpanOf(archiveIndex){
-  const dates=Object.keys(archiveIndex||{}).sort();
-  if(!dates.length)return null;
-  const totals=Object.values(archiveIndex).reduce((a,v)=>({n:a.n+(v?.n||0),total:a.total+(v?.total||0)}),{n:0,total:0});
-  return{first:dates[0],last:dates[dates.length-1],days:dates.length,...totals};
-}
-
 /**
  * `whatFollows` names what the missing invoices are being left out of, in the
  * client's terms — totals, a search, a balance sheet — so the warning reads as
  * a statement about their figures rather than about storage.
  */
-function CloudGapBar({sales,archiveIndex,from,to,fetchCloudRange,cloudLoading,cloudError,
-  whatFollows="the totals below",showComplete=true,style}){
-  const gap=useMemo(()=>cloudGapOf(sales,archiveIndex,from,to),[sales,archiveIndex,from,to]);
-  const span=useMemo(()=>archiveSpanOf(archiveIndex),[archiveIndex]);
-  const has=gap.days.length>0;
-  if(!has&&(!showComplete||!span))return null;
-  return(
-    <div style={{padding:"10px 13px",borderRadius:10,marginBottom:10,
-      border:`1px solid ${has?"#F0A50055":C.border}`,background:has?"#FFF8E7":C.bg,
-      display:"flex",alignItems:"center",gap:12,flexWrap:"wrap",...style}}>
-      <span style={{fontSize:16}}>{has?"☁️":"✅"}</span>
-      <div style={{flex:1,minWidth:220}}>
-        {has?(
-          <>
-            <div style={{fontSize:12.5,fontWeight:700,color:"#8A6100"}}>
-              {gap.invoices.toLocaleString()} invoice{gap.invoices===1?"":"s"} in this period are stored in the cloud, not on this device.
-            </div>
-            <div style={{fontSize:11,color:C.textMid,marginTop:2}}>
-              {gap.days.length} day{gap.days.length===1?"":"s"} · {fmtDate(gap.from)}
-              {gap.from!==gap.to?` → ${fmtDate(gap.to)}`:""} — {whatFollows} exclude{whatFollows.endsWith("s")?"":"s"} them until you load them.
-            </div>
-          </>
-        ):(
-          <>
-            <div style={{fontSize:12.5,fontWeight:700,color:C.text}}>
-              This period is complete — everything in the cloud for these dates is loaded.
-            </div>
-            {span&&(
-              <div style={{fontSize:11,color:C.textMid,marginTop:2}}>
-                Cloud history: {span.days.toLocaleString()} day{span.days===1?"":"s"} from {fmtDate(span.first)} to {fmtDate(span.last)} · {span.n.toLocaleString()} invoices.
-              </div>
-            )}
-          </>
-        )}
-        {cloudError&&<div style={{fontSize:11,color:C.danger,marginTop:4}}>{cloudError}</div>}
-      </div>
-      {has&&(
-        <button onClick={()=>fetchCloudRange&&fetchCloudRange(gap.from,gap.to)} disabled={cloudLoading}
-          style={{padding:"9px 16px",background:cloudLoading?"#ccc":"linear-gradient(135deg,#1A6B4A,#134D36)",
-            color:"#fff",border:"none",borderRadius:9,fontSize:12,fontWeight:800,
-            cursor:cloudLoading?"wait":"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>
-          {cloudLoading?"Downloading…":"☁️ Load from cloud"}
-        </button>
-      )}
-    </div>
-  );
-}
 
 function Reports({sales,allSales,items,setSales,lang="en",archiveIndex={},fetchCloudRange,cloudLoading,cloudError}){
   const _t=s=>t(s,lang);
