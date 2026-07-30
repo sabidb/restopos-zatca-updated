@@ -17,6 +17,7 @@ import { TERMS_VERSION, TERMS_TITLE, TERMS_DATE, TERMS_PDF_PATH, TERMS_PREAMBLE,
 import { C } from "./lib/theme.js";
 import { LS } from "./lib/storage.js";
 import { fmtSAR, fmtDate, fmtDateTime } from "./lib/format.js";
+import { TODAY } from "./lib/date.js";
 import { getLang, setLangStore, t, dir } from "./i18n/index.js";
 import { BUSINESS_TYPES, DEFAULT_BUSINESS_TYPE, getBusinessType, bizProfile, bizFeature, isSupermarket } from "./config/businessTypes.js";
 import { Card, Btn, Inp, Sel, TextArea, Slider, ToggleRow, Badge, StatCard, Modal, DataTable } from "./components/ui.jsx";
@@ -2544,7 +2545,6 @@ const SEED_ITEMS=[{id:1,name:"Broasted Chicken Half",nameAr:"دجاج مبروس
 const SEED_CATEGORIES=["Broasted","Grills","Sides","Drinks","Desserts","Combos"];
 const TABLES_INIT=Array.from({length:12},(_,i)=>({id:i+1,status:i<3?"occupied":"free",capacity:4}));
 const DEFAULT_PINS={Admin:"1234",Manager:"2345",Cashier:"3456"};
-const TODAY=new Date().toISOString().split("T")[0];
 
 // ── Stable per-device ID (persists in localStorage) ──────────────────
 // Used for the "approve new device" flow: each physical device gets one
