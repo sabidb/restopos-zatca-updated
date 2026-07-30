@@ -3412,96 +3412,160 @@ function BusinessRegistration({onNext,onLogin,onTryTrial,initial}){
     if(!form.phone.trim())return setError("Phone number is required.");
     onNext({...form,email:form.email.trim().toLowerCase(),isOwner,crFile,vatFile});
   }
+  // Field layout for the form grid. `span` controls how many columns a field
+  // occupies on wide screens (the grid is 2 columns); everything collapses to a
+  // single column on narrow screens via the .reg-grid CSS rule below.
+  const FIELDS=[
+    ["ownerName","Your Full Name (Owner / Contact)","Mohammed Al-Rashid",1],
+    ["businessName","Business Name (Arabic / English)","Al Baik Restaurant — مطعم البيك",2],
+    ["businessNameAr","اسم المنشأة بالعربية (اختياري)","مطعم البيك",1],
+    ["email","Email Address (for password recovery)","your@email.com",1],
+    ["phone","Phone Number","+966 50 000 0000",1],
+    ["crNumber","CR Number — السجل التجاري (up to 12 digits)","1234567890",1],
+    ["vatNumber","VAT / TRN Number (starts with 3)","300000000000003",1],
+    ["address","Business Address","King Fahd Road, Riyadh",2],
+    ["city","City","Riyadh",1],
+  ];
   return(
-    <div style={{minHeight:"100vh",background:"linear-gradient(135deg, #0a1628 0%, #1A3A5C 50%, #0a2818 100%)",display:"flex",alignItems:"center",justifyContent:"center",padding:20,fontFamily:"'Plus Jakarta Sans', sans-serif"}}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Tajawal:wght@400;500;700&display=swap');*{box-sizing:border-box;margin:0;padding:0}`}</style>
-      <div style={{width:"100%",maxWidth:520}}>
-        <div style={{textAlign:"center",marginBottom:28}}>
-          <div style={{display:"inline-flex",alignItems:"center",gap:12,marginBottom:8}}>
-            <div style={{width:48,height:48,background:"linear-gradient(135deg,#1A6B4A,#F0A500)",borderRadius:14,display:"flex",alignItems:"center",justifyContent:"center",fontSize:24,fontWeight:900,color:"#fff"}}>R</div>
-            <div style={{textAlign:"left"}}><div style={{fontSize:26,fontWeight:900,color:"#fff",lineHeight:1}}>RestoPOS</div><div style={{fontSize:10,color:"rgba(255,255,255,0.5)",letterSpacing:"0.15em"}}>ZATCA PHASE 2 READY · KSA</div></div>
-          </div>
+    <div className="reg-shell">
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Tajawal:wght@400;500;700&display=swap');
+        *{box-sizing:border-box;margin:0;padding:0}
+        .reg-shell{min-height:100vh;width:100%;display:grid;grid-template-columns:1fr;background:linear-gradient(135deg,#0a1628 0%,#1A3A5C 50%,#0a2818 100%);font-family:'Plus Jakarta Sans',sans-serif}
+        .reg-hero{display:none}
+        .reg-form-col{display:flex;justify-content:center;align-items:flex-start;padding:32px 24px;overflow-y:auto}
+        .reg-form-inner{width:100%;max-width:860px}
+        /* Auto-flow grid: boxes sit next to each other and re-wrap to the
+           device width, so short fields pair (or triple) up instead of
+           stacking into one tall column. */
+        .reg-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
+        .reg-field-full{grid-column:1 / -1}
+        .reg-input{width:100%;padding:12px 14px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);border-radius:10px;font-size:14px;color:#fff;font-family:inherit;transition:border-color .15s,background .15s}
+        .reg-input::placeholder{color:rgba(255,255,255,0.3)}
+        .reg-input:focus{outline:none;border-color:rgba(46,204,113,0.65);background:rgba(255,255,255,0.12)}
+        @media(min-width:1024px){
+          .reg-shell{grid-template-columns:minmax(380px,40%) 1fr}
+          .reg-hero{display:flex;flex-direction:column;justify-content:center;padding:56px 48px;position:sticky;top:0;height:100vh;background:linear-gradient(160deg,rgba(26,107,74,0.28),rgba(10,22,40,0.15) 55%,rgba(240,165,0,0.14));border-right:1px solid rgba(255,255,255,0.08)}
+          .reg-hero-mobile{display:none !important}
+        }
+      `}</style>
+
+      {/* ── LEFT: branding hero (wide screens only) ─────────────────────── */}
+      <div className="reg-hero">
+        <div style={{display:"inline-flex",alignItems:"center",gap:14,marginBottom:32}}>
+          <div style={{width:56,height:56,background:"linear-gradient(135deg,#1A6B4A,#F0A500)",borderRadius:16,display:"flex",alignItems:"center",justifyContent:"center",fontSize:28,fontWeight:900,color:"#fff"}}>R</div>
+          <div><div style={{fontSize:30,fontWeight:900,color:"#fff",lineHeight:1}}>RestoPOS</div><div style={{fontSize:10,color:"rgba(255,255,255,0.5)",letterSpacing:"0.15em",marginTop:4}}>ZATCA PHASE 2 READY · KSA</div></div>
         </div>
-        {onTryTrial&&<TrialInviteSection onStart={onTryTrial}/>}
-        <div style={{background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:20,padding:32,backdropFilter:"blur(12px)"}}>
-          <div style={{fontSize:18,fontWeight:800,color:"#fff",marginBottom:6}}>Business Registration</div>
-          <div style={{fontSize:13,color:"rgba(255,255,255,0.5)",marginBottom:20}}>Step 1 of 2 — Enter your business details</div>
-
-          {/* BUSINESS TYPE — drives Restaurant vs Supermarket mode */}
-          <div style={{marginBottom:20,padding:"14px 16px",background:"rgba(26,107,74,0.12)",border:"1px solid rgba(26,107,74,0.35)",borderRadius:12}}>
-            <div style={{fontSize:13,fontWeight:700,color:"#7FFAB5",marginBottom:10}}>🏬 What type of business is this?</div>
-            <div style={{display:"flex",gap:10}}>
-              {[["restaurant","🍽️","Restaurant","Tables, dine-in, kitchen tickets"],["supermarket","🛒","Supermarket","Barcode checkout, weighed items"]].map(([v,icon,label,desc])=>(
-                <button key={v} onClick={()=>set("businessType",v)} type="button"
-                  style={{flex:1,padding:"12px 12px",borderRadius:10,border:`2px solid ${form.businessType===v?"#1A6B4A":"rgba(255,255,255,0.15)"}`,background:form.businessType===v?"rgba(26,107,74,0.25)":"rgba(255,255,255,0.05)",color:form.businessType===v?"#7FFAB5":"rgba(255,255,255,0.6)",fontFamily:"inherit",cursor:"pointer",textAlign:"left"}}>
-                  <div style={{fontSize:20,marginBottom:4}}>{icon}</div>
-                  <div style={{fontSize:13,fontWeight:800}}>{label}</div>
-                  <div style={{fontSize:10,opacity:0.75,marginTop:2,lineHeight:1.3}}>{desc}</div>
-                </button>
-              ))}
+        <div style={{fontSize:30,fontWeight:800,color:"#fff",lineHeight:1.25,marginBottom:14}}>Run your restaurant or supermarket, fully ZATCA-compliant.</div>
+        <div style={{fontSize:15,color:"rgba(255,255,255,0.55)",lineHeight:1.6,marginBottom:32}}>Register your business to activate your license. Point-of-sale, tables, inventory, VAT reporting and e-invoicing — all in one place.</div>
+        <div style={{display:"flex",flexDirection:"column",gap:16}}>
+          {[["🧾","Phase 2 e-invoicing","Cryptographic stamps, QR codes and reporting built in"],["☁️","Automatic cloud backup","Your data is safe and restores onto any licensed terminal"],["📊","Full business suite","POS, tables, CRM, inventory, reports and VAT dashboard"]].map(([icon,title,desc])=>(
+            <div key={title} style={{display:"flex",gap:14,alignItems:"flex-start"}}>
+              <span style={{fontSize:22,lineHeight:1.2}}>{icon}</span>
+              <div><div style={{fontSize:15,fontWeight:700,color:"#fff"}}>{title}</div><div style={{fontSize:13,color:"rgba(255,255,255,0.5)",lineHeight:1.5}}>{desc}</div></div>
             </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── RIGHT: registration form ────────────────────────────────────── */}
+      <div className="reg-form-col">
+        <div className="reg-form-inner">
+          {/* Compact logo — shows on narrow screens where the hero is hidden */}
+          <div className="reg-hero-mobile" style={{display:"flex",alignItems:"center",gap:12,marginBottom:24}}>
+            <div style={{width:44,height:44,background:"linear-gradient(135deg,#1A6B4A,#F0A500)",borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,fontWeight:900,color:"#fff"}}>R</div>
+            <div><div style={{fontSize:22,fontWeight:900,color:"#fff",lineHeight:1}}>RestoPOS</div><div style={{fontSize:9,color:"rgba(255,255,255,0.5)",letterSpacing:"0.15em"}}>ZATCA PHASE 2 READY · KSA</div></div>
           </div>
 
-          {/* ARE YOU THE OWNER? */}
-          <div style={{marginBottom:20,padding:"14px 16px",background:"rgba(240,165,0,0.1)",border:"1px solid rgba(240,165,0,0.3)",borderRadius:12}}>
-            <div style={{fontSize:13,fontWeight:700,color:"#F0A500",marginBottom:10}}>🏢 Are you the owner of this business?</div>
-            <div style={{display:"flex",gap:10}}>
-              {[["yes","✅ Yes, I am the owner"],["no","👤 No, I am a staff member"]].map(([v,label])=>(
-                <button key={v} onClick={()=>setIsOwner(v==="yes")}
-                  style={{flex:1,padding:"9px 12px",borderRadius:8,border:`2px solid ${isOwner===(v==="yes")?"#F0A500":"rgba(255,255,255,0.15)"}`,background:isOwner===(v==="yes")?"rgba(240,165,0,0.2)":"rgba(255,255,255,0.05)",color:isOwner===(v==="yes")?"#F0A500":"rgba(255,255,255,0.6)",fontFamily:"inherit",fontSize:12,fontWeight:600,cursor:"pointer"}}>
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
+          {onTryTrial&&<TrialInviteSection onStart={onTryTrial}/>}
 
-          <div style={{display:"flex",flexDirection:"column",gap:14}}>
-            {[["ownerName","Your Full Name (Owner / Contact)","Mohammed Al-Rashid"],["businessName","Business Name (Arabic / English)","Al Baik Restaurant — مطعم البيك"],["businessNameAr","اسم المنشأة بالعربية (اختياري)","مطعم البيك"],["email","Email Address (for password recovery)","your@email.com"],["crNumber","CR Number — السجل التجاري (up to 12 digits)","1234567890"],["vatNumber","VAT / TRN Number (starts with 3)","300000000000003"],["address","Business Address","King Fahd Road, Riyadh"],["city","City","Riyadh"],["phone","Phone Number","+966 50 000 0000"]].map(([k,label,ph])=>(
-              <div key={k}>
-                <label style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.6)",display:"block",marginBottom:5}}>{label}</label>
-                {k==="crNumber"?(
-                  <div style={{position:"relative"}}>
-                    <input value={form[k]} onChange={e=>{const v=e.target.value.replace(/\D/g,"").slice(0,12);set(k,v);}}
-                      placeholder={ph} inputMode="numeric"
-                      style={{width:"100%",padding:"11px 14px",background:"rgba(255,255,255,0.08)",border:`1px solid ${form.crNumber.length>0&&form.crNumber.length<10?"rgba(240,165,0,0.5)":form.crNumber.length>=10?"rgba(46,204,113,0.5)":"rgba(255,255,255,0.2)"}`,borderRadius:10,fontSize:16,color:"#fff",fontFamily:"monospace",fontWeight:700,letterSpacing:"0.1em"}}/>
-                    <span style={{position:"absolute",right:12,top:"50%",transform:"translateY(-50%)",fontSize:10,color:"rgba(255,255,255,0.35)",fontWeight:600}}>{form.crNumber.length}/12</span>
-                  </div>
-                ):(
-                  <input value={form[k]} onChange={e=>{set(k,e.target.value);}}
-                    placeholder={ph}
-                    style={{width:"100%",padding:"11px 14px",background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:10,fontSize:13,color:"#fff",fontFamily:"inherit",direction:k==="businessNameAr"?"rtl":"ltr"}}/>
-                )}
+          <div style={{background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:20,padding:"clamp(24px,4vw,36px)",backdropFilter:"blur(12px)"}}>
+            <div style={{fontSize:20,fontWeight:800,color:"#fff",marginBottom:6}}>Business Registration</div>
+            <div style={{fontSize:13,color:"rgba(255,255,255,0.5)",marginBottom:22}}>Step 1 of 2 — Enter your business details</div>
+
+            {/* BUSINESS TYPE — drives Restaurant vs Supermarket mode */}
+            <div style={{marginBottom:18,padding:"14px 16px",background:"rgba(26,107,74,0.12)",border:"1px solid rgba(26,107,74,0.35)",borderRadius:12}}>
+              <div style={{fontSize:13,fontWeight:700,color:"#7FFAB5",marginBottom:10}}>🏬 What type of business is this?</div>
+              <div style={{display:"flex",gap:10}}>
+                {[["restaurant","🍽️","Restaurant","Tables, dine-in, kitchen tickets"],["supermarket","🛒","Supermarket","Barcode checkout, weighed items"]].map(([v,icon,label,desc])=>(
+                  <button key={v} onClick={()=>set("businessType",v)} type="button"
+                    style={{flex:1,padding:"12px 12px",borderRadius:10,border:`2px solid ${form.businessType===v?"#1A6B4A":"rgba(255,255,255,0.15)"}`,background:form.businessType===v?"rgba(26,107,74,0.25)":"rgba(255,255,255,0.05)",color:form.businessType===v?"#7FFAB5":"rgba(255,255,255,0.6)",fontFamily:"inherit",cursor:"pointer",textAlign:"left"}}>
+                    <div style={{fontSize:20,marginBottom:4}}>{icon}</div>
+                    <div style={{fontSize:13,fontWeight:800}}>{label}</div>
+                    <div style={{fontSize:10,opacity:0.75,marginTop:2,lineHeight:1.3}}>{desc}</div>
+                  </button>
+                ))}
               </div>
-            ))}
-          </div>
-          {error&&<div style={{marginTop:14,padding:"10px 14px",background:"rgba(217,64,64,0.2)",border:"1px solid rgba(217,64,64,0.4)",borderRadius:8,fontSize:13,color:"#ff8080"}}>{error}</div>}
-          {/* Document Upload */}
-          <div style={{background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:12,padding:"16px 18px",marginBottom:4}}>
-            <div style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.7)",marginBottom:12}}>📎 Upload Documents <span style={{color:"rgba(255,255,255,0.35)",fontWeight:400}}>(Optional — speeds up approval)</span></div>
-            {fileError&&<div style={{fontSize:11,color:"#ff8080",marginBottom:8}}>⚠️ {fileError}</div>}
-            <div style={{marginBottom:10}}>
-              <label style={{fontSize:11,fontWeight:600,color:"rgba(255,255,255,0.55)",display:"block",marginBottom:5}}>🏢 Commercial Registration (CR) — JPG, PNG or PDF, max 10MB</label>
-              <label style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",background:"rgba(255,255,255,0.06)",border:`1.5px dashed ${crFile?"rgba(46,204,113,0.5)":"rgba(255,255,255,0.2)"}`,borderRadius:8,cursor:"pointer"}}>
-                <span style={{fontSize:20}}>{crFile?"✅":"📄"}</span>
-                <span style={{fontSize:12,color:crFile?"#7FFAB5":"rgba(255,255,255,0.4)"}}>{crFile?crFile.name:"Click to upload CR document"}</span>
-                <input type="file" accept=".jpg,.jpeg,.png,.pdf" onChange={e=>handleFile(e,"cr")} style={{display:"none"}}/>
-              </label>
             </div>
-            <div>
-              <label style={{fontSize:11,fontWeight:600,color:"rgba(255,255,255,0.55)",display:"block",marginBottom:5}}>🧾 VAT Registration Certificate — JPG, PNG or PDF, max 10MB</label>
-              <label style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",background:"rgba(255,255,255,0.06)",border:`1.5px dashed ${vatFile?"rgba(46,204,113,0.5)":"rgba(255,255,255,0.2)"}`,borderRadius:8,cursor:"pointer"}}>
-                <span style={{fontSize:20}}>{vatFile?"✅":"📄"}</span>
-                <span style={{fontSize:12,color:vatFile?"#7FFAB5":"rgba(255,255,255,0.4)"}}>{vatFile?vatFile.name:"Click to upload VAT certificate"}</span>
-                <input type="file" accept=".jpg,.jpeg,.png,.pdf" onChange={e=>handleFile(e,"vat")} style={{display:"none"}}/>
-              </label>
-            </div>
-          </div>
-          <button onClick={handleNext} style={{width:"100%",marginTop:20,padding:14,background:"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:12,fontSize:15,fontWeight:800,cursor:"pointer",fontFamily:"inherit"}}>Next: Enter License Key →</button>
-          <div style={{textAlign:"center",marginTop:14,paddingTop:14,borderTop:"1px solid rgba(255,255,255,0.1)"}}>
-            <span style={{fontSize:12,color:"rgba(255,255,255,0.4)"}}>Already a customer? </span>
-            <button onClick={onLogin} style={{background:"none",border:"none",color:"rgba(46,204,113,0.8)",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit",textDecoration:"underline"}}>Log In</button>
-          </div>
 
+            {/* ARE YOU THE OWNER? */}
+            <div style={{marginBottom:20,padding:"14px 16px",background:"rgba(240,165,0,0.1)",border:"1px solid rgba(240,165,0,0.3)",borderRadius:12}}>
+              <div style={{fontSize:13,fontWeight:700,color:"#F0A500",marginBottom:10}}>🏢 Are you the owner of this business?</div>
+              <div style={{display:"flex",gap:10}}>
+                {[["yes","✅ Yes, I am the owner"],["no","👤 No, I am a staff member"]].map(([v,label])=>(
+                  <button key={v} onClick={()=>setIsOwner(v==="yes")}
+                    style={{flex:1,padding:"9px 12px",borderRadius:8,border:`2px solid ${isOwner===(v==="yes")?"#F0A500":"rgba(255,255,255,0.15)"}`,background:isOwner===(v==="yes")?"rgba(240,165,0,0.2)":"rgba(255,255,255,0.05)",color:isOwner===(v==="yes")?"#F0A500":"rgba(255,255,255,0.6)",fontFamily:"inherit",fontSize:12,fontWeight:600,cursor:"pointer"}}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Business detail fields — responsive 2-column grid */}
+            <div className="reg-grid">
+              {FIELDS.map(([k,label,ph,span])=>(
+                <div key={k} className={span===2?"reg-field-full":"reg-field-half"}>
+                  <label style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.6)",display:"block",marginBottom:5}}>{label}</label>
+                  {k==="crNumber"?(
+                    <div style={{position:"relative"}}>
+                      <input value={form[k]} onChange={e=>{const v=e.target.value.replace(/\D/g,"").slice(0,12);set(k,v);}}
+                        placeholder={ph} inputMode="numeric"
+                        className="reg-input"
+                        style={{fontSize:16,fontFamily:"monospace",fontWeight:700,letterSpacing:"0.1em",borderColor:form.crNumber.length>0&&form.crNumber.length<10?"rgba(240,165,0,0.5)":form.crNumber.length>=10?"rgba(46,204,113,0.5)":undefined}}/>
+                      <span style={{position:"absolute",right:12,top:"50%",transform:"translateY(-50%)",fontSize:10,color:"rgba(255,255,255,0.35)",fontWeight:600}}>{form.crNumber.length}/12</span>
+                    </div>
+                  ):(
+                    <input value={form[k]} onChange={e=>{set(k,e.target.value);}}
+                      placeholder={ph}
+                      className="reg-input"
+                      style={{direction:k==="businessNameAr"?"rtl":"ltr"}}/>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            {error&&<div style={{marginTop:14,padding:"10px 14px",background:"rgba(217,64,64,0.2)",border:"1px solid rgba(217,64,64,0.4)",borderRadius:8,fontSize:13,color:"#ff8080"}}>{error}</div>}
+
+            {/* Document Upload */}
+            <div style={{background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:12,padding:"16px 18px",marginTop:18}}>
+              <div style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.7)",marginBottom:12}}>📎 Upload Documents <span style={{color:"rgba(255,255,255,0.35)",fontWeight:400}}>(Optional — speeds up approval)</span></div>
+              {fileError&&<div style={{fontSize:11,color:"#ff8080",marginBottom:8}}>⚠️ {fileError}</div>}
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(240px,1fr))",gap:10}}>
+                <div>
+                  <label style={{fontSize:11,fontWeight:600,color:"rgba(255,255,255,0.55)",display:"block",marginBottom:5}}>🏢 Commercial Registration (CR) — JPG, PNG or PDF, max 10MB</label>
+                  <label style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",background:"rgba(255,255,255,0.06)",border:`1.5px dashed ${crFile?"rgba(46,204,113,0.5)":"rgba(255,255,255,0.2)"}`,borderRadius:8,cursor:"pointer"}}>
+                    <span style={{fontSize:20}}>{crFile?"✅":"📄"}</span>
+                    <span style={{fontSize:12,color:crFile?"#7FFAB5":"rgba(255,255,255,0.4)"}}>{crFile?crFile.name:"Click to upload CR document"}</span>
+                    <input type="file" accept=".jpg,.jpeg,.png,.pdf" onChange={e=>handleFile(e,"cr")} style={{display:"none"}}/>
+                  </label>
+                </div>
+                <div>
+                  <label style={{fontSize:11,fontWeight:600,color:"rgba(255,255,255,0.55)",display:"block",marginBottom:5}}>🧾 VAT Registration Certificate — JPG, PNG or PDF, max 10MB</label>
+                  <label style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",background:"rgba(255,255,255,0.06)",border:`1.5px dashed ${vatFile?"rgba(46,204,113,0.5)":"rgba(255,255,255,0.2)"}`,borderRadius:8,cursor:"pointer"}}>
+                    <span style={{fontSize:20}}>{vatFile?"✅":"📄"}</span>
+                    <span style={{fontSize:12,color:vatFile?"#7FFAB5":"rgba(255,255,255,0.4)"}}>{vatFile?vatFile.name:"Click to upload VAT certificate"}</span>
+                    <input type="file" accept=".jpg,.jpeg,.png,.pdf" onChange={e=>handleFile(e,"vat")} style={{display:"none"}}/>
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <button onClick={handleNext} style={{width:"100%",marginTop:20,padding:15,background:"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:12,fontSize:15,fontWeight:800,cursor:"pointer",fontFamily:"inherit"}}>Next: Enter License Key →</button>
+            <div style={{textAlign:"center",marginTop:16,paddingTop:16,borderTop:"1px solid rgba(255,255,255,0.1)"}}>
+              <span style={{fontSize:12,color:"rgba(255,255,255,0.4)"}}>Already a customer? </span>
+              <button onClick={onLogin} style={{background:"none",border:"none",color:"rgba(46,204,113,0.8)",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit",textDecoration:"underline"}}>Log In</button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
