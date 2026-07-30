@@ -22,6 +22,9 @@ import { logActivity } from "./lib/activity.js";
 import { initSync, debouncedSync, syncKeyToFirestore } from "./lib/sync.js";
 import { getLang, setLangStore, t, dir } from "./i18n/index.js";
 import { BUSINESS_TYPES, DEFAULT_BUSINESS_TYPE, getBusinessType, bizProfile, bizFeature, isSupermarket } from "./config/businessTypes.js";
+import { rolesForProfile } from "./config/roles.js";
+import { requiresApproval } from "./lib/permissions.js";
+import { ApprovalGate } from "./components/ApprovalGate.jsx";
 import { Card, Btn, Inp, Sel, TextArea, Slider, ToggleRow, Badge, StatCard, Modal, DataTable } from "./components/ui.jsx";
 import { TabBoundary, ErrorBoundary } from "./components/boundaries.jsx";
 import { AuditTrail } from "./screens/AuditTrail.jsx";
@@ -3491,7 +3494,10 @@ function LicenseVerification({businessData,onSuccess,onBack,onLogin,onTryTrial})
 function RoleLogin({license,onLogin,lang="en",onClientLogin}){
   const [selectedRole,setSelectedRole]=useState(null);const [pin,setPin]=useState("");const [error,setError]=useState("");
   const pins=LS.get("restopos_pins")||DEFAULT_PINS;
-  const roles=[{id:"Admin",icon:"👑",desc:"Full access"},{id:"Manager",icon:"📊",desc:"Reports & management"},{id:"Cashier",icon:"🖥️",desc:"POS billing only"}];
+  // Roles come from the registry, ordered high→low authority. For existing
+  // types this is exactly Admin/Manager/Cashier (same icons/descriptions as
+  // before); a type that opts Supervisor in gets it here automatically.
+  const roles=rolesForProfile(bizProfile(license)).slice().reverse();
   function handleLoginWithPin(p){if(p===pins[selectedRole]){onLogin({role:selectedRole,name:selectedRole});}else{setError("Incorrect PIN");setPin("");}}
   // Keyboard support for PIN
   useEffect(()=>{
@@ -8404,6 +8410,10 @@ function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,arch
   const _t=s=>t(s,lang);
   const [tab,setTab]=useState("sales");const [dateFrom,setDateFrom]=useState(TODAY);const [dateTo,setDateTo]=useState(TODAY);const [search,setSearch]=useState("");const [refundTarget,setRefundTarget]=useState(null);
   const [kotPrompt,setKotPrompt]=useState(null);const [viewInvoice,setViewInvoice]=useState(null);
+  // Manager-approval gate for void/refund. requiresApproval() is false unless
+  // the active business type opts in, so existing types keep today's flow.
+  const [pendingApproval,setPendingApproval]=useState(null); // {action,onApproved}
+  const doVoid=(s)=>setSales(prev=>prev.map(x=>x.id===s.id?{...x,status:"voided"}:x));
   const dateFiltered=sales.filter(s=>s.date>=dateFrom&&s.date<=dateTo);
   const _filteredRaw=search.trim()?sales.filter(s=>s.id?.toLowerCase().includes(search.toLowerCase())||s.date?.includes(search)||s.type?.toLowerCase().includes(search.toLowerCase())||s.payMethod?.toLowerCase().includes(search.toLowerCase())):dateFiltered;
   // Newest sale on top → sort by reliable createdAt (fallback to date+time), descending.
@@ -8411,6 +8421,10 @@ function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,arch
   const filtered=[..._filteredRaw].sort((a,b)=>_saleSortTs(b)-_saleSortTs(a));
   const total=filtered.reduce((s,o)=>s+o.total,0);const vat=filtered.reduce((s,o)=>s+o.vat,0);
   return(<div>
+    {/* Manager-approval gate — only appears for types that require it. */}
+    {pendingApproval&&<ApprovalGate action={pendingApproval.action} license={license}
+      onApproved={()=>{const cb=pendingApproval.onApproved;setPendingApproval(null);cb&&cb();}}
+      onCancel={()=>setPendingApproval(null)}/>}
     {/* ── PRINT KOT PROMPT (from Transactions Print button) ── */}
     {kotPrompt&&<Modal title="🖨️ Print Invoice" onClose={()=>setKotPrompt(null)} width={400}>
       <div style={{fontSize:13.5,color:C.text,marginBottom:8}}>Reprint <strong style={{color:C.primary}}>{kotPrompt.displayNumber||kotPrompt.id}</strong> — {fmtSAR(kotPrompt.total)}</div>
@@ -8510,7 +8524,7 @@ function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,arch
         whatFollows="these figures" showComplete={false}/>
       <div style={{display:"flex",gap:12,alignItems:"flex-end",flexWrap:"wrap"}}><Inp label="From" value={dateFrom} onChange={setDateFrom} type="date"/><Inp label="To" value={dateTo} onChange={setDateTo} type="date"/><div style={{marginLeft:"auto"}}><div style={{fontSize:12,color:C.textMid}}>{filtered.length} orders · VAT: {fmtSAR(vat)}</div><div style={{fontSize:20,fontWeight:800,color:C.primary}}>{fmtSAR(total)}</div></div></div></Card>}
       {filtered.length===0?<Card><div style={{textAlign:"center",padding:"40px 0",color:C.textMid}}><div style={{fontSize:40,marginBottom:12}}>🧾</div><div style={{fontSize:15,fontWeight:700}}>No orders yet</div></div></Card>
-      :<Card><DataTable headers={["Invoice","Date","Time","Type","Method","Total","Status","Actions"]} rows={filtered.slice(0,100).map(s=>[<span style={{fontFamily:"monospace",fontSize:12,color:C.primary,fontWeight:700}}>{s.displayNumber||s.id}</span>,s.date,s.time,s.type,s.payMethod,<strong>{fmtSAR(s.total)}</strong>,<Badge color={s.status==="completed"?C.success:s.status==="voided"?C.danger:C.warning} bg={s.status==="completed"?C.successLight:s.status==="voided"?C.dangerLight:C.warningLight}>{s.status}</Badge>,<div style={{display:"flex",gap:4,flexWrap:"wrap"}}><Btn size="sm" variant="outline" onClick={()=>setKotPrompt(s)}>🖨️ Print</Btn>{s.status==="completed"&&<><Btn size="sm" variant="ghost" onClick={()=>setRefundTarget(s)}>Refund</Btn><Btn size="sm" variant="danger" onClick={()=>{if(confirm("Void?"))setSales(prev=>prev.map(x=>x.id===s.id?{...x,status:"voided"}:x));}}>Void</Btn></>}<Btn size="sm" variant="outline" onClick={()=>setViewInvoice(s)}>👁️ View</Btn></div>])} emptyMsg="No orders found"/></Card>}
+      :<Card><DataTable headers={["Invoice","Date","Time","Type","Method","Total","Status","Actions"]} rows={filtered.slice(0,100).map(s=>[<span style={{fontFamily:"monospace",fontSize:12,color:C.primary,fontWeight:700}}>{s.displayNumber||s.id}</span>,s.date,s.time,s.type,s.payMethod,<strong>{fmtSAR(s.total)}</strong>,<Badge color={s.status==="completed"?C.success:s.status==="voided"?C.danger:C.warning} bg={s.status==="completed"?C.successLight:s.status==="voided"?C.dangerLight:C.warningLight}>{s.status}</Badge>,<div style={{display:"flex",gap:4,flexWrap:"wrap"}}><Btn size="sm" variant="outline" onClick={()=>setKotPrompt(s)}>🖨️ Print</Btn>{s.status==="completed"&&<><Btn size="sm" variant="ghost" onClick={()=>{if(requiresApproval("sale.refund",license)){setPendingApproval({action:"sale.refund",onApproved:()=>setRefundTarget(s)});}else{setRefundTarget(s);}}}>Refund</Btn><Btn size="sm" variant="danger" onClick={()=>{if(requiresApproval("sale.void",license)){setPendingApproval({action:"sale.void",onApproved:()=>doVoid(s)});}else{if(confirm("Void?"))doVoid(s);}}}>Void</Btn></>}<Btn size="sm" variant="outline" onClick={()=>setViewInvoice(s)}>👁️ View</Btn></div>])} emptyMsg="No orders found"/></Card>}
     </div>}
     {tab==="payments"&&<Card><div style={{fontSize:15,fontWeight:700,marginBottom:16}}>Payment Summary (Today)</div>{["Cash","Card","Both"].map(method=>{const ms=sales.filter(s=>s.date===TODAY&&s.payMethod===method);return<div key={method} style={{display:"flex",justifyContent:"space-between",padding:"12px 0",borderBottom:`1px solid ${C.border}`}}><span style={{fontSize:14,fontWeight:600}}>{method}</span><div style={{textAlign:"right"}}><div style={{fontSize:16,fontWeight:700,color:C.primary}}>{fmtSAR(ms.reduce((s,o)=>s+o.total,0))}</div><div style={{fontSize:11,color:C.textLight}}>{ms.length} transactions</div></div></div>;})} </Card>}
     {tab==="kot"&&<Card><div style={{fontSize:15,fontWeight:700,marginBottom:16}}>KOT Log (Today)</div>{sales.filter(s=>s.date===TODAY).length===0?<div style={{textAlign:"center",padding:"30px 0",color:C.textMid}}><div style={{fontSize:32,marginBottom:8}}>🍽</div><div>No KOTs today</div></div>:<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(210px,1fr))",gap:12}}>{sales.filter(s=>s.date===TODAY).slice().reverse().map(s=>(<div key={s.id} style={{border:"2px dashed #ccc",borderRadius:8,padding:14,fontFamily:"monospace",fontSize:12}}><div style={{fontWeight:700,marginBottom:6}}>{s.type}{s.table?` · T${s.table}`:""} · {s.time}</div>{(s.items||[]).slice(0,4).map((it,idx)=><div key={idx}>{it.qty}× {it.name}</div>)}<div style={{marginTop:6,fontSize:10,color:C.textLight}}>{s.id}</div></div>))}</div>}</Card>}
