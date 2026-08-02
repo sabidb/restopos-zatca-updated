@@ -48,6 +48,8 @@ import { buildDraftSummaryHTML, buildReceiptHTML, buildDraftReceiptHTML, buildPr
 import { getDeviceInfo, getDeviceId, getDeviceLabel } from "./lib/device.js";
 import { CUSTOMER_TIERS, getTier, getAgingBucket } from "./lib/customers.js";
 import { EMAILJS_VERIFY_TEMPLATE, sendEmailJS, generateCode } from "./lib/emailjs.js";
+import { archiveCsvRow, ARCHIVE_CSV_HEADER, downloadBlob } from "./lib/download.js";
+import { DASHBOARD_BOXES, DEFAULT_DASHBOARD_CONFIG, getDashboardConfig } from "./lib/dashboard.js";
 import { buildReportThermalHTML } from "./lib/reportPrint.js";
 
 // ═══════════════════════════════════════════════════════════════════
@@ -5084,31 +5086,6 @@ function LiveClock(){
 // DASHBOARD BOX CATALOG — the client can show/hide & reorder these.
 // Each box computes its value from the data passed to the Dashboard.
 // To add a new box type later, add an entry here (id + render).
-const DASHBOARD_BOXES=[
-  {id:"todayOrders",icon:"🧾",label:"Today's Orders",color:"info"},
-  {id:"vatCollected",icon:"⬛",label:"VAT Collected",color:"zatca"},
-  {id:"todayRevenue",icon:"💰",label:"Today's Revenue",color:"primary"},
-  {id:"menuItems",icon:"📦",label:"Menu Items",color:"success"},
-  {id:"avgOrder",icon:"📈",label:"Avg Order Value",color:"info"},
-  {id:"zatcaTotal",icon:"📋",label:"Total ZATCA Invoices",color:"zatca"},
-  {id:"zatcaReported",icon:"✅",label:"Reported to ZATCA",color:"success"},
-  {id:"zatcaPending",icon:"⏳",label:"ZATCA Pending",color:"warning"},
-  {id:"zatcaUrgent",icon:"🚨",label:"ZATCA Urgent",color:"danger"},
-];
-// Arabic labels for dashboard boxes
-const DASHBOARD_BOX_LABELS_AR={
-  "todayOrders":"طلبات اليوم","vatCollected":"ضريبة القيمة المضافة",
-  "todayRevenue":"إيرادات اليوم","menuItems":"أصناف القائمة",
-  "avgOrder":"متوسط قيمة الطلب","zatcaTotal":"إجمالي فواتير زاتكا",
-  "zatcaReported":"تم إرسالها لزاتكا","zatcaPending":"زاتكا معلقة","zatcaUrgent":"زاتكا عاجلة",
-};
-// Default: the same boxes that were shown before (keeps current look)
-const DEFAULT_DASHBOARD_CONFIG=["todayOrders","vatCollected","menuItems","zatcaTotal","zatcaReported","zatcaPending","zatcaUrgent"];
-function getDashboardConfig(){
-  const saved=LS.get("restopos_dashboard_config");
-  if(Array.isArray(saved)&&saved.length)return saved.filter(id=>DASHBOARD_BOXES.some(b=>b.id===id));
-  return DEFAULT_DASHBOARD_CONFIG.slice();
-}
 
 // ═══════════════════════════════════════════════════════════════════
 // SALES PROGRESS BAR — shown on Dashboard when enabled in Advanced
@@ -9575,23 +9552,6 @@ const ARCHIVE_PAGE_SIZE = 500;
 // low-end tablets — a busy restaurant's 5-year history can be 150k+ rows.
 const ARCHIVE_XML_ZIP_CHUNK = 5000;
 
-function archiveCsvRow(inv){
-  const esc=v=>`"${String(v??"").replace(/"/g,'""')}"`;
-  return [
-    inv.invoice_number,inv.icv,inv.uuid,(inv.timestamp||"").slice(0,10),(inv.timestamp||"").slice(11,19),
-    inv.is_credit_note?"Credit Note":(inv.invoice_type||(inv.is_b2b?"B2B":"B2C")),
-    inv.seller_name,inv.seller_vat,inv.buyer_name||"",inv.buyer_vat||"",
-    (inv.subtotal??"").toString(),(inv.vat_amount??"").toString(),(inv.total??"").toString(),
-    inv.payMethod||"",inv.zatca_reported?"Yes":"No",inv.zatca_cleared?"Yes":"No",inv.invoice_hash||""
-  ].map(esc).join(",");
-}
-const ARCHIVE_CSV_HEADER=["Invoice Number","ICV","UUID","Date","Time","Type","Seller","Seller VAT","Buyer Name","Buyer VAT","Subtotal","VAT Amount","Total","Payment Method","ZATCA Reported","ZATCA Cleared","Invoice Hash"].join(",");
-
-function downloadBlob(blob,filename){
-  const url=URL.createObjectURL(blob);
-  const a=document.createElement("a");a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();
-  setTimeout(()=>URL.revokeObjectURL(url),2000);
-}
 
 function ArchiveExportPanel({license,lang="en"}){
   const _t=s=>t(s,lang);
