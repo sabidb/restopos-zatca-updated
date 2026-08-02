@@ -1743,50 +1743,6 @@ function ClientLogin({license,onSuccess,onForgotPassword,onBack,onTryTrial}){
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// PASSWORD STRENGTH HELPER
-// ═══════════════════════════════════════════════════════════════════
-function getPasswordStrength(pw){
-  const hasMin=pw.length>=8;
-  const hasNum=/\d/.test(pw);
-  const hasLetter=/[a-zA-Z]/.test(pw);
-  const hasSpecial=/[^a-zA-Z0-9]/.test(pw);
-  const hasUpper=/[A-Z]/.test(pw);
-  const score=[hasMin,hasNum,hasLetter,hasSpecial,hasUpper,pw.length>=12].filter(Boolean).length;
-  if(score<=2)return{label:"Weak",color:"#ef4444",pct:25};
-  if(score<=4)return{label:"Medium",color:"#F0A500",pct:65};
-  return{label:"Strong",color:"#10b981",pct:100};
-}
-
-function PasswordStrengthBar({password}){
-  const s=getPasswordStrength(password);
-  const reqs=[
-    {label:"At least 8 characters",ok:password.length>=8},
-    {label:"At least one number",ok:/\d/.test(password)},
-    {label:"At least one letter",ok:/[a-zA-Z]/.test(password)},
-    {label:"Uppercase letter (recommended)",ok:/[A-Z]/.test(password)},
-    {label:"Special character (recommended)",ok:/[^a-zA-Z0-9]/.test(password)},
-  ];
-  return(
-    <div style={{marginTop:8}}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5}}>
-        <span style={{fontSize:11,color:"rgba(255,255,255,0.5)"}}>Password strength</span>
-        <span style={{fontSize:11,fontWeight:700,color:s.color}}>{s.label}</span>
-      </div>
-      <div style={{height:4,background:"rgba(255,255,255,0.1)",borderRadius:4,overflow:"hidden",marginBottom:8}}>
-        <div style={{height:"100%",width:`${s.pct}%`,background:s.color,borderRadius:4,transition:"width 0.3s,background 0.3s"}}/>
-      </div>
-      <div style={{display:"flex",flexDirection:"column",gap:3}}>
-        {reqs.map(r=>(
-          <div key={r.label} style={{display:"flex",alignItems:"center",gap:6,fontSize:10,color:r.ok?"#7FFAB5":"rgba(255,255,255,0.35)"}}>
-            <span style={{fontSize:11}}>{r.ok?"✓":"○"}</span>{r.label}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════
 // FORGOT PASSWORD — enhanced with email flow, strength meter, 4 screens
 // ═══════════════════════════════════════════════════════════════════
 
@@ -1997,7 +1953,6 @@ const SUBSCRIPTION_PLANS={
 const APP_VERSION="v29.14.10";
 const APP_VERSION_FULL="RestoPOS v29.14.10 · ZATCA Phase 2";
 
-const SEED_ITEMS=[{id:1,name:"Broasted Chicken Half",nameAr:"دجاج مبروست نصف",category:"Broasted",price:28,cost:14,stock:50,active:true,barcode:""},{id:2,name:"Broasted Chicken Full",nameAr:"دجاج مبروست كامل",category:"Broasted",price:52,cost:26,stock:30,active:true,barcode:""},{id:3,name:"Crispy Wings 6pc",nameAr:"أجنحة مقرمشة",category:"Broasted",price:22,cost:10,stock:40,active:true,barcode:""},{id:4,name:"Mixed Grill Platter",nameAr:"مشاوي مشكلة",category:"Grills",price:65,cost:30,stock:20,active:true,barcode:""},{id:5,name:"Shish Tawook",nameAr:"شيش طاووق",category:"Grills",price:38,cost:18,stock:25,active:true,barcode:""},{id:6,name:"French Fries",nameAr:"بطاطس مقلية",category:"Sides",price:10,cost:3,stock:100,active:true,barcode:""},{id:7,name:"Coleslaw",nameAr:"كول سلو",category:"Sides",price:8,cost:2,stock:60,active:true,barcode:""},{id:8,name:"Pepsi Can",nameAr:"بيبسي",category:"Drinks",price:5,cost:2,stock:120,active:true,barcode:""},{id:9,name:"Fresh Lemon Juice",nameAr:"عصير ليمون",category:"Drinks",price:14,cost:4,stock:40,active:true,barcode:""},{id:10,name:"Umm Ali",nameAr:"أم علي",category:"Desserts",price:18,cost:6,stock:15,active:true,barcode:""},{id:11,name:"Family Box",nameAr:"وجبة عائلية",category:"Combos",price:85,cost:40,stock:20,active:true,barcode:""},{id:12,name:"Solo Meal",nameAr:"وجبة فردية",category:"Combos",price:32,cost:15,stock:30,active:true,barcode:""}];
 const SEED_CATEGORIES=["Broasted","Grills","Sides","Drinks","Desserts","Combos"];
 const TABLES_INIT=Array.from({length:12},(_,i)=>({id:i+1,status:i<3?"occupied":"free",capacity:4}));
 
