@@ -5055,6 +5055,49 @@ function printDraftReceipt(order,license){
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// VAT & TOTALS CONFIG — one source of truth for how a bill is totalled:
+// VAT rate, whether shelf prices already include VAT, grand-total rounding,
+// and decimal places. The DEFAULTS reproduce today's behaviour exactly
+// (15% VAT, prices VAT-inclusive, no rounding, 2 decimals), so nothing in
+// the live till changes until a client edits these in Advanced → VAT & Totals.
+// computeBillTotals() is a pure calculator used by both the settings preview
+// and (once rolled out) the live totals.
+// ═══════════════════════════════════════════════════════════════════
+const TAX_CFG_KEY="restopos_tax_config";
+const DEFAULT_TAX_CFG={ vatRate:15, pricesIncludeVat:true, rounding:"none", decimals:2 };
+function getTaxConfig(){ return { ...DEFAULT_TAX_CFG, ...(LS.get(TAX_CFG_KEY)||{}) }; }
+function saveTaxConfig(cfg){
+  const merged={ ...DEFAULT_TAX_CFG, ...cfg };
+  LS.set(TAX_CFG_KEY,merged);
+  try{ const lk=LS.get("restopos_license_v2")?.licenseKey; if(lk&&typeof debouncedSync==="function")debouncedSync(lk,TAX_CFG_KEY,merged); }catch(e){}
+  return merged;
+}
+function roundToRule(v,rule){ const n=Number(v)||0; if(rule==="whole")return Math.round(n); if(rule==="nearest_0.05")return Math.round(n*20)/20; return n; }
+// Total a set of lines under a tax config. lines: [{price,qty,discPct?,discAmt?}].
+// billDiscPct is an optional whole-bill % discount. All money rounded to cfg.decimals.
+function computeBillTotals(lines, cfg=getTaxConfig(), billDiscPct=0){
+  const rate=Number(cfg.vatRate)||0; const dp=Number.isFinite(Number(cfg.decimals))?Number(cfg.decimals):2;
+  const r=(x)=>parseFloat((Number(x)||0).toFixed(dp));
+  const lineGross=(it)=>(Number(it.price)||0)*(Number(it.qty)||0);
+  const lineDisc=(it)=>{ const g=lineGross(it); return Math.min(g,(Number(it.discAmt)||0)+g*(Number(it.discPct)||0)/100); };
+  const gross=(lines||[]).reduce((s,it)=>s+lineGross(it),0);
+  const lineDiscTotal=(lines||[]).reduce((s,it)=>s+lineDisc(it),0);
+  const afterLine=Math.max(0,gross-lineDiscTotal);
+  const discount=lineDiscTotal + afterLine*(Number(billDiscPct)||0)/100;
+  const net=Math.max(0,gross-discount);            // discounted amount, in the price's own basis
+  let subtotal,vat,grandRaw;
+  if(cfg.pricesIncludeVat){ grandRaw=net; vat=grandRaw*rate/(100+rate); subtotal=grandRaw-vat; }
+  else { subtotal=net; vat=subtotal*rate/100; grandRaw=subtotal+vat; }
+  const grand=roundToRule(grandRaw,cfg.rounding);
+  const rounding=grand-grandRaw;
+  // Re-derive parts from the rounded grand so subtotal + vat always equals it.
+  let vatF,subF;
+  if(cfg.pricesIncludeVat){ vatF=grand*rate/(100+rate); subF=grand-vatF; }
+  else { subF=subtotal; vatF=grand-subF; }
+  return { gross:r(gross), discount:r(discount), subtotal:r(subF), vat:r(vatF), rounding:r(rounding), grand:r(grand), rate, decimals:dp };
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // POS SCREEN
 // ═══════════════════════════════════════════════════════════════════
 function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang="en",currentUser=null,goScreen=null,onLogout=null,nav=[],screen="pos"}){
@@ -15683,12 +15726,140 @@ function PrintTypeSettings({onGoToQZ}){
 // + cloud sync. Movements & suppliers have their own stores.
 // ═══════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════
+// VAT & TOTALS SETTINGS (Advanced → VAT & Totals) — configure how bills
+// are totalled, with a live worked-example preview of the calculation.
+// ═══════════════════════════════════════════════════════════════════
+function TaxTotalsSettings(){
+  const [cfg,setCfg]=useState(()=>getTaxConfig());
+  const [saved,setSaved]=useState(false);
+  const set=(k,v)=>{ setCfg(c=>({...c,[k]:v})); setSaved(false); };
+  const save=()=>{ saveTaxConfig(cfg); setSaved(true); };
+  const reset=()=>{ setCfg({...DEFAULT_TAX_CFG}); setSaved(false); };
+  // Editable sample bill for the "how the calculation works" preview.
+  const [sample,setSample]=useState([{name:"Rice 5kg",price:42,qty:1},{name:"Milk 1L",price:5.25,qty:2}]);
+  const [sampleDisc,setSampleDisc]=useState(0);
+  const dp=Number.isFinite(Number(cfg.decimals))?Number(cfg.decimals):2;
+  const money=(v)=>"SAR "+Number(v||0).toFixed(dp);
+  const b=computeBillTotals(sample,cfg,sampleDisc);
+  const roundLabel={none:"No rounding","nearest_0.05":"Nearest 0.05",whole:"Whole riyal (.00)"};
+
+  const seg=(val,opts)=>(
+    <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+      {opts.map(([v,lbl])=>(
+        <button key={String(v)} onClick={()=>set(val,v)} type="button"
+          style={{padding:"9px 14px",borderRadius:9,border:`1.5px solid ${cfg[val]===v?C.primary:C.border}`,background:cfg[val]===v?C.primaryLight:"#fff",color:cfg[val]===v?C.primary:C.textMid,fontFamily:"inherit",fontSize:13,fontWeight:700,cursor:"pointer"}}>{lbl}</button>
+      ))}
+    </div>
+  );
+  const row=(label,help,control)=>(
+    <div style={{display:"flex",alignItems:"flex-start",gap:16,padding:"14px 0",borderTop:`1px solid ${C.border}`}}>
+      <div style={{width:210,flexShrink:0}}><div style={{fontSize:13.5,fontWeight:800,color:C.text}}>{label}</div>{help&&<div style={{fontSize:11.5,color:C.textMid,marginTop:2,lineHeight:1.4}}>{help}</div>}</div>
+      <div style={{flex:1}}>{control}</div>
+    </div>
+  );
+
+  return(
+    <div style={{display:"flex",gap:16,flexWrap:"wrap",alignItems:"flex-start"}}>
+      {/* ── Settings ── */}
+      <Card style={{flex:"1 1 440px",minWidth:340}}>
+        <div style={{fontSize:16,fontWeight:800,marginBottom:4}}>🧮 VAT & Totals</div>
+        <div style={{fontSize:12.5,color:C.textMid,marginBottom:6,lineHeight:1.5}}>Control how every bill is totalled. The defaults match RestoPOS today (15% VAT, shelf prices include VAT, no rounding) — change nothing and totals stay exactly as they are now.</div>
+        {row("VAT rate",`The tax percentage applied to sales.`,
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <input type="number" min={0} max={100} step={0.5} value={cfg.vatRate}
+              onChange={e=>set("vatRate",Math.max(0,Math.min(100,parseFloat(e.target.value)||0)))}
+              style={{width:110,padding:"9px 12px",border:`1.5px solid ${C.border}`,borderRadius:9,fontSize:15,fontWeight:700,fontFamily:"inherit",textAlign:"center"}}/>
+            <span style={{fontSize:14,fontWeight:800,color:C.textMid}}>%</span>
+          </div>)}
+        {row("Price entry",`Do your shelf/menu prices already include VAT, or is VAT added on top at the till?`,
+          seg("pricesIncludeVat",[[true,"Prices include VAT"],[false,"Add VAT on top"]]))}
+        {row("Grand-total rounding",`Optionally round the final payable amount. A rounding line is shown when it applies.`,
+          seg("rounding",[["none","None"],["nearest_0.05","Nearest 0.05"],["whole","Whole riyal"]]))}
+        {row("Decimal places",`How many decimals to show on money amounts.`,
+          seg("decimals",[[2,"2 (0.00)"],[3,"3 (0.000)"],[0,"0 (whole)"]]))}
+        <div style={{display:"flex",alignItems:"center",gap:12,marginTop:18}}>
+          <Btn onClick={save}>💾 Save VAT settings</Btn>
+          <Btn variant="ghost" onClick={reset}>↺ Reset to default</Btn>
+          {saved&&<span style={{fontSize:12.5,color:C.success,fontWeight:800}}>✓ Saved</span>}
+        </div>
+        {/* Plain-English summary */}
+        <div style={{marginTop:16,padding:"12px 14px",background:C.primaryLight,border:`1px solid ${C.primary}33`,borderRadius:10,fontSize:12.5,color:C.text,lineHeight:1.6}}>
+          <strong>In plain words:</strong> Prices are entered <strong>{cfg.pricesIncludeVat?"VAT-inclusive":"before VAT"}</strong> at <strong>{cfg.vatRate}%</strong>. The grand total uses <strong>{roundLabel[cfg.rounding]}</strong> and is shown to <strong>{dp} decimal{dp===1?"":"s"}</strong>.
+        </div>
+      </Card>
+
+      {/* ── Live calculation preview ── */}
+      <Card style={{flex:"1 1 420px",minWidth:340}}>
+        <div style={{fontSize:16,fontWeight:800,marginBottom:4}}>🔎 How the calculation works</div>
+        <div style={{fontSize:12.5,color:C.textMid,marginBottom:12}}>A live example using your settings above. Edit the sample lines to see the maths update.</div>
+        {/* sample lines editor */}
+        <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:10}}>
+          {sample.map((it,i)=>(
+            <div key={i} style={{display:"flex",alignItems:"center",gap:8}}>
+              <input value={it.name} onChange={e=>setSample(s=>s.map((x,j)=>j===i?{...x,name:e.target.value}:x))}
+                style={{flex:1,minWidth:0,padding:"7px 10px",border:`1px solid ${C.border}`,borderRadius:7,fontSize:12.5,fontFamily:"inherit"}}/>
+              <input type="number" min={0} step={0.05} value={it.price} onChange={e=>setSample(s=>s.map((x,j)=>j===i?{...x,price:parseFloat(e.target.value)||0}:x))}
+                title="Unit price" style={{width:88,padding:"7px 8px",border:`1px solid ${C.border}`,borderRadius:7,fontSize:12.5,fontFamily:"inherit",textAlign:"right"}}/>
+              <span style={{fontSize:12,color:C.textLight}}>×</span>
+              <input type="number" min={1} step={1} value={it.qty} onChange={e=>setSample(s=>s.map((x,j)=>j===i?{...x,qty:parseInt(e.target.value)||0}:x))}
+                title="Qty" style={{width:56,padding:"7px 8px",border:`1px solid ${C.border}`,borderRadius:7,fontSize:12.5,fontFamily:"inherit",textAlign:"right"}}/>
+              <button onClick={()=>setSample(s=>s.filter((_,j)=>j!==i))} style={{width:28,height:30,border:`1px solid ${C.border}`,borderRadius:7,background:"#fff",color:C.danger,cursor:"pointer",fontSize:14}}>×</button>
+            </div>
+          ))}
+          <div style={{display:"flex",gap:8,alignItems:"center"}}>
+            <Btn size="sm" variant="outline" onClick={()=>setSample(s=>[...s,{name:"Item "+(s.length+1),price:10,qty:1}])}>+ Add line</Btn>
+            <span style={{marginLeft:"auto",fontSize:12,color:C.textMid,fontWeight:700}}>Bill discount</span>
+            <div style={{display:"flex",alignItems:"center",gap:4}}>
+              <input type="number" min={0} max={100} value={sampleDisc} onChange={e=>setSampleDisc(Math.max(0,Math.min(100,parseFloat(e.target.value)||0)))}
+                style={{width:60,padding:"7px 8px",border:`1px solid ${C.border}`,borderRadius:7,fontSize:12.5,fontFamily:"inherit",textAlign:"right"}}/>
+              <span style={{fontSize:12,fontWeight:800,color:C.textMid}}>%</span>
+            </div>
+          </div>
+        </div>
+        {/* worked breakdown */}
+        <div style={{border:`1px solid ${C.border}`,borderRadius:10,overflow:"hidden"}}>
+          {sample.map((it,i)=>(
+            <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"7px 12px",fontSize:12.5,color:C.textMid,background:i%2?"#fff":C.bg}}>
+              <span>{it.name} — {Number(it.price).toFixed(dp)} × {it.qty}</span><span style={{fontWeight:700,color:C.text}}>{money(it.price*it.qty)}</span>
+            </div>
+          ))}
+          {[
+            ["Gross (sum of lines)",money(b.gross),false],
+            ...(b.discount>0?[["Discount",`- ${money(b.discount)}`,false]]:[]),
+            ...(cfg.pricesIncludeVat
+              ? [["Grand total (VAT incl.)",money(b.grand),true],
+                 [`— of which VAT (${cfg.vatRate}%)`,money(b.vat),false],
+                 ["— net of VAT",money(b.subtotal),false]]
+              : [["Subtotal (before VAT)",money(b.subtotal),false],
+                 [`VAT (${cfg.vatRate}%)`,`+ ${money(b.vat)}`,false],
+                 ["Grand total",money(b.grand),true]]),
+            ...(Math.abs(b.rounding)>=0.0001?[["Rounding adjustment",(b.rounding>0?"+ ":"- ")+money(Math.abs(b.rounding)),false]]:[]),
+          ].map(([l,v,strong],i)=>(
+            <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"9px 12px",borderTop:`1px solid ${C.border}`,fontSize:strong?15:12.5,fontWeight:strong?900:600,color:strong?C.primary:(String(l).includes("Discount")||String(l).includes("Rounding")?C.danger:C.text),background:strong?C.primaryLight:"#fff"}}>
+              <span>{l}</span><span style={{fontVariantNumeric:"tabular-nums"}}>{v}</span>
+            </div>
+          ))}
+        </div>
+        <div style={{marginTop:10,fontSize:11.5,color:C.textMid,lineHeight:1.6}}>
+          {cfg.pricesIncludeVat
+            ? <>Formula: <code>VAT = grand × {cfg.vatRate} ÷ {100+Number(cfg.vatRate)}</code>, net = grand − VAT. VAT is already inside the price, never added on top.</>
+            : <>Formula: <code>VAT = subtotal × {cfg.vatRate} ÷ 100</code>, grand = subtotal + VAT.</>}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
 function AdvancedFeatures({sales,items,setItems,license,company,invoiceFormat,setInvoiceFormat,users,setUsers,lang="en"}){
   const _t=s=>t(s,lang);
-  const [tab,setTab]=useState("qztray");
-  const tabs=[["qztray","🖨️ QZ Tray"],["printtype",`🖨️ ${_t("Print Type")}`],["silentprint",`🔇 ${_t("Silent Printing")}`],["description",`📋 ${_t("Description (Item Modifiers")}`],["progressbar",`📊 ${_t("Sales Progress Bar")}`],["kitchen",`🍽️ ${_t("Kitchen Printer")}`],["users",`👤 ${_t("Users")}`],["kds","🍳 KDS"],["stocktakes",`📦 ${_t("Stock Takes")}`],["recipes",`📋 ${_t("Recipes")}`],["giftcards",`🎁 ${_t("Gift Cards")}`],["delivery",`🛵 ${_t("Delivery")}`],["locations",`🏢 ${_t("Locations")}`],["accounting",`📤 ${_t("Accounting")}`],["reports",`📅 ${_t("Reports")}`],["printer","🖨️ ESC/POS"],["errorlog",`⚠️ ${_t("Error Log")}`],["analytics",`📉 ${_t("Analytics")}`],["audit",`🔍 ${_t("Audit Trail")}`],["tools",`🔧 ${_t("Tools")}`]]
+  const [tab,setTab]=useState(()=>getBusinessType()==="hypermarket"?"vattotals":"qztray");
+  const tabs=[["vattotals","🧮 VAT & Totals"],["qztray","🖨️ QZ Tray"],["printtype",`🖨️ ${_t("Print Type")}`],["silentprint",`🔇 ${_t("Silent Printing")}`],["description",`📋 ${_t("Description (Item Modifiers")}`],["progressbar",`📊 ${_t("Sales Progress Bar")}`],["kitchen",`🍽️ ${_t("Kitchen Printer")}`],["users",`👤 ${_t("Users")}`],["kds","🍳 KDS"],["stocktakes",`📦 ${_t("Stock Takes")}`],["recipes",`📋 ${_t("Recipes")}`],["giftcards",`🎁 ${_t("Gift Cards")}`],["delivery",`🛵 ${_t("Delivery")}`],["locations",`🏢 ${_t("Locations")}`],["accounting",`📤 ${_t("Accounting")}`],["reports",`📅 ${_t("Reports")}`],["printer","🖨️ ESC/POS"],["errorlog",`⚠️ ${_t("Error Log")}`],["analytics",`📉 ${_t("Analytics")}`],["audit",`🔍 ${_t("Audit Trail")}`],["tools",`🔧 ${_t("Tools")}`]]
     // Hide the tabs this business type doesn't use (e.g. supermarket has no kitchen/KDS/recipes).
-    .filter(([id])=>!bizProfile().hideAdvancedTabs.includes(id));
+    .filter(([id])=>!bizProfile().hideAdvancedTabs.includes(id))
+    // VAT & Totals is being previewed for Hypermarket first; rolled out to all
+    // business types once approved.
+    .filter(([id])=>id!=="vattotals"||getBusinessType()==="hypermarket");
   return(
     <div>
       <div style={{display:"flex",gap:6,marginBottom:20,flexWrap:"wrap"}}>
@@ -15696,6 +15867,7 @@ function AdvancedFeatures({sales,items,setItems,license,company,invoiceFormat,se
           <button key={id} onClick={()=>setTab(id)} style={{padding:"7px 14px",borderRadius:8,border:`1.5px solid ${tab===id?C.primary:C.border}`,background:tab===id?C.primaryLight:"#fff",color:tab===id?C.primary:C.textMid,fontFamily:"inherit",fontSize:12,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap"}}>{lbl}</button>
         ))}
       </div>
+      {tab==="vattotals"&&<TaxTotalsSettings/>}
       {tab==="invoice"&&<div>
         <div style={{background:C.warningLight,border:`1px solid ${C.warning}`,borderRadius:10,padding:"14px 16px",fontSize:13,color:C.warning,fontWeight:600}}>🎨 The classic Invoice Format has been replaced. Design all your bills (Invoice, Draft & KOT) under <strong>Settings → Preset Bills</strong> — that is now the single place that controls printing.</div>
       </div>}
