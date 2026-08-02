@@ -47,6 +47,7 @@ import { OTHER_CAT, CAT_PALETTE, getCategoryColors, saveCategoryColors, colorFor
 import { buildDraftSummaryHTML, buildReceiptHTML, buildDraftReceiptHTML, buildPresetHTML, buildPresetKOT, buildKOTHtml, printDraftReceipt } from "./lib/receipts.js";
 import { getDeviceInfo, getDeviceId, getDeviceLabel } from "./lib/device.js";
 import { CUSTOMER_TIERS, getTier, getAgingBucket } from "./lib/customers.js";
+import { EMAILJS_VERIFY_TEMPLATE, sendEmailJS, generateCode } from "./lib/emailjs.js";
 import { buildReportThermalHTML } from "./lib/reportPrint.js";
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1786,19 +1787,6 @@ function PasswordStrengthBar({password}){
 // ═══════════════════════════════════════════════════════════════════
 // FORGOT PASSWORD — enhanced with email flow, strength meter, 4 screens
 // ═══════════════════════════════════════════════════════════════════
-// ── EmailJS helper ──────────────────────────────────────────────────
-const EMAILJS_SERVICE="service_mxln2w4";
-const EMAILJS_VERIFY_TEMPLATE="template_v28ss1y";
-const EMAILJS_RESET_TEMPLATE="template_444v50v";
-const EMAILJS_PUBLIC_KEY="jlfUG0WjJ3UVXUgCb";
-async function sendEmailJS(templateId,params){
-  const res=await fetch("https://api.emailjs.com/api/v1.0/email/send",{
-    method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({service_id:EMAILJS_SERVICE,template_id:templateId,user_id:EMAILJS_PUBLIC_KEY,template_params:params})
-  });
-  if(!res.ok)throw new Error("Email send failed: "+res.status);
-}
-function generateCode(){return String(Math.floor(100000+Math.random()*900000));}
 
 function ForgotPassword({onBack,onReset}){
   const [step,setStep]=useState("email");
