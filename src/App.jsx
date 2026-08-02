@@ -5098,6 +5098,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   const [suspendModal,setSuspendModal]=useState(false);
   const [staffModal,setStaffModal]=useState(false);
   const [fecCoupon,setFecCoupon]=useState("");       // coupon code queued for payment
+  const [fecDrawer,setFecDrawer]=useState(false);    // slide-in ☰ menu open/closed
   const [weighPick,setWeighPick]=useState(false); // ⚖ toolbar → pick a weighed product to weigh
   const [shelfOpen,setShelfOpen]=useState(true); // Layout C quick-items shelf open/closed
   const [weighItem,setWeighItem]=useState(null);const [weighKg,setWeighKg]=useState("");
@@ -5778,34 +5779,39 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   const clientLogo=LS.get("restopos_invoice_format")?.logoUrl||"";
 
   const fecLayout=(
-    <div style={{flex:1,display:"flex",background:FEC.bg,overflow:"hidden",fontFamily:"'Segoe UI',system-ui,sans-serif",color:FEC.text}}>
-      {/* ── Left navigation sidebar (the common RestoPOS menu, role-filtered) ── */}
-      {nav&&nav.length>0&&(
-        <div style={{width:138,flexShrink:0,background:"linear-gradient(180deg,#204034,#152a22)",display:"flex",flexDirection:"column",overflowY:"auto"}}>
-          <div style={{padding:"12px 10px 10px",display:"flex",flexDirection:"column",alignItems:"center",gap:6,borderBottom:"1px solid rgba(255,255,255,0.08)"}}>
-            {clientLogo
-              ? <img src={clientLogo} alt="logo" style={{maxWidth:"100%",maxHeight:46,objectFit:"contain"}}/>
-              : <div style={{width:44,height:44,borderRadius:10,background:"rgba(255,255,255,0.1)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:22}}>🏬</div>}
-            <div style={{fontSize:11,fontWeight:800,color:"#fff",textAlign:"center",lineHeight:1.2}}>{license?.businessName||"Hypermarket"}</div>
+    <div style={{flex:1,display:"flex",flexDirection:"column",background:FEC.bg,overflow:"hidden",fontFamily:"'Segoe UI',system-ui,sans-serif",color:FEC.text,minWidth:0}}>
+      {/* ── Slide-in ☰ menu (the common RestoPOS menu, role-filtered) ── */}
+      <div onClick={()=>setFecDrawer(false)} style={{position:"fixed",inset:0,zIndex:6000,background:"rgba(0,0,0,0.45)",opacity:fecDrawer?1:0,pointerEvents:fecDrawer?"auto":"none",transition:"opacity 0.2s"}}/>
+      <div style={{position:"fixed",top:0,left:0,bottom:0,width:258,zIndex:6001,background:"linear-gradient(180deg,#204034,#152a22)",transform:fecDrawer?"translateX(0)":"translateX(-100%)",transition:"transform 0.25s ease",display:"flex",flexDirection:"column",boxShadow:"2px 0 24px rgba(0,0,0,0.35)"}}>
+        <div style={{padding:"14px 14px 12px",display:"flex",alignItems:"center",gap:10,borderBottom:"1px solid rgba(255,255,255,0.08)"}}>
+          <img src="/brand-logo.png" alt="RestoPOS" style={{width:34,height:34,borderRadius:8,objectFit:"cover",flexShrink:0}}/>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontSize:13,fontWeight:800,color:"#fff",lineHeight:1.1}}>RestoPOS</div>
+            <div style={{fontSize:10.5,color:"rgba(255,255,255,0.6)",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{license?.businessName||"Hypermarket"}</div>
           </div>
-          <div style={{flex:1,display:"flex",flexDirection:"column",gap:2,padding:"6px 6px"}}>
-            {nav.map(([id,icon,label])=>{ const on=screen===id; return(
-              <button key={id} onClick={()=>goScreen&&goScreen(id)}
-                style={{display:"flex",alignItems:"center",gap:9,padding:"9px 10px",borderRadius:8,border:"none",background:on?"rgba(255,255,255,0.16)":"transparent",color:on?"#fff":"rgba(255,255,255,0.72)",cursor:"pointer",fontFamily:"inherit",fontSize:12.5,fontWeight:on?800:600,textAlign:"left",whiteSpace:"nowrap"}}>
-                <span style={{fontSize:15}}>{icon}</span>{label}
-              </button>
-            );})}
-          </div>
-          <button onClick={fecLogoff} style={{margin:"6px",padding:"9px 0",borderRadius:8,border:"none",background:"rgba(255,255,255,0.1)",color:"#ffd7cf",cursor:"pointer",fontFamily:"inherit",fontSize:12,fontWeight:800,display:"flex",flexDirection:"column",alignItems:"center",gap:1}}>
-            <span dir="rtl" style={{fontSize:9,opacity:0.85}}>تسجيل الخروج</span>Logoff
-          </button>
+          <button onClick={()=>setFecDrawer(false)} aria-label="Close menu" style={{background:"rgba(255,255,255,0.12)",border:"none",color:"#fff",width:28,height:28,borderRadius:"50%",cursor:"pointer",fontSize:16,flexShrink:0}}>×</button>
         </div>
-      )}
+        <div style={{flex:1,overflowY:"auto",display:"flex",flexDirection:"column",gap:2,padding:"8px"}}>
+          {(nav||[]).map(([id,icon,label])=>{ const on=screen===id; return(
+            <button key={id} onClick={()=>{setFecDrawer(false);goScreen&&goScreen(id);}}
+              style={{display:"flex",alignItems:"center",gap:11,padding:"11px 12px",borderRadius:9,border:"none",background:on?"rgba(255,255,255,0.16)":"transparent",color:on?"#fff":"rgba(255,255,255,0.78)",cursor:"pointer",fontFamily:"inherit",fontSize:13.5,fontWeight:on?800:600,textAlign:"left",whiteSpace:"nowrap"}}>
+              <span style={{fontSize:16}}>{icon}</span>{label}
+            </button>
+          );})}
+        </div>
+        <button onClick={fecLogoff} style={{margin:"8px",padding:"11px 0",borderRadius:9,border:"none",background:"rgba(255,255,255,0.1)",color:"#ffd7cf",cursor:"pointer",fontFamily:"inherit",fontSize:12.5,fontWeight:800}}>⎋ Logoff · تسجيل الخروج</button>
+      </div>
 
-      {/* ── Main till ── */}
-      <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minWidth:0}}>
-      {/* Item no. + status + logo */}
+      {/* Header: ☰ + RestoPOS logo · Item no./Status · client logo */}
       <div style={{display:"flex",gap:10,padding:"8px 12px",background:FEC.panel,borderBottom:`1px solid ${FEC.line}`,alignItems:"stretch"}}>
+        <div style={{display:"flex",alignItems:"center",gap:9,paddingRight:10,borderRight:`1px solid ${FEC.line}`}}>
+          <button onClick={()=>setFecDrawer(true)} title="Menu" aria-label="Open menu"
+            style={{background:C.primary,border:"none",borderRadius:8,width:40,height:40,display:"flex",flexDirection:"column",justifyContent:"center",alignItems:"center",gap:4,cursor:"pointer",flexShrink:0,padding:0}}>
+            <span style={{width:18,height:2.5,background:"#fff",borderRadius:2}}/><span style={{width:18,height:2.5,background:"#fff",borderRadius:2}}/><span style={{width:18,height:2.5,background:"#fff",borderRadius:2}}/>
+          </button>
+          <img src="/brand-logo.png" alt="RestoPOS" style={{width:34,height:34,borderRadius:7,objectFit:"cover",flexShrink:0}}/>
+          <div style={{lineHeight:1.05}}><div style={{fontSize:14,fontWeight:900,color:C.primary}}>RestoPOS</div><div style={{fontSize:9,fontWeight:700,color:FEC.text,opacity:0.5,letterSpacing:"0.06em"}}>HYPERMARKET</div></div>
+        </div>
         <div style={{flex:1,display:"flex",flexDirection:"column",gap:5,minWidth:0}}>
           <div style={{display:"flex",alignItems:"center",gap:8}}>
             <span style={{fontSize:12,fontWeight:700,color:FEC.text,width:60,flexShrink:0}}>Item no.:</span>
@@ -5819,11 +5825,11 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
             <div style={{flex:1,padding:"6px 10px",border:`1px solid ${FEC.line}`,borderRadius:6,fontSize:12,fontWeight:700,background:"#fff",color:fecStatus.startsWith("✗")||fecStatus.startsWith("⚠")?C.danger:C.primary,minHeight:16}}>{fecStatus||`Ready — ${cart.length} item(s)`}{fecCoupon?`  ·  🎟 ${fecCoupon}`:""}{(customerName||customerPhone)?`  ·  👤 ${customerName||customerPhone}`:""}</div>
           </div>
         </div>
-        <div style={{display:"flex",alignItems:"center",gap:10,paddingLeft:10,borderLeft:`1px solid ${FEC.line}`}}>
-          {clientLogo
-            ? <img src={clientLogo} alt="logo" style={{maxHeight:48,maxWidth:150,objectFit:"contain"}}/>
-            : <div style={{textAlign:"right"}}><div style={{fontSize:16,fontWeight:900,color:C.primary}}>{license?.businessName||"Hypermarket"}</div><div style={{fontSize:10,fontWeight:700,color:FEC.text,opacity:0.55}}>powered by RestoPos</div></div>}
-        </div>
+        {clientLogo&&(
+          <div style={{display:"flex",alignItems:"center",paddingLeft:10,borderLeft:`1px solid ${FEC.line}`}}>
+            <img src={clientLogo} alt="business logo" style={{maxHeight:48,maxWidth:150,objectFit:"contain"}}/>
+          </div>
+        )}
       </div>
 
       {/* Body: cart grid (left) + function/keypad (right) */}
@@ -5917,7 +5923,6 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
       <div style={{display:"flex",alignItems:"center",gap:0,background:FEC.head,borderTop:`1px solid ${FEC.line}`,fontSize:11,fontWeight:700,color:FEC.text}}>
         {[`SALES`,`FMode: ITEM`,`Receipt: ${String(vno).padStart(6,"0")}`,`Staff: ${currentUser?.name||"—"}`,`Mgr: ${mgrSession?"Yes":"No"}`].map((s,i)=><div key={i} style={{padding:"6px 12px",borderRight:`1px solid ${FEC.line}`,whiteSpace:"nowrap"}}>{s}</div>)}
         <div style={{marginLeft:"auto",padding:"6px 12px",whiteSpace:"nowrap"}}>{new Date().toLocaleDateString("en-GB")} {new Date().toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})}</div>
-      </div>
       </div>
     </div>
   );
