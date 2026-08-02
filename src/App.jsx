@@ -5099,6 +5099,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   const [staffModal,setStaffModal]=useState(false);
   const [fecCoupon,setFecCoupon]=useState("");       // coupon code queued for payment
   const [fecDrawer,setFecDrawer]=useState(false);    // slide-in ☰ menu open/closed
+  const [fecNow,setFecNow]=useState(()=>new Date()); // live status-bar clock (ticks each second)
   const [weighPick,setWeighPick]=useState(false); // ⚖ toolbar → pick a weighed product to weigh
   const [shelfOpen,setShelfOpen]=useState(true); // Layout C quick-items shelf open/closed
   const [weighItem,setWeighItem]=useState(null);const [weighKg,setWeighKg]=useState("");
@@ -5117,6 +5118,8 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     if(!priceCheck) addToCart(item);
   }
   useEffect(()=>{ if(superMode) setTimeout(()=>barcodeRef.current?.focus(),200); },[superMode]);
+  // Live clock for the classic-till status bar — ticks every second while shown.
+  useEffect(()=>{ if(!fecTill)return; const id=setInterval(()=>setFecNow(new Date()),1000); return()=>clearInterval(id); },[fecTill]);
   const total=cart.reduce((s,i)=>s+i.price*i.qty,0);const vat=parseFloat((total*(15/115)).toFixed(2));const subtotal=parseFloat((total-vat).toFixed(2));
   function addToCart(item){
     // Weighed item (price is per-kg): open the weight modal. qty carries the
@@ -5804,13 +5807,13 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
 
       {/* Header: ☰ + RestoPOS logo · Item no./Status · client logo */}
       <div style={{display:"flex",gap:10,padding:"8px 12px",background:FEC.panel,borderBottom:`1px solid ${FEC.line}`,alignItems:"stretch"}}>
-        <div style={{display:"flex",alignItems:"center",gap:9,paddingRight:10,borderRight:`1px solid ${FEC.line}`}}>
+        <div style={{display:"flex",alignItems:"center",gap:12,paddingRight:12,borderRight:`1px solid ${FEC.line}`}}>
           <button onClick={()=>setFecDrawer(true)} title="Menu" aria-label="Open menu"
-            style={{background:C.primary,border:"none",borderRadius:8,width:40,height:40,display:"flex",flexDirection:"column",justifyContent:"center",alignItems:"center",gap:4,cursor:"pointer",flexShrink:0,padding:0}}>
-            <span style={{width:18,height:2.5,background:"#fff",borderRadius:2}}/><span style={{width:18,height:2.5,background:"#fff",borderRadius:2}}/><span style={{width:18,height:2.5,background:"#fff",borderRadius:2}}/>
+            style={{background:"transparent",border:"none",display:"flex",flexDirection:"column",justifyContent:"center",gap:4,cursor:"pointer",flexShrink:0,padding:"4px 2px"}}>
+            <span style={{width:24,height:3,background:C.primary,borderRadius:2}}/><span style={{width:24,height:3,background:C.primary,borderRadius:2}}/><span style={{width:24,height:3,background:C.primary,borderRadius:2}}/>
           </button>
-          <img src="/brand-logo.png" alt="RestoPOS" style={{width:34,height:34,borderRadius:7,objectFit:"cover",flexShrink:0}}/>
-          <div style={{lineHeight:1.05}}><div style={{fontSize:14,fontWeight:900,color:C.primary}}>RestoPOS</div><div style={{fontSize:9,fontWeight:700,color:FEC.text,opacity:0.5,letterSpacing:"0.06em"}}>HYPERMARKET</div></div>
+          <img src="/brand-logo.png" alt="RestoPOS" style={{width:50,height:50,borderRadius:10,objectFit:"cover",flexShrink:0}}/>
+          <div style={{lineHeight:1.05}}><div style={{fontSize:22,fontWeight:900,color:C.primary,letterSpacing:"-0.01em"}}>RestoPOS</div><div style={{fontSize:10,fontWeight:700,color:FEC.text,opacity:0.5,letterSpacing:"0.14em"}}>HYPERMARKET</div></div>
         </div>
         <div style={{flex:1,display:"flex",flexDirection:"column",gap:5,minWidth:0}}>
           <div style={{display:"flex",alignItems:"center",gap:8}}>
@@ -5922,7 +5925,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
       {/* Status bar */}
       <div style={{display:"flex",alignItems:"center",gap:0,background:FEC.head,borderTop:`1px solid ${FEC.line}`,fontSize:11,fontWeight:700,color:FEC.text}}>
         {[`SALES`,`FMode: ITEM`,`Receipt: ${String(vno).padStart(6,"0")}`,`Staff: ${currentUser?.name||"—"}`,`Mgr: ${mgrSession?"Yes":"No"}`].map((s,i)=><div key={i} style={{padding:"6px 12px",borderRight:`1px solid ${FEC.line}`,whiteSpace:"nowrap"}}>{s}</div>)}
-        <div style={{marginLeft:"auto",padding:"6px 12px",whiteSpace:"nowrap"}}>{new Date().toLocaleDateString("en-GB")} {new Date().toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})}</div>
+        <div style={{marginLeft:"auto",padding:"6px 12px",whiteSpace:"nowrap",fontVariantNumeric:"tabular-nums"}}>{fecNow.toLocaleDateString("en-GB")} {fecNow.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}</div>
       </div>
     </div>
   );
