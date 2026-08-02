@@ -52,6 +52,7 @@ import { archiveCsvRow, ARCHIVE_CSV_HEADER, downloadBlob } from "./lib/download.
 import { DASHBOARD_BOXES, DEFAULT_DASHBOARD_CONFIG, getDashboardConfig } from "./lib/dashboard.js";
 import { KitchenPrinterSettings } from "./screens/printers/KitchenPrinterSettings.jsx";
 import { getStations, saveStations, makeStation, routeKOT } from "./lib/printerStations.js";
+import { PrinterSetup } from "./screens/printers/PrinterSetup.jsx";
 import { buildReportThermalHTML } from "./lib/reportPrint.js";
 
 // ═══════════════════════════════════════════════════════════════════
@@ -4140,17 +4141,12 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
           const a4html=html.replace(/@page\s*\{[^}]*\}/,"@page{size:A4;margin:12mm}")
                            .replace(/max-width:\s*80mm/g,"max-width:100%")
                            .replace(/width:\s*80mm/g,"width:100%");
-          const win=window.open("","_blank");
-          if(!win){
-            alert("⚠️ A4 print failed: pop-ups are blocked.\n\nAllow pop-ups for this site, then print again. (The invoice has been saved.)");
-          }else{
-            win.document.open();
-            win.document.write(a4html.includes("window.print")?a4html:a4html.replace("</body>","<script>window.onload=function(){window.print();}<\/script></body>"));
-            win.document.close();
-            printed=true;printMethod="A4";
-          }
+          // Silent: QZ Tray at A4 width, else the hidden iframe. No pop-up, no
+          // blocked-pop-up alert — the sale must never wait on a dialog.
+          await printSilent(a4html,{paperWidth:"210"});
+          printed=true;printMethod="A4";
         }catch(e){
-          alert("⚠️ A4 print failed: "+e.message+"\n\n(The invoice has been saved — you can reprint it from Transactions.)");
+          console.warn("[A4 print]",e&&e.message);
         }
         if(printed){
           setPrintBanner({msg:"✅ "+inv.id+" — Saved & Printed (A4)"+(inv.customer?(" · 👤 "+inv.customer):" · ⚠️ no customer captured"),type:"success"});
@@ -13954,8 +13950,8 @@ function PrintTypeSettings({onGoToQZ}){
 
 function AdvancedFeatures({sales,items,setItems,license,company,invoiceFormat,setInvoiceFormat,users,setUsers,lang="en"}){
   const _t=s=>t(s,lang);
-  const [tab,setTab]=useState("qztray");
-  const tabs=[["qztray","🖨️ QZ Tray"],["printtype",`🖨️ ${_t("Print Type")}`],["silentprint",`🔇 ${_t("Silent Printing")}`],["description",`📋 ${_t("Description (Item Modifiers")}`],["progressbar",`📊 ${_t("Sales Progress Bar")}`],["kitchen",`🍽️ ${_t("Kitchen Printer")}`],["users",`👤 ${_t("Users")}`],["kds","🍳 KDS"],["stocktakes",`📦 ${_t("Stock Takes")}`],["recipes",`📋 ${_t("Recipes")}`],["giftcards",`🎁 ${_t("Gift Cards")}`],["delivery",`🛵 ${_t("Delivery")}`],["locations",`🏢 ${_t("Locations")}`],["accounting",`📤 ${_t("Accounting")}`],["reports",`📅 ${_t("Reports")}`],["printer","🖨️ ESC/POS"],["errorlog",`⚠️ ${_t("Error Log")}`],["analytics",`📉 ${_t("Analytics")}`],["audit",`🔍 ${_t("Audit Trail")}`],["tools",`🔧 ${_t("Tools")}`]]
+  const [tab,setTab]=useState("printersetup");
+  const tabs=[["printersetup",`🖨️ ${_t("Printer Setup")}`],["qztray","🖨️ QZ Tray"],["printtype",`🖨️ ${_t("Print Type")}`],["silentprint",`🔇 ${_t("Silent Printing")}`],["description",`📋 ${_t("Description (Item Modifiers")}`],["progressbar",`📊 ${_t("Sales Progress Bar")}`],["kitchen",`🍽️ ${_t("Kitchen Printer")}`],["users",`👤 ${_t("Users")}`],["kds","🍳 KDS"],["stocktakes",`📦 ${_t("Stock Takes")}`],["recipes",`📋 ${_t("Recipes")}`],["giftcards",`🎁 ${_t("Gift Cards")}`],["delivery",`🛵 ${_t("Delivery")}`],["locations",`🏢 ${_t("Locations")}`],["accounting",`📤 ${_t("Accounting")}`],["reports",`📅 ${_t("Reports")}`],["printer","🖨️ ESC/POS"],["errorlog",`⚠️ ${_t("Error Log")}`],["analytics",`📉 ${_t("Analytics")}`],["audit",`🔍 ${_t("Audit Trail")}`],["tools",`🔧 ${_t("Tools")}`]]
     // Hide the tabs this business type doesn't use (e.g. supermarket has no kitchen/KDS/recipes).
     .filter(([id])=>!bizProfile().hideAdvancedTabs.includes(id));
   return(
@@ -13968,6 +13964,10 @@ function AdvancedFeatures({sales,items,setItems,license,company,invoiceFormat,se
       {tab==="invoice"&&<div>
         <div style={{background:C.warningLight,border:`1px solid ${C.warning}`,borderRadius:10,padding:"14px 16px",fontSize:13,color:C.warning,fontWeight:600}}>🎨 The classic Invoice Format has been replaced. Design all your bills (Invoice, Draft & KOT) under <strong>Settings → Preset Bills</strong> — that is now the single place that controls printing.</div>
       </div>}
+      {tab==="printersetup"&&<PrinterSetup
+        api={{connectQZ,isQZConnected,loadQZ,printSilent,listPrinters:async()=>{try{const p=await qz.printers.find();return Array.isArray(p)?p:[p].filter(Boolean);}catch(e){return [];}}}}
+        categories={(LS.get("restopos_categories")||[...new Set((items||[]).map(i=>i.category).filter(Boolean))])}
+      />}
       {tab==="kitchen"&&<KitchenPrinterSettings/>}
       {tab==="silentprint"&&<SilentPrintSetup/>}
       {tab==="description"&&<DescriptionSettings/>}
