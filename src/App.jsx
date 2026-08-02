@@ -3770,7 +3770,7 @@ function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1
   let _grandRaw,_subRaw;
   if(_tc.pricesIncludeVat){ _grandRaw=_preRound; _subRaw=_grandRaw-_grandRaw*_tr/(100+_tr); }
   else { _subRaw=_preRound; _grandRaw=_subRaw*(1+_tr/100); }
-  const finalTotal=parseFloat(roundToRule(_grandRaw,_tc.rounding).toFixed(_tdp));
+  const finalTotal=parseFloat(roundToRule(_grandRaw,_tc.rounding,_tc.roundingDir).toFixed(_tdp));
   const finalVat=parseFloat((_tc.pricesIncludeVat? finalTotal*_tr/(100+_tr) : finalTotal-_subRaw).toFixed(_tdp));
   const discountedSubtotal=parseFloat((finalTotal-finalVat).toFixed(_tdp));
 
@@ -5072,15 +5072,25 @@ function printDraftReceipt(order,license){
 // and (once rolled out) the live totals.
 // ═══════════════════════════════════════════════════════════════════
 const TAX_CFG_KEY="restopos_tax_config";
-const DEFAULT_TAX_CFG={ vatRate:15, pricesIncludeVat:true, rounding:"none", decimals:2 };
-function getTaxConfig(){ return { ...DEFAULT_TAX_CFG, ...(LS.get(TAX_CFG_KEY)||{}) }; }
+// pricesIncludeVat is always true: the price a cashier types when adding an item
+// is the real VAT-inclusive shelf price, and VAT is extracted from within it —
+// never added on top. It is forced true in getTaxConfig so this can never change.
+const DEFAULT_TAX_CFG={ vatRate:15, pricesIncludeVat:true, rounding:"none", roundingDir:"nearest", decimals:2 };
+function getTaxConfig(){ return { ...DEFAULT_TAX_CFG, ...(LS.get(TAX_CFG_KEY)||{}), pricesIncludeVat:true }; }
 function saveTaxConfig(cfg){
   const merged={ ...DEFAULT_TAX_CFG, ...cfg };
   LS.set(TAX_CFG_KEY,merged);
   try{ const lk=LS.get("restopos_license_v2")?.licenseKey; if(lk&&typeof debouncedSync==="function")debouncedSync(lk,TAX_CFG_KEY,merged); }catch(e){}
   return merged;
 }
-function roundToRule(v,rule){ const n=Number(v)||0; if(rule==="whole")return Math.round(n); if(rule==="nearest_0.05")return Math.round(n*20)/20; return n; }
+function roundToRule(v,rule,dir="nearest"){
+  const n=Number(v)||0;
+  const step=rule==="whole"?1:rule==="nearest_0.05"?0.05:0;
+  if(!step) return n; // "none"
+  const u=n/step;
+  const r=dir==="up"?Math.ceil(u):dir==="down"?Math.floor(u):Math.round(u);
+  return parseFloat((r*step).toFixed(4));
+}
 // Total a set of lines under a tax config. lines: [{price,qty,discPct?,discAmt?}].
 // billDiscPct is an optional whole-bill % discount. All money rounded to cfg.decimals.
 function computeBillTotals(lines, cfg=getTaxConfig(), billDiscPct=0){
@@ -5096,7 +5106,7 @@ function computeBillTotals(lines, cfg=getTaxConfig(), billDiscPct=0){
   let subtotal,vat,grandRaw;
   if(cfg.pricesIncludeVat){ grandRaw=net; vat=grandRaw*rate/(100+rate); subtotal=grandRaw-vat; }
   else { subtotal=net; vat=subtotal*rate/100; grandRaw=subtotal+vat; }
-  const grand=roundToRule(grandRaw,cfg.rounding);
+  const grand=roundToRule(grandRaw,cfg.rounding,cfg.roundingDir);
   const rounding=grand-grandRaw;
   // Re-derive parts from the rounded grand so subtotal + vat always equals it.
   let vatF,subF;
@@ -15799,10 +15809,12 @@ function TaxTotalsSettings(){
               style={{width:110,padding:"9px 12px",border:`1.5px solid ${C.border}`,borderRadius:9,fontSize:15,fontWeight:700,fontFamily:"inherit",textAlign:"center"}}/>
             <span style={{fontSize:14,fontWeight:800,color:C.textMid}}>%</span>
           </div>)}
-        {row("Price entry",`Do your shelf/menu prices already include VAT, or is VAT added on top at the till?`,
-          seg("pricesIncludeVat",[[true,"Prices include VAT"],[false,"Add VAT on top"]]))}
+        {row("Price entry",`The price a cashier types when adding an item is the real VAT-inclusive shelf price. VAT is extracted from within it and is never added on top.`,
+          <div style={{display:"inline-flex",alignItems:"center",gap:8,padding:"9px 14px",borderRadius:9,border:`1.5px solid ${C.primary}`,background:C.primaryLight,color:C.primary,fontSize:13,fontWeight:800}}>🔒 Prices always include VAT</div>)}
         {row("Grand-total rounding",`Optionally round the final payable amount. A rounding line is shown when it applies.`,
           seg("rounding",[["none","None"],["nearest_0.05","Nearest 0.05"],["whole","Whole riyal"]]))}
+        {cfg.rounding!=="none"&&row("Rounding direction",`Which way to round the payable total.`,
+          seg("roundingDir",[["nearest","Nearest"],["up","Always up"],["down","Always down"]]))}
         {row("Decimal places",`How many decimals to show on money amounts.`,
           seg("decimals",[[2,"2 (0.00)"],[3,"3 (0.000)"],[0,"0 (whole)"]]))}
         <div style={{display:"flex",alignItems:"center",gap:12,marginTop:18}}>
