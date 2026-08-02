@@ -49,6 +49,8 @@ export function PrinterSetup({ api = {}, categories = [] }) {
   function selectBill(name) {
     setBill(name);
     try { localStorage.setItem("restopos_qz_bill_printer", name); } catch (e) {}
+    // Picking a real printer resolves the "falling back to default" warning.
+    if (name) { try { localStorage.removeItem("restopos_printer_fell_back"); window.dispatchEvent(new CustomEvent("restopos-printer-state")); } catch (e) {} }
   }
 
   function updateStations(next) { setStations(saveStations(next)); }

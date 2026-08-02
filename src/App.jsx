@@ -14243,6 +14243,73 @@ async function silentPrintHTML(html, { printer, paperWidth = "80mm", a4 = false 
   }
 }
 
+// ── Printer setup state ──────────────────────────────────────────────────
+// Whether this terminal has ever been pointed at a specific printer. Used to
+// decide whether to walk a brand-new client into Printer Setup, and to show
+// the "finish setup" nudge when printing quietly lands on the OS default.
+const PRINTER_FALLBACK_KEY = "restopos_printer_fell_back";
+const PRINTER_PROMPTED_KEY = "restopos_printer_setup_prompted";
+
+function printerIsConfigured() {
+  try {
+    if (localStorage.getItem("restopos_qz_bill_printer")) return true;
+  } catch (e) {}
+  try {
+    return getStations().some((s) => s.printer);
+  } catch (e) { return false; }
+}
+
+function emitPrinterState() {
+  try { window.dispatchEvent(new CustomEvent("restopos-printer-state")); } catch (e) {}
+}
+function notePrinterFallback() {
+  try {
+    if (localStorage.getItem(PRINTER_FALLBACK_KEY) === "1") return; // already flagged
+    localStorage.setItem(PRINTER_FALLBACK_KEY, "1");
+  } catch (e) {}
+  emitPrinterState();
+}
+function notePrinterOK() {
+  try {
+    if (!localStorage.getItem(PRINTER_FALLBACK_KEY)) return;
+    localStorage.removeItem(PRINTER_FALLBACK_KEY);
+  } catch (e) {}
+  emitPrinterState();
+}
+
+// A quiet, dismissible strip — shown only after a print actually fell back to
+// the OS default printer, so it reflects a real problem rather than nagging a
+// shop whose setup is fine.
+function PrinterSetupNudge({ onOpen }) {
+  const [show, setShow] = useState(false);
+  useEffect(() => {
+    const read = () => {
+      let flagged = false, hidden = false;
+      try { flagged = localStorage.getItem(PRINTER_FALLBACK_KEY) === "1"; } catch (e) {}
+      try { hidden = !!sessionStorage.getItem("restopos_printer_nudge_hidden"); } catch (e) {}
+      setShow(flagged && !hidden);
+    };
+    read();
+    window.addEventListener("restopos-printer-state", read);
+    return () => window.removeEventListener("restopos-printer-state", read);
+  }, []);
+  if (!show) return null;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", padding: "7px 14px", background: C.warningLight, borderBottom: `1px solid ${C.warning}55`, flexShrink: 0 }}>
+      <span style={{ fontSize: 12, color: C.warning, fontWeight: 700 }}>
+        🖨️ Printing is going to this computer's default printer — finish printer setup to pick the exact printer and print silently.
+      </span>
+      <button onClick={onOpen} style={{ padding: "4px 12px", background: C.warning, color: "#fff", border: "none", borderRadius: 7, fontSize: 11.5, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>
+        Open Printer Setup
+      </button>
+      <button onClick={() => { try { sessionStorage.setItem("restopos_printer_nudge_hidden", "1"); } catch (e) {} setShow(false); }}
+        style={{ padding: "4px 10px", background: "transparent", color: C.warning, border: `1px solid ${C.warning}66`, borderRadius: 7, fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+        Later
+      </button>
+    </div>
+  );
+}
+
 // ── printSilent — the ONLY printing entry point that is guaranteed dialog-free.
 //
 // Order: QZ Tray (truly silent, chosen printer) → hidden iframe (silent to the
@@ -14260,10 +14327,16 @@ async function printSilent(html, { printer, paperWidth = "80mm" } = {}) {
       if (!isQZConnected()) await connectQZ();
       if (isQZConnected()) {
         await printWithQZ(html, target, paperWidth);
+        notePrinterOK();
         return "QZ Tray";
       }
     } catch (e) { console.warn("[printSilent QZ]", e && e.message); }
   }
+  // Falling through means the ticket goes to whatever printer the OS calls
+  // default — it still prints, but not necessarily on the right device. Record
+  // it so the UI can nudge the client to finish setup instead of leaving them
+  // to discover it from a customer.
+  notePrinterFallback();
   // Hidden iframe — silent, no pop-up, goes to the OS default printer.
   let frame = document.getElementById("restopos-print-frame");
   if (!frame) {
@@ -14482,6 +14555,20 @@ export default function App(){
     return "dashboard";
   });
   function setScreen(s){_setScreen(s);LS.set("restopos_last_screen",s);}
+  // First run on a terminal that has never been pointed at a printer: open
+  // Printer Setup once, so a new client is walked into it instead of finding
+  // out at the first sale. Only for Admin (the roles that can change settings),
+  // only once per terminal, and never during the login screens.
+  useEffect(()=>{
+    if(step!=="app"||!currentUser)return;
+    if(currentUser.role&&currentUser.role!=="Admin")return;
+    try{
+      if(localStorage.getItem(PRINTER_PROMPTED_KEY))return;
+      if(printerIsConfigured()){localStorage.setItem(PRINTER_PROMPTED_KEY,"1");return;}
+      localStorage.setItem(PRINTER_PROMPTED_KEY,"1");
+    }catch(e){return;}
+    setScreen("advanced"); // AdvancedFeatures opens on the Printer Setup tab
+  },[step,currentUser]);
   const [sidebarOpen,setSidebarOpen]=useState(false); // supermarket ☰ menu drawer
   const [terminated,setTerminated]=useState(null);
   const [showTrialSignup,setShowTrialSignup]=useState(false);
@@ -15182,6 +15269,7 @@ export default function App(){
     <div dir={dir(lang)} style={{fontFamily:lang==="ar"?"'Tajawal','Plus Jakarta Sans',sans-serif":"'Plus Jakarta Sans','Tajawal',sans-serif",background:C.bg,height:"100vh",display:"flex",flexDirection:"column",overflow:"hidden",zoom:`${uiScale}%`}}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Tajawal:wght@400;500;700;800&display=swap');html,body,#root{height:100%;margin:0;padding:0;width:100%}*{box-sizing:border-box;margin:0;padding:0}::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-track{background:${C.bg}}::-webkit-scrollbar-thumb{background:${C.border};border-radius:3px}input,select{outline:none}input:focus,select:focus{border-color:${C.primary}!important}@media print{header,nav{display:none!important}}${lang==="ar"?"body,button,input,select,textarea{font-family:'Tajawal',sans-serif!important}":""}`}</style>
       {TRIAL&&<TrialBanner license={license} onModeChange={handleTrialModeChange} onRegister={handleRegisterFromTrial}/>}
+      <PrinterSetupNudge onOpen={()=>setScreen("advanced")}/>
       <div style={{display:"flex",alignItems:"stretch",flexShrink:0,zIndex:100,boxShadow:"0 2px 12px rgba(0,0,0,0.18)",minHeight:50,width:"100%",flexWrap:"nowrap"}}>
         <div style={{background:"linear-gradient(135deg,#1A3D2B 0%,#1F4D36 100%)",display:"flex",alignItems:"center",gap:8,padding:"0 12px",flexShrink:0,borderRight:"1px solid rgba(255,255,255,0.1)"}}>
           {superMode&&<button onClick={()=>setSidebarOpen(true)} title="Menu" aria-label="Open menu" style={{background:"rgba(255,255,255,0.1)",border:"1px solid rgba(255,255,255,0.18)",borderRadius:7,width:30,height:30,display:"flex",flexDirection:"column",justifyContent:"center",alignItems:"center",gap:3,cursor:"pointer",flexShrink:0,padding:0}}>
