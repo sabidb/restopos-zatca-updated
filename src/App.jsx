@@ -22,7 +22,7 @@ import { logActivity } from "./lib/activity.js";
 import { initSync, debouncedSync, syncKeyToFirestore } from "./lib/sync.js";
 import { getLang, setLangStore, t, dir } from "./i18n/index.js";
 import { BUSINESS_TYPES, DEFAULT_BUSINESS_TYPE, getBusinessType, bizProfile, bizFeature, isSupermarket } from "./config/businessTypes.js";
-import { rolesForProfile, DEFAULT_PINS } from "./config/roles.js";
+import { rolesForProfile, DEFAULT_PINS, ROLES, roleRank, roleAtLeast } from "./config/roles.js";
 import { requiresApproval } from "./lib/permissions.js";
 import { ApprovalGate } from "./components/ApprovalGate.jsx";
 import { loyaltyRulesForProfile } from "./config/loyalty.js";
@@ -3660,7 +3660,7 @@ function PayKeyboard(){
   );
 }
 
-function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1,kotNo=1,customers=[],customerName:initCustName="",customerPhone:initCustPhone="",orderType:initOrderType="takeaway"}){
+function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1,kotNo=1,customers=[],customerName:initCustName="",customerPhone:initCustPhone="",orderType:initOrderType="takeaway",initManualDiscount="",initDiscountType="%",initCoupon=""}){
   // ── State ────────────────────────────────────────────────────────
   const [method,setMethod]=useState("Cash");
   const [cashGiven,setCashGiven]=useState("");
@@ -3669,8 +3669,8 @@ function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1
   const [cashAmount,setCashAmount]=useState("");
   const [promoCode,setPromoCode]=useState("");
   const [appliedPromo,setAppliedPromo]=useState(null);
-  const [manualDiscount,setManualDiscount]=useState("");
-  const [discountType,setDiscountType]=useState("%");
+  const [manualDiscount,setManualDiscount]=useState(initManualDiscount?String(initManualDiscount):"");
+  const [discountType,setDiscountType]=useState(initDiscountType||"%");
   const [promoError,setPromoError]=useState("");
   const [splitError,setSplitError]=useState("");
   const [printAndSave,setPrintAndSave]=useState(()=>{
@@ -3810,6 +3810,15 @@ function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1
     if(match){setAppliedPromo(match);setPromoError("");}
     else{setPromoError("Invalid or inactive coupon code.");}
   }
+
+  // Seed a coupon passed in from the till (e.g. the Hypermarket classic-till
+  // "Coupon" button) so it's already applied when the payment sheet opens.
+  useEffect(()=>{
+    if(!initCoupon)return;
+    const m=promos.find(p=>p.code.toLowerCase()===String(initCoupon).trim().toLowerCase()&&p.active);
+    if(m){setAppliedPromo(m);setPromoCode(m.code);}
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[]);
 
   // ── Test printer ─────────────────────────────────────────────────
   function testPrinter(){
@@ -5048,7 +5057,7 @@ function printDraftReceipt(order,license){
 // ═══════════════════════════════════════════════════════════════════
 // POS SCREEN
 // ═══════════════════════════════════════════════════════════════════
-function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang="en",currentUser=null}){
+function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang="en",currentUser=null,goScreen=null,onLogout=null}){
   const allCats=[...new Set(items.map(i=>i.category))];
   const [activeCat,setActiveCat]=useState("ALL");const [cart,setCart]=useState([]);const [orderType,setOrderType]=useState("takeaway");const [selectedTable,setSelectedTable]=useState(null);const [billType,setBillType]=useState("normal");
   const [showPayment,setShowPayment]=useState(false);const [showReceipt,setShowReceipt]=useState(false);const [lastOrder,setLastOrder]=useState(null);const [lastZatcaInvoice,setLastZatcaInvoice]=useState(null);
@@ -5071,6 +5080,24 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   // "B" Scan + Keypad, "C" Scan + Slim shelf. Read fresh so a Settings change
   // applies as soon as the cashier returns to the POS.
   const superLayout=superMode?(LS.get("restopos_super_layout")||"A"):null;
+  // ── Hypermarket "Classic Till" (Layout D, FEC-style) ────────────────
+  // A dense retail till (item-no bar, cart grid, function-button matrix,
+  // numeric keypad, totals block, bottom action strip). Only offered to the
+  // hypermarket business type; every button is wired to real app behaviour.
+  const isHyper=getBusinessType(license)==="hypermarket";
+  const fecTill=superMode&&isHyper&&superLayout==="D";
+  const [fecEntry,setFecEntry]=useState("");        // Item no. / numeric keypad buffer
+  const [fecTotalDiscPct,setFecTotalDiscPct]=useState(0); // whole-bill discount %
+  const [fecStatus,setFecStatus]=useState("");      // one-line status/feedback strip
+  const [mgrSession,setMgrSession]=useState(false);  // a Manager/Supervisor signed in → gated actions unlocked
+  const [pinPrompt,setPinPrompt]=useState(null);     // {title,minRole,onOk}
+  const [approval,setApproval]=useState(null);       // {action,onOk} → <ApprovalGate>
+  const [searchModal,setSearchModal]=useState(null); // {mode:"add"|"view"}
+  const [custModal,setCustModal]=useState(null);     // "select" | "edit" | "card" | "contact"
+  const [acctModal,setAcctModal]=useState(false);    // Payment into Account
+  const [suspendModal,setSuspendModal]=useState(false);
+  const [staffModal,setStaffModal]=useState(false);
+  const [fecCoupon,setFecCoupon]=useState("");       // coupon code queued for payment
   const [weighPick,setWeighPick]=useState(false); // ⚖ toolbar → pick a weighed product to weigh
   const [shelfOpen,setShelfOpen]=useState(true); // Layout C quick-items shelf open/closed
   const [weighItem,setWeighItem]=useState(null);const [weighKg,setWeighKg]=useState("");
@@ -5331,6 +5358,8 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     // Window already closed by handleConfirm — just clear state
     setCart([]);
     setCustomerName("");setCustomerPhone("");setCustomerAddress("");setSelectedRow(null);
+    // Classic-till (Layout D) extras: clear per-bill discount/coupon/entry too.
+    setFecTotalDiscPct(0);setFecCoupon("");setFecEntry("");setFecStatus("");
     if(superMode)focusScanner(); // ready for the next customer's scan, hands-free
     // Sync to cloud
     try{
@@ -5688,6 +5717,178 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   const superModeChip=(
     <span style={{marginLeft:"auto",flexShrink:0,fontSize:11,fontWeight:800,color:"#fff",background:C.primary,padding:"5px 11px",borderRadius:999,whiteSpace:"nowrap"}}>🛒 Supermarket</span>
   );
+
+  // ══════════════════════════════════════════════════════════════════
+  // HYPERMARKET CLASSIC TILL (Layout D) — computations, handlers, JSX.
+  // Every control below drives real POS state; nothing is a placeholder.
+  // ══════════════════════════════════════════════════════════════════
+  const FEC={olive:"#7d8b3a",oliveD:"#67722f",orange:"#d47a1e",orangeD:"#bd6412",blue:"#3a7ca5",grey:"#a9ac93",bg:"#eef1e6",panel:"#fbfcf7",line:"#d5dbc4",head:"#e6ead6",text:"#2c3a1b",num:"#f4f6ec"};
+  // Per-line discount (Disc% column). Amount = gross − line discount.
+  const fecLineGross=(it)=>it.price*it.qty;
+  const fecLineDiscAmt=(it)=>Math.min(fecLineGross(it),(Number(it.discAmt)||0)+fecLineGross(it)*(Number(it.discPct)||0)/100);
+  const fecLineNet=(it)=>Math.max(0,fecLineGross(it)-fecLineDiscAmt(it));
+  const fecGross=cart.reduce((s,i)=>s+fecLineGross(i),0);
+  const fecLineDiscTotal=cart.reduce((s,i)=>s+fecLineDiscAmt(i),0);
+  const fecAfterLine=Math.max(0,fecGross-fecLineDiscTotal);
+  const fecBillDisc=parseFloat((fecLineDiscTotal+fecAfterLine*(Number(fecTotalDiscPct)||0)/100).toFixed(2));
+  const fecNet=parseFloat(Math.max(0,fecGross-fecBillDisc).toFixed(2));
+  const fecVatAmt=parseFloat((fecNet*(15/115)).toFixed(2));
+  const flash=(m)=>setFecStatus(m);
+  function fecClearSale(){setCart([]);setSelectedRow(null);setFecTotalDiscPct(0);setFecCoupon("");setFecEntry("");}
+  function fecNeedRow(){ if(selectedRow===null||!cart[selectedRow]){flash("⚠ Select a line first");return true;} return false; }
+  // Read a number from the keypad buffer if present, else ask.
+  function fecReadNum(label){ const raw=(fecEntry&&fecEntry.trim())?fecEntry.trim():window.prompt(label); setFecEntry(""); if(raw==null)return null; const n=parseFloat(raw); return isNaN(n)?null:n; }
+  // Manager-approval gate: skip when a Manager/Supervisor is already signed in.
+  function fecGuard(action,ok){ if(mgrSession||!requiresApproval(action,license)){ok();return;} setApproval({action,onOk:ok}); }
+  function fecVoidLine(){ if(fecNeedRow())return; fecGuard("sale.void",()=>{ setCart(p=>p.filter((_,i)=>i!==selectedRow)); setSelectedRow(null); flash("✓ Line voided"); focusScanner(); }); }
+  function fecVoidAll(){ if(!cart.length){flash("Cart already empty");return;} fecGuard("sale.void",()=>{ fecClearSale(); flash("✓ All lines voided"); focusScanner(); }); }
+  function fecChangePrice(){ if(fecNeedRow())return; fecGuard("sale.priceOverride",()=>{ const v=fecReadNum("New unit price (SAR):"); if(v==null||v<0){flash("✗ Invalid price");return;} setCart(p=>p.map((c,i)=>i===selectedRow?{...c,price:v}:c)); flash("✓ Price changed"); }); }
+  function fecLineDiscAmount(){ if(fecNeedRow())return; const v=fecReadNum("Line discount amount (SAR):"); if(v==null||v<0){flash("✗ Invalid amount");return;} setCart(p=>p.map((c,i)=>i===selectedRow?{...c,discAmt:v,discPct:0}:c)); flash("✓ Line discount applied"); }
+  function fecLineDiscPct(){ if(fecNeedRow())return; const v=fecReadNum("Line discount %:"); if(v==null||v<0||v>100){flash("✗ Invalid %");return;} setCart(p=>p.map((c,i)=>i===selectedRow?{...c,discPct:v,discAmt:0}:c)); flash("✓ Line discount applied"); }
+  function fecTotalDisc(){ const v=fecReadNum("Whole-bill discount %:"); if(v==null||v<0||v>100){flash("✗ Invalid %");return;} setFecTotalDiscPct(v); flash("✓ Bill discount "+v+"%"); }
+  function fecSetQty(){ if(fecNeedRow())return; const v=fecReadNum("Quantity:"); if(v==null||v<=0){flash("✗ Invalid qty");return;} setCart(p=>p.map((c,i)=>i===selectedRow?{...c,qty:v}:c)); flash("✓ Qty updated"); }
+  function fecEnter(){ const code=(fecEntry||"").trim(); if(!code){focusScanner();return;} handleBarcodeSearch(code); setFecEntry(""); }
+  function fecLineMove(dir){ setSelectedRow(r=>{ if(!cart.length)return null; if(r===null)return dir>0?0:cart.length-1; return Math.max(0,Math.min(cart.length-1,r+dir)); }); }
+  function fecPinLogin(minRole,label){ setPinPrompt({title:label,minRole,onOk:(role)=>{ setMgrSession(true); flash("✓ "+role+" signed in"); }}); }
+  function fecCouponBtn(){ const code=(window.prompt("Coupon code:")||"").trim(); if(!code)return; const m=(promos||[]).find(p=>p.code.toLowerCase()===code.toLowerCase()&&p.active); if(m){setFecCoupon(m.code);flash("✓ Coupon "+m.code+" queued — applies at payment");}else{flash("✗ Invalid or inactive coupon");} }
+  function fecSuspend(){ if(!cart.length){flash("Nothing to suspend");return;} const list=LS.get("restopos_suspended")||[]; list.unshift({id:Date.now(),at:new Date().toISOString(),by:currentUser?.name||"",cart,customerName,customerPhone,totalDiscPct:fecTotalDiscPct}); LS.set("restopos_suspended",list.slice(0,50)); fecClearSale(); setCustomerName("");setCustomerPhone(""); flash("✓ Sale suspended"); }
+  function fecResume(s){ setCart(s.cart||[]); setCustomerName(s.customerName||""); setCustomerPhone(s.customerPhone||""); setFecTotalDiscPct(s.totalDiscPct||0); const list=(LS.get("restopos_suspended")||[]).filter(x=>x.id!==s.id); LS.set("restopos_suspended",list); setSuspendModal(false); setSelectedRow(null); flash("✓ Sale resumed"); }
+  function fecAccountPayment(cust,amt){ if(!(amt>0)){flash("✗ Invalid amount");return;} const list=LS.get("restopos_customers")||[]; const upd=list.map(c=>c.id===cust.id?{...c,creditBalance:parseFloat(((c.creditBalance||0)-amt).toFixed(2))}:c); LS.set("restopos_customers",upd); const lk=LS.get("restopos_license_v2")?.licenseKey; if(lk)debouncedSync(lk,"restopos_customers",upd); setAcctModal(false); flash("✓ SAR "+amt.toFixed(2)+" received into "+cust.name+"'s account"); }
+  function fecTender(){ if(!cart.length){flash("Cart is empty");return;} setShowPayment(true); }
+  function fecOpenTransactions(){ if(goScreen)goScreen("transactions"); else {const printed=(sales||[]).filter(s=>s.status!=="voided");if(printed.length){setPrevAllDays(false);setPrevIndex(0);setShowPrevBill(true);}else flash("No transactions yet");} }
+  function fecLogoff(){ if(onLogout){ if(window.confirm("Sign out now?")) onLogout(); } else flash("Logoff unavailable"); }
+  // Attach a saved customer to the sale.
+  function fecPickCustomer(c){ setCustomerName(c.name||""); setCustomerPhone(c.phone||""); setCustModal(null); flash("✓ Customer: "+(c.name||c.phone||"")); }
+
+  // Bilingual olive-style till button (Arabic tag over English label, like the FEC screen).
+  const fecBtn=(ar,en,onClick,bg=FEC.olive,fg="#fff",opts={})=>(
+    <button onClick={onClick} disabled={opts.disabled} title={en}
+      style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:1,padding:"5px 3px",borderRadius:6,border:"1px solid rgba(0,0,0,0.18)",background:opts.disabled?"#c9cbb6":bg,color:fg,cursor:opts.disabled?"not-allowed":"pointer",fontFamily:"inherit",lineHeight:1.05,minHeight:50,textAlign:"center",opacity:opts.disabled?0.7:1,boxShadow:"inset 0 1px 0 rgba(255,255,255,0.25),0 1px 1px rgba(0,0,0,0.12)"}}>
+      <span dir="rtl" style={{fontSize:9,opacity:0.9,fontWeight:700,whiteSpace:"nowrap"}}>{ar}</span>
+      <span style={{fontSize:11,fontWeight:800}}>{en}</span>
+    </button>
+  );
+  const fecNumKey=(label,onClick,bg=FEC.num,fg=FEC.text)=>(
+    <button onClick={onClick} style={{padding:"0",borderRadius:6,border:"1px solid rgba(0,0,0,0.18)",background:bg,color:fg,cursor:"pointer",fontFamily:"inherit",fontSize:18,fontWeight:800,minHeight:50,boxShadow:"inset 0 1px 0 rgba(255,255,255,0.4),0 1px 1px rgba(0,0,0,0.1)"}}>{label}</button>
+  );
+  const fecPad=(v)=>{ setFecEntry(s=>s+v); focusScanner(); };
+
+  const fecLayout=(
+    <div style={{flex:1,display:"flex",flexDirection:"column",background:FEC.bg,overflow:"hidden",fontFamily:"'Segoe UI',system-ui,sans-serif",color:FEC.text}}>
+      {/* Item no. + status + business */}
+      <div style={{display:"flex",gap:8,padding:"8px 10px",background:FEC.panel,borderBottom:`1px solid ${FEC.line}`,alignItems:"stretch"}}>
+        <div style={{flex:1,display:"flex",flexDirection:"column",gap:5,minWidth:0}}>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <span style={{fontSize:12,fontWeight:700,color:FEC.text,width:64,flexShrink:0}}>Item no.:</span>
+            <input ref={barcodeRef} value={fecEntry} onChange={e=>setFecEntry(e.target.value)}
+              onKeyDown={e=>{if(e.key==="Enter")fecEnter();}}
+              placeholder={priceCheck?"🔍 Price check — scan to view":"Scan barcode / type item no."}
+              style={{flex:1,minWidth:0,padding:"7px 10px",border:`1.5px solid ${priceCheck?C.warning:"#4a90c2"}`,borderRadius:5,fontSize:15,fontWeight:600,fontFamily:"inherit",background:"#fff",color:"#111"}}/>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <span style={{fontSize:12,fontWeight:700,width:64,flexShrink:0,color:FEC.text}}>Status:</span>
+            <div style={{flex:1,padding:"6px 10px",border:`1px solid ${FEC.line}`,borderRadius:5,fontSize:12,fontWeight:700,background:"#fff",color:fecStatus.startsWith("✗")||fecStatus.startsWith("⚠")?C.danger:C.primary,minHeight:16}}>{fecStatus||`Ready — ${cart.length} item(s)`}{fecCoupon?`  ·  🎟 ${fecCoupon}`:""}{(customerName||customerPhone)?`  ·  👤 ${customerName||customerPhone}`:""}</div>
+          </div>
+        </div>
+        <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",justifyContent:"center",paddingLeft:8,borderLeft:`1px solid ${FEC.line}`}}>
+          <span style={{fontSize:15,fontWeight:900,color:C.primary,letterSpacing:"-0.01em"}}>RestoPos</span>
+          <span style={{fontSize:10,fontWeight:700,color:FEC.text,opacity:0.7,whiteSpace:"nowrap"}}>{license?.businessName||"Hypermarket"}</span>
+        </div>
+      </div>
+
+      {/* Body: cart grid (left) + function/keypad (right) */}
+      <div style={{flex:1,display:"flex",overflow:"hidden"}}>
+        {/* LEFT — cart grid + totals */}
+        <div style={{flex:1,display:"flex",flexDirection:"column",borderRight:`1px solid ${FEC.line}`,minWidth:0,background:FEC.panel}}>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 52px 74px 56px 84px",gap:0,background:FEC.head,borderBottom:`1px solid ${FEC.line}`,fontSize:11,fontWeight:800,color:FEC.text}}>
+            {["Description","Qty","Price","Disc%","Amount"].map((h,i)=><div key={h} style={{padding:"7px 8px",textAlign:i===0?"left":"right",borderRight:i<4?`1px solid ${FEC.line}`:"none"}}>{h}</div>)}
+          </div>
+          <div style={{flex:1,overflowY:"auto"}}>
+            {cart.length===0
+              ? <div style={{padding:"40px 12px",textAlign:"center",color:"#9aa17f",fontSize:13}}>Scan or type an item number to begin</div>
+              : cart.map((it,idx)=>{ const dpct=it.discPct?Number(it.discPct):(it.discAmt&&fecLineGross(it)>0?parseFloat((fecLineDiscAmt(it)/fecLineGross(it)*100).toFixed(1)):0); return(
+                <div key={idx} onClick={()=>setSelectedRow(idx===selectedRow?null:idx)}
+                  style={{display:"grid",gridTemplateColumns:"1fr 52px 74px 56px 84px",cursor:"pointer",fontSize:12.5,fontWeight:600,background:selectedRow===idx?"#dcecc6":(idx%2?"#f4f6ec":"#fff"),borderBottom:`1px solid ${FEC.line}`,color:"#1f2a12"}}>
+                  <div style={{padding:"8px",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{it.name}{it.weighed?" ⚖":""}</div>
+                  <div style={{padding:"8px",textAlign:"right"}}>{it.weighed?it.qty:it.qty}</div>
+                  <div style={{padding:"8px",textAlign:"right"}}>{it.price.toFixed(2)}</div>
+                  <div style={{padding:"8px",textAlign:"right",color:dpct>0?C.danger:"inherit"}}>{dpct>0?dpct:"—"}</div>
+                  <div style={{padding:"8px",textAlign:"right",fontWeight:800}}>{fecLineNet(it).toFixed(2)}</div>
+                </div>
+              );})}
+          </div>
+          {/* Totals */}
+          <div style={{borderTop:`2px solid ${FEC.line}`,background:FEC.panel,padding:"8px 12px"}}>
+            {[["Total",fecGross],["Discount",fecBillDisc],["VAT (incl.)",fecVatAmt],["Payment",0],["Balance",fecNet]].map(([l,v],i)=>(
+              <div key={l} style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",padding:"3px 0",borderTop:i===4?`1px solid ${FEC.line}`:"none",marginTop:i===4?4:0}}>
+                <span style={{fontSize:l==="Balance"?15:12.5,fontWeight:l==="Balance"?900:700,color:FEC.text}}>{l}</span>
+                <span style={{fontSize:l==="Balance"?18:13,fontWeight:l==="Balance"?900:800,color:l==="Balance"?C.primary:(l==="Discount"&&v>0?C.danger:FEC.text),fontVariantNumeric:"tabular-nums"}}>{Number(v).toFixed(2)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* RIGHT — function matrix + keypad */}
+        <div style={{width:"clamp(430px, 52%, 620px)",flexShrink:0,display:"flex",flexDirection:"column",background:FEC.bg,overflow:"hidden"}}>
+          <div style={{flex:1,display:"flex",gap:6,padding:"6px",overflow:"auto"}}>
+            {/* Function buttons */}
+            <div style={{flex:1,display:"grid",gridTemplateColumns:"repeat(4,1fr)",gridAutoRows:"1fr",gap:5,minWidth:0}}>
+              {fecBtn("حذف الخط","Void Line",fecVoidLine,FEC.orange)}
+              {fecBtn("حذف الكل","Void All",fecVoidAll,FEC.grey)}
+              {fecBtn("فحص السعر","Price Check",()=>{setPriceCheck(p=>!p);flash(priceCheck?"Price check off":"🔍 Price check ON");},priceCheck?C.warning:FEC.olive)}
+              {fecBtn("تغيير السعر","Change Price",fecChangePrice,FEC.olive)}
+              {fecBtn("بحث","Search",()=>setSearchModal({mode:"add"}),FEC.olive)}
+              {fecBtn("استعلام","Lookup",()=>setSearchModal({mode:"view"}),FEC.olive)}
+              {fecBtn("كوبون","Coupon",fecCouponBtn,FEC.olive)}
+              {fecBtn("خصم الإجمالي","Total Disc %",fecTotalDisc,FEC.olive)}
+              {fecBtn("مبلغ الخصم","Line Disc Amt",fecLineDiscAmount,FEC.olive)}
+              {fecBtn("نسبة الخصم","Line Disc %",fecLineDiscPct,FEC.olive)}
+              {fecBtn("اختيار العميل","Select Customer",()=>setCustModal("select"),FEC.olive)}
+              {fecBtn("تعديل العميل","Edit Customer",()=>setCustModal("edit"),FEC.olive)}
+              {fecBtn("بطاقة العضوية","Member Card",()=>setCustModal("card"),FEC.olive)}
+              {fecBtn("اتصال العضو","Member Contact",()=>setCustModal("contact"),FEC.olive)}
+              {fecBtn("بحث الموظف","Staff Lookup",()=>setStaffModal(true),FEC.olive)}
+              {fecBtn("دخول المدير","Manager Login",()=>fecPinLogin("Manager","Manager Login"),FEC.blue)}
+            </div>
+            {/* Keypad */}
+            <div style={{width:210,flexShrink:0,display:"grid",gridTemplateColumns:"1.15fr 1fr 1fr 1fr",gridAutoRows:"1fr",gap:5}}>
+              {fecBtn("سطر أعلى","Line Up",()=>fecLineMove(-1),FEC.olive)}
+              {fecNumKey("7",()=>fecPad("7"))}{fecNumKey("8",()=>fecPad("8"))}{fecNumKey("9",()=>fecPad("9"))}
+              {fecBtn("سطر أسفل","Line Down",()=>fecLineMove(1),FEC.olive)}
+              {fecNumKey("4",()=>fecPad("4"))}{fecNumKey("5",()=>fecPad("5"))}{fecNumKey("6",()=>fecPad("6"))}
+              {fecBtn("الكمية","QTY",fecSetQty,FEC.blue)}
+              {fecNumKey("1",()=>fecPad("1"))}{fecNumKey("2",()=>fecPad("2"))}{fecNumKey("3",()=>fecPad("3"))}
+              {fecNumKey(".",()=>fecPad("."))}
+              {fecNumKey("0",()=>fecPad("0"))}{fecNumKey("00",()=>fecPad("00"))}{fecNumKey("⌫",()=>setFecEntry(s=>s.slice(0,-1)),FEC.grey,"#fff")}
+              {fecBtn("إلغاء","Cancel",()=>{setFecEntry("");setSelectedRow(null);flash("Cleared");},FEC.orange)}
+              <button onClick={fecEnter} style={{gridColumn:"span 3",borderRadius:6,border:"1px solid rgba(0,0,0,0.2)",background:FEC.oliveD,color:"#fff",cursor:"pointer",fontFamily:"inherit",fontSize:14,fontWeight:900,boxShadow:"inset 0 1px 0 rgba(255,255,255,0.25)"}}><span dir="rtl" style={{fontSize:9,opacity:0.9,display:"block"}}>إدخال</span>ENTER</button>
+            </div>
+          </div>
+          {/* START + Logoff */}
+          <div style={{display:"flex",gap:6,padding:"0 6px 6px"}}>
+            <button onClick={fecEnter} style={{flex:1,padding:"12px 0",borderRadius:7,border:"none",background:`linear-gradient(180deg,${FEC.orange},${FEC.orangeD})`,color:"#fff",cursor:"pointer",fontFamily:"inherit",fontSize:16,fontWeight:900,letterSpacing:"0.02em",boxShadow:"inset 0 1px 0 rgba(255,255,255,0.3)"}}>بدأ / START</button>
+            <button onClick={fecLogoff} style={{width:130,padding:"12px 0",borderRadius:7,border:"none",background:FEC.blue,color:"#fff",cursor:"pointer",fontFamily:"inherit",fontSize:12,fontWeight:800}}><span dir="rtl" style={{fontSize:9,opacity:0.9,display:"block"}}>تسجيل الخروج</span>Logoff</button>
+          </div>
+          {/* Bottom action strip */}
+          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6,padding:"0 6px 6px"}}>
+            {fecBtn("استرجاع","Refund",()=>{ if(goScreen)goScreen("transactions"); else flash("Open Transactions to refund"); },FEC.olive)}
+            {fecBtn("العمليات","Transactions",fecOpenTransactions,FEC.olive)}
+            {fecBtn("العميل","Customer",()=>setCustModal("select"),FEC.olive)}
+            {fecBtn("عمليات الدفع","Tender / Pay",fecTender,C.primary)}
+            {fecBtn("دفعة للحساب","Payment to Account",()=>setAcctModal(true),FEC.olive)}
+            {fecBtn("تعليق","Suspended",()=>setSuspendModal(true),FEC.olive)}
+          </div>
+        </div>
+      </div>
+
+      {/* Status bar */}
+      <div style={{display:"flex",alignItems:"center",gap:0,background:FEC.head,borderTop:`1px solid ${FEC.line}`,fontSize:11,fontWeight:700,color:FEC.text}}>
+        {[`SALES`,`FMode: ITEM`,`Receipt: ${String(vno).padStart(6,"0")}`,`Staff: ${currentUser?.name||"—"}`,`Mgr: ${mgrSession?"Yes":"No"}`].map((s,i)=><div key={i} style={{padding:"6px 12px",borderRight:`1px solid ${FEC.line}`,whiteSpace:"nowrap"}}>{s}</div>)}
+        <div style={{marginLeft:"auto",padding:"6px 12px",whiteSpace:"nowrap"}}>{new Date().toLocaleDateString("en-GB")} {new Date().toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})}</div>
+      </div>
+    </div>
+  );
+
   return(
     <div style={{display:"flex",height:`calc(100vh - ${TRIAL?82:52}px)`,overflow:"hidden"}}>
       {/* Previous Bills — step backward through printed invoices */}
@@ -5847,7 +6048,127 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
         }
       `}</style>
       <style>{`@keyframes slideDown{from{opacity:0;transform:translateX(-50%) translateY(-20px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}`}</style>
-      {showPayment&&<PaymentModal total={total} subtotal={subtotal} vat={vat} promos={promos} license={license} vno={vno} kotNo={kotNo} customers={LS.get("restopos_customers")||[]} customerName={customerName} customerPhone={customerPhone} orderType={orderType} onConfirm={confirmPayment} onClose={()=>setShowPayment(false)}/>}
+      {showPayment&&<PaymentModal total={total} subtotal={subtotal} vat={vat} promos={promos} license={license} vno={vno} kotNo={kotNo} customers={LS.get("restopos_customers")||[]} customerName={customerName} customerPhone={customerPhone} orderType={orderType} onConfirm={confirmPayment} onClose={()=>setShowPayment(false)}
+        initManualDiscount={fecTill&&fecBillDisc>0?fecBillDisc:""} initDiscountType={fecTill&&fecBillDisc>0?"SAR":"%"} initCoupon={fecTill?fecCoupon:""}/>}
+
+      {/* ══ Hypermarket classic-till (Layout D) support modals ══ */}
+      {approval&&<ApprovalGate action={approval.action} license={license}
+        onApproved={(r)=>{ setMgrSession(true); approval.onOk&&approval.onOk(r); setApproval(null); }}
+        onCancel={()=>setApproval(null)}/>}
+      {pinPrompt&&(()=>{
+        const pins={...DEFAULT_PINS,...(LS.get("restopos_pins")||{})};
+        const minRole=pinPrompt.minRole||"Manager";
+        const submit=(entered)=>{
+          const val=(entered||"").trim();
+          if(!val)return;
+          const match=Object.keys(pins).filter(r=>pins[r]&&String(pins[r])===val&&ROLES[r]).sort((a,b)=>ROLES[b].rank-ROLES[a].rank)[0];
+          if(!match){flash("✗ PIN not recognised");return;}
+          if(!roleAtLeast(match,minRole)){flash(`✗ ${match} can't sign in here — needs ${minRole}+`);return;}
+          setPinPrompt(null); pinPrompt.onOk&&pinPrompt.onOk(match);
+        };
+        return <Modal title={pinPrompt.title||"Sign in"} onClose={()=>setPinPrompt(null)} width={360}>
+          <div style={{fontSize:13,color:C.textMid,marginBottom:12}}>Enter a {ROLES[minRole]?.label||minRole}-or-above PIN.</div>
+          <input type="password" inputMode="numeric" autoFocus
+            onKeyDown={e=>{if(e.key==="Enter")submit(e.target.value);}}
+            placeholder="PIN" style={{width:"100%",padding:"12px 14px",border:`1.5px solid ${C.border}`,borderRadius:10,fontSize:18,letterSpacing:"0.3em",textAlign:"center",fontFamily:"inherit"}} id="fec-pin-input"/>
+          <div style={{display:"flex",gap:10,marginTop:16}}>
+            <Btn variant="ghost" onClick={()=>setPinPrompt(null)} style={{flex:1}}>Cancel</Btn>
+            <Btn onClick={()=>submit(document.getElementById("fec-pin-input")?.value)} style={{flex:1}}>Sign in</Btn>
+          </div>
+        </Modal>;
+      })()}
+      {searchModal&&(()=>{
+        const q=(fecEntry||"").trim().toLowerCase();
+        const list=(items||[]).filter(it=>it.active!==false).filter(it=>!q||it.name?.toLowerCase().includes(q)||String(it.barcode||"").includes(q)).slice(0,60);
+        const pick=(it)=>{ if(searchModal.mode==="view"){ setSearchModal(null); setScannedItem(it); } else { setSearchModal(null); addToCart(it); flash("+ "+it.name); } };
+        return <Modal title={searchModal.mode==="view"?"🔎 Price Lookup":"🔎 Product Search"} onClose={()=>setSearchModal(null)} width={520}>
+          <input autoFocus value={fecEntry} onChange={e=>setFecEntry(e.target.value)} placeholder="Type name or barcode…" style={{width:"100%",padding:"10px 12px",border:`1.5px solid ${C.border}`,borderRadius:9,fontSize:14,fontFamily:"inherit",marginBottom:10}}/>
+          <div style={{maxHeight:"50vh",overflowY:"auto",display:"flex",flexDirection:"column",gap:4}}>
+            {list.length===0?<div style={{padding:16,textAlign:"center",color:C.textLight,fontSize:13}}>No matching products</div>:list.map(it=>(
+              <button key={it.id} onClick={()=>pick(it)} style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,padding:"9px 12px",border:`1px solid ${C.border}`,borderRadius:8,background:"#fff",cursor:"pointer",fontFamily:"inherit",textAlign:"left"}}>
+                <span style={{fontSize:13,fontWeight:700,color:C.text}}>{it.name}{it.weighed?" ⚖":""}<span style={{fontSize:11,color:C.textLight,fontWeight:600}}>  {it.barcode?("· "+it.barcode):""}</span></span>
+                <span style={{fontSize:14,fontWeight:900,color:C.primary,whiteSpace:"nowrap"}}>{fmtSAR(it.price)}{it.weighed?"/kg":""}</span>
+              </button>
+            ))}
+          </div>
+        </Modal>;
+      })()}
+      {custModal&&(()=>{
+        const all=LS.get("restopos_customers")||[];
+        if(custModal==="edit"){
+          return <Modal title="✏️ Customer on this sale" onClose={()=>setCustModal(null)} width={380}>
+            <div style={{display:"flex",flexDirection:"column",gap:10}}>
+              <Inp label="Name" value={customerName} onChange={setCustomerName} placeholder="Customer name"/>
+              <Inp label="Phone" value={customerPhone} onChange={setCustomerPhone} placeholder="05xxxxxxxx"/>
+              <div style={{display:"flex",gap:10,marginTop:4}}>
+                <Btn variant="ghost" onClick={()=>{setCustomerName("");setCustomerPhone("");setCustModal(null);flash("Customer cleared");}} style={{flex:1}}>Remove</Btn>
+                <Btn onClick={()=>{setCustModal(null);flash("✓ Customer updated");}} style={{flex:1}}>Done</Btn>
+              </div>
+            </div>
+          </Modal>;
+        }
+        const label=custModal==="card"?"💳 Member Card lookup":custModal==="contact"?"📞 Member Contact lookup":"👥 Select Customer";
+        const q=(fecEntry||"").trim().toLowerCase();
+        const list=all.filter(c=>!q||c.name?.toLowerCase().includes(q)||String(c.phone||"").includes(q)||String(c.id||"").includes(q)).slice(0,60);
+        return <Modal title={label} onClose={()=>setCustModal(null)} width={460}>
+          <input autoFocus value={fecEntry} onChange={e=>setFecEntry(e.target.value)} placeholder={custModal==="contact"?"Search by phone…":custModal==="card"?"Search by card / ID / name…":"Search name or phone…"} style={{width:"100%",padding:"10px 12px",border:`1.5px solid ${C.border}`,borderRadius:9,fontSize:14,fontFamily:"inherit",marginBottom:10}}/>
+          <div style={{maxHeight:"50vh",overflowY:"auto",display:"flex",flexDirection:"column",gap:4}}>
+            {all.length===0?<div style={{padding:16,textAlign:"center",color:C.textLight,fontSize:13}}>No customers yet — add them in the Customers screen.</div>
+            :list.length===0?<div style={{padding:16,textAlign:"center",color:C.textLight,fontSize:13}}>No match</div>
+            :list.map(c=>(
+              <button key={c.id} onClick={()=>fecPickCustomer(c)} style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,padding:"9px 12px",border:`1px solid ${C.border}`,borderRadius:8,background:"#fff",cursor:"pointer",fontFamily:"inherit",textAlign:"left"}}>
+                <span style={{fontSize:13,fontWeight:700,color:C.text}}>{c.name||"—"}<span style={{fontSize:11,color:C.textLight,fontWeight:600}}>  {c.phone?("· "+c.phone):""}</span></span>
+                <span style={{fontSize:11,fontWeight:800,color:C.accent,whiteSpace:"nowrap"}}>{c.loyaltyPoints||0} pts{(c.creditBalance||0)>0?` · owes ${(c.creditBalance||0).toFixed(2)}`:""}</span>
+              </button>
+            ))}
+          </div>
+        </Modal>;
+      })()}
+      {acctModal&&(()=>{
+        const all=(LS.get("restopos_customers")||[]).filter(c=>(c.creditBalance||0)>0);
+        return <Modal title="🏦 Payment into Account" onClose={()=>setAcctModal(null)} width={460}>
+          <div style={{fontSize:12.5,color:C.textMid,marginBottom:12}}>Record a customer paying down their outstanding credit (account) balance.</div>
+          {all.length===0?<div style={{padding:16,textAlign:"center",color:C.textLight,fontSize:13}}>No customers currently owe an account balance.</div>
+          :<div style={{display:"flex",flexDirection:"column",gap:6}}>
+            {all.slice(0,40).map(c=>(
+              <div key={c.id} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 12px",border:`1px solid ${C.border}`,borderRadius:8,background:"#fff"}}>
+                <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:700}}>{c.name||c.phone}</div><div style={{fontSize:11,color:C.danger,fontWeight:700}}>Owes {fmtSAR(c.creditBalance||0)}</div></div>
+                <Btn size="sm" onClick={()=>{const a=parseFloat(window.prompt(`Amount received from ${c.name||c.phone} (SAR):`,String((c.creditBalance||0).toFixed(2)))||"0"); fecAccountPayment(c,a);}}>Receive</Btn>
+              </div>
+            ))}
+          </div>}
+        </Modal>;
+      })()}
+      {suspendModal&&(()=>{
+        const list=LS.get("restopos_suspended")||[];
+        return <Modal title="⏸ Suspended Sales" onClose={()=>setSuspendModal(null)} width={480}>
+          <Btn onClick={fecSuspend} style={{width:"100%",marginBottom:12}} disabled={cart.length===0}>⏸ Suspend current sale{cart.length?` (${cart.length} items)`:""}</Btn>
+          {list.length===0?<div style={{padding:16,textAlign:"center",color:C.textLight,fontSize:13}}>No suspended sales</div>
+          :<div style={{display:"flex",flexDirection:"column",gap:6,maxHeight:"48vh",overflowY:"auto"}}>
+            {list.map(s=>{const g=(s.cart||[]).reduce((a,i)=>a+i.price*i.qty,0);return(
+              <div key={s.id} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 12px",border:`1px solid ${C.border}`,borderRadius:8,background:"#fff"}}>
+                <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:700}}>{(s.cart||[]).length} items · {fmtSAR(g)}</div><div style={{fontSize:11,color:C.textLight}}>{new Date(s.at).toLocaleString("en-GB")}{s.customerName?` · ${s.customerName}`:""}</div></div>
+                <Btn size="sm" onClick={()=>fecResume(s)}>Resume</Btn>
+                <Btn size="sm" variant="ghost" onClick={()=>{const nl=(LS.get("restopos_suspended")||[]).filter(x=>x.id!==s.id);LS.set("restopos_suspended",nl);setSuspendModal(true);flash("Deleted");}}>✕</Btn>
+              </div>
+            );})}
+          </div>}
+        </Modal>;
+      })()}
+      {staffModal&&(()=>{
+        const staff=LS.get("restopos_users")||[];
+        return <Modal title="👤 Staff Lookup" onClose={()=>setStaffModal(false)} width={440}>
+          {staff.length===0?<div style={{fontSize:13,color:C.textMid,marginBottom:8}}>No additional staff configured. Signed in as <strong>{currentUser?.name||"—"}</strong> ({currentUser?.role||"—"}).</div>
+          :<div style={{display:"flex",flexDirection:"column",gap:5,maxHeight:"52vh",overflowY:"auto"}}>
+            {staff.map((u,i)=>(
+              <div key={u.id||i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"9px 12px",border:`1px solid ${C.border}`,borderRadius:8,background:"#fff"}}>
+                <span style={{fontSize:13,fontWeight:700}}>{u.name||u.username||"—"}</span>
+                <span style={{fontSize:12,fontWeight:700,color:C.primary}}>{u.role||"Cashier"}{u.active===false?" · inactive":""}</span>
+              </div>
+            ))}
+          </div>}
+        </Modal>;
+      })()}
       {showReceipt&&lastOrder&&<ReceiptModal order={lastOrder} license={license} zatcaInvoice={lastZatcaInvoice} onClose={()=>{setShowReceipt(false);setLastZatcaInvoice(null);}}/>}
       {/* ⚖ Weigh picker — pick a weighed product when there's no grid to tap (Layout A/C) */}
       {weighPick&&(
@@ -5988,7 +6309,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
           </div>
         );
       })()}
-      {superMode?(
+      {fecTill?fecLayout:superMode?(
         // ═══ SIMPLIFIED SUPERMARKET TILL — Layout A / B / C (Settings → Checkout) ═══
         <div style={{flex:1,display:"flex",flexDirection:"column",background:C.bg,overflow:"hidden"}}>
           {/* Toolbar — a handful of buttons, not the full restaurant bar */}
@@ -7848,6 +8169,9 @@ function KitchenPrinterSettings(){
 // ═══════════════════════════════════════════════════════════════════
 function CheckoutLayoutTab(){
   const [choice,setChoice]=useState(()=>LS.get("restopos_super_layout")||"A");
+  // The classic FEC-style till (Layout D) is only meaningful for hypermarkets,
+  // which run the Supervisor-approval + loyalty systems it exposes.
+  const isHyper=getBusinessType()==="hypermarket";
   function pick(id){setChoice(id);LS.set("restopos_super_layout",id);}
   const OPTS=[
     {id:"A",icon:"🧾",title:"Scan & Go",tagline:"Simplest — one scan, one list, one Pay",
@@ -7859,15 +8183,19 @@ function CheckoutLayoutTab(){
     {id:"C",icon:"🗂️",title:"Scan + Slim shelf",tagline:"Scan-first, with a small shelf of favourites",
      desc:"Closest to the old screen but stripped down: scan bar and receipt lead, with one collapsible row of your favourite / no-barcode items underneath. Least retraining for staff.",
      bullets:["Scan bar + receipt lead","One collapsible ★ quick-items row","Reuses your existing favourites"]},
+    ...(isHyper?[{id:"D",icon:"🏬",title:"Classic Till",tagline:"Full FEC-style retail till — grid, keypad & function keys",
+     desc:"The dense supermarket cashier screen: an item-no bar, a Description/Qty/Price/Disc%/Amount cart grid, a totals block, a bilingual function-button matrix and numeric keypad, and the Refund / Transactions / Customer / Tender / Payment-into-Account / Suspend action strip. Every key is wired to real till behaviour.",
+     bullets:["Line & whole-bill discounts, price override","Manager/Supervisor PIN approvals for void & price","Member lookup, account payments, suspend & resume"]}]:[]),
   ];
   const preview={
     A:["🔲 Scan box","🧾 Receipt (full width)","💳 Pay"],
     B:["🔲 Scan box","🧾 Receipt","⌨️ Keypad + ★ keys","💳 Pay"],
     C:["🔲 Scan box","🧾 Receipt","★ Quick-items shelf","💳 Pay"],
+    D:["Item no. bar","Cart grid · Function keys","Totals · Keypad","Refund · Tender · Suspend"],
   };
   return(
     <Card style={{maxWidth:760}}>
-      <div style={{fontSize:15,fontWeight:800,marginBottom:4}}>🛒 Supermarket Checkout Layout</div>
+      <div style={{fontSize:15,fontWeight:800,marginBottom:4}}>{isHyper?"🏬 Hypermarket":"🛒 Supermarket"} Checkout Layout</div>
       <div style={{fontSize:13,color:C.textMid,marginBottom:20}}>Pick how the till looks for your cashiers. Your products, sales, and ZATCA invoices are unchanged — only the checkout screen changes. Applies next time you open the POS.</div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:14}}>
         {OPTS.map(o=>{
@@ -16650,7 +16978,7 @@ export default function App(){
         )}
         <TabBoundary key={screen} name={screen}>
         {screen==="dashboard"&&<Dashboard sales={allSales} items={items} license={license} lang={lang}/>}
-        {screen==="pos"&&<POS items={items} setItems={setItems} sales={sales} setSales={setSales} tables={tables} setTables={setTables} promos={promos} license={license} lang={lang} currentUser={currentUser}/>}
+        {screen==="pos"&&<POS items={items} setItems={setItems} sales={sales} setSales={setSales} tables={tables} setTables={setTables} promos={promos} license={license} lang={lang} currentUser={currentUser} goScreen={setScreen} onLogout={()=>{setCurrentUser(null);setStep("login");}}/>}
         {screen==="settings"&&<Settings company={company} setCompany={setCompany} tables={tables} setTables={setTables} license={license} onClearLicense={handleClearLicense} onSwitchAccount={handleSwitchAccount} pins={pins} setPins={setPins} invoiceFormat={invoiceFormat} setInvoiceFormat={setInvoiceFormat} lang={lang} onLangChange={handleLangChange} sales={allSales} items={items}/>}
         {screen==="create"&&<Create items={items} setItems={setItems} promos={promos} setPromos={setPromos} lang={lang}/>}
         {screen==="transactions"&&<Transactions sales={allSales} setSales={setSales} license={license} lang={lang} autoSyncStatus={autoSyncStatus} archiveIndex={archiveIndex} fetchCloudRange={fetchCloudRange} cloudLoading={cloudLoading} cloudError={cloudError}/>}
