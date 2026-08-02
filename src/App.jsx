@@ -46,6 +46,7 @@ import { CHANGELOG } from "./data/changelog.js";
 import { OTHER_CAT, CAT_PALETTE, getCategoryColors, saveCategoryColors, colorForCat, effectiveCat, catsWithOther, getFavourites, saveFavourites, getItemOrder, saveItemOrder, getPosBoxHeight, savePosBoxHeight } from "./lib/catalog.js";
 import { buildDraftSummaryHTML, buildReceiptHTML, buildDraftReceiptHTML, buildPresetHTML, buildPresetKOT, buildKOTHtml, printDraftReceipt } from "./lib/receipts.js";
 import { getDeviceInfo, getDeviceId, getDeviceLabel } from "./lib/device.js";
+import { CUSTOMER_TIERS, getTier, getAgingBucket } from "./lib/customers.js";
 import { buildReportThermalHTML } from "./lib/reportPrint.js";
 
 // ═══════════════════════════════════════════════════════════════════
@@ -10386,18 +10387,6 @@ function Help({license: helpLicense, lang="en", onLogout}){
 // ═══════════════════════════════════════════════════════════════════
 // CRM — FULL CUSTOMER RELATIONSHIP MANAGEMENT v15
 // ═══════════════════════════════════════════════════════════════════
-const CUSTOMER_TIERS=[
-  {id:"bronze",label:"Bronze",color:"#CD7F32",bg:"#FDF3E7",minSpend:0,discount:0,pointRate:1},
-  {id:"silver",label:"Silver",color:"#A0A0A0",bg:"#F5F5F5",minSpend:500,discount:2,pointRate:1.5},
-  {id:"gold",label:"Gold",color:"#F0A500",bg:"#FEF6E4",minSpend:2000,discount:5,pointRate:2},
-  {id:"platinum",label:"Platinum",color:"#6366f1",bg:"#EEF2FF",minSpend:5000,discount:10,pointRate:3},
-];
-function getTier(totalSpent){return CUSTOMER_TIERS.slice().reverse().find(t=>totalSpent>=t.minSpend)||CUSTOMER_TIERS[0];}
-function getAgingBucket(lastOrderDate){
-  if(!lastOrderDate)return"Never";
-  const days=Math.floor((Date.now()-new Date(lastOrderDate).getTime())/(1000*60*60*24));
-  if(days<=30)return"Active";if(days<=60)return"30-60d";if(days<=90)return"60-90d";return"90d+";
-}
 function Customers({sales,lang="en",archiveIndex={},fetchCloudRange,cloudLoading,cloudError}){
   const _t=s=>t(s,lang);
   const [customers,setCustomers]=useState(()=>LS.get("restopos_customers")||[]);
