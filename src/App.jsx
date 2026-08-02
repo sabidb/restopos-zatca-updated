@@ -51,6 +51,7 @@ import { EMAILJS_VERIFY_TEMPLATE, sendEmailJS, generateCode } from "./lib/emailj
 import { archiveCsvRow, ARCHIVE_CSV_HEADER, downloadBlob } from "./lib/download.js";
 import { DASHBOARD_BOXES, DEFAULT_DASHBOARD_CONFIG, getDashboardConfig } from "./lib/dashboard.js";
 import { KitchenPrinterSettings } from "./screens/printers/KitchenPrinterSettings.jsx";
+import { getStations, saveStations, makeStation, routeKOT } from "./lib/printerStations.js";
 import { buildReportThermalHTML } from "./lib/reportPrint.js";
 
 // ═══════════════════════════════════════════════════════════════════
@@ -4034,14 +4035,19 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
         const newKot2=kotNo+1;LS.set("restopos_kot",newKot2);setKotNo(newKot2);
         const kotCart=[...cart];const kType=extraData.orderType||orderType;const kTable=selectedTable;
         let kotDone=false;
-        // 1) QZ Tray kitchen printer
-        try{
-          if(isQZConnected()&&_qzKitchenPrinter){
-            const kotHTML=buildKOTHtml({kot:newKot2,token:inv.token,voucher:inv.voucher||inv.id,date:inv.date,type:inv.type,billType:inv.billType,table:kTable,time:new Date().toLocaleTimeString("en-SA"),items:kotCart});
-            await printWithQZ(kotHTML,_qzKitchenPrinter,kp.paperWidth||"80mm");
+        // Reconnect BEFORE deciding anything. A socket that dropped between
+        // sales used to fall straight through to a pop-up, which is why the
+        // kitchen "randomly" stopped printing silently.
+        if(!isQZConnected())await connectQZ();
+        const _mkKot=(its)=>buildKOTHtml({kot:newKot2,token:inv.token,voucher:inv.voucher||inv.id,date:inv.date,type:inv.type,billType:inv.billType,table:kTable,time:new Date().toLocaleTimeString("en-SA"),items:its});
+        // 1) One ticket per kitchen station, each listing only what it cooks.
+        const _plan=routeKOT(kotCart,getStations());
+        for(const {station,items:sItems} of _plan){
+          try{
+            await printSilent(_mkKot(sItems),{printer:station.printer,paperWidth:station.paperWidth||kp.paperWidth||"80mm"});
             kotDone=true;
-          }
-        }catch(e){console.warn("[AutoKOT QZ]",e);}
+          }catch(e){console.warn("[AutoKOT station]",station.name,e&&e.message);}
+        }
         // 2) ESC/POS serial kitchen printer
         if(!kotDone&&"serial" in navigator){
           try{
@@ -4051,15 +4057,10 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
             }
           }catch(e){console.warn("[AutoKOT serial]",e);}
         }
-        // 3) Browser popup fallback so the kitchen always gets a ticket
+        // 3) Last resort — still silent (OS default printer), never a pop-up.
         if(!kotDone){
-          try{
-            const win=window.open("","_blank","width=300,height=500");
-            if(win){
-              win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>KOT ${newKot2}</title><style>@page{size:80mm auto;margin:0}body{font-family:monospace;font-size:15px;width:80mm;padding:6mm}hr{border:none;border-top:1px dashed #000;margin:8px 0}.big{font-size:22px;font-weight:900;text-align:center}.ar{direction:rtl;font-family:Arial}</style></head><body><div class="big">KOT #${newKot2}</div><hr/><div>${String(kType).toUpperCase()}${kTable?" - Table "+kTable:""}</div><div>${new Date().toLocaleTimeString()}</div><hr/>${kotCart.map(it=>`<div style="font-weight:800">${it.qty}x ${it.name}</div>${it.nameAr?`<div class="ar">${it.nameAr}</div>`:""}`).join("")}<hr/><script>window.onload=function(){window.print();window.close()}<\/script></body></html>`);
-              win.document.close();
-            }
-          }catch(e){console.warn("[AutoKOT browser]",e);}
+          try{ await printSilent(_mkKot(kotCart),{paperWidth:kp.paperWidth||"80mm"}); }
+          catch(e){console.warn("[AutoKOT fallback]",e&&e.message);}
         }
       }catch(e){console.warn("[AutoKOT] failed:",e);}
     }
@@ -4083,20 +4084,20 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
         const newKotK=kotNo+1;LS.set("restopos_kot",newKotK);setKotNo(newKotK);
         const kType=extraData.orderType||orderType;const kTable=selectedTable;
         const _kpOnly=LS.get("restopos_kot_format")||{};
-        const kotHTML=buildKOTHtml({kot:newKotK,token:inv.token,voucher:inv.voucher||inv.id,date:inv.date,type:inv.type==="Dine-in"?"Dine-in":inv.type==="Takeaway"?"Takeaway":"Delivery",billType:inv.billType,table:kTable,time:new Date().toLocaleTimeString("en-SA"),items:inv.items||[],kotOnly:true});
+        const _kotItems=inv.items||[];
+        const _mkKotOnly=(its)=>buildKOTHtml({kot:newKotK,token:inv.token,voucher:inv.voucher||inv.id,date:inv.date,type:inv.type==="Dine-in"?"Dine-in":inv.type==="Takeaway"?"Takeaway":"Delivery",billType:inv.billType,table:kTable,time:new Date().toLocaleTimeString("en-SA"),items:its,kotOnly:true});
         let kotDone=false;
-        if(isQZConnected()&&_qzKitchenPrinter){
-          try{await printWithQZ(kotHTML,_qzKitchenPrinter,_kpOnly.paperWidth||"80mm");kotDone=true;}catch(e){console.warn("[KOT-Only QZ]",e);}
+        if(!isQZConnected())await connectQZ();
+        // One ticket per station, same routing as auto-KOT.
+        for(const {station,items:sItems} of routeKOT(_kotItems,getStations())){
+          try{
+            await printSilent(_mkKotOnly(sItems),{printer:station.printer,paperWidth:station.paperWidth||_kpOnly.paperWidth||"80mm"});
+            kotDone=true;
+          }catch(e){console.warn("[KOT-Only station]",station.name,e&&e.message);}
         }
         if(!kotDone){
-          try{
-            let frame=document.getElementById("restopos-print-frame");
-            if(!frame){frame=document.createElement("iframe");frame.id="restopos-print-frame";frame.style.cssText="position:fixed;left:-9999px;top:-9999px;width:0;height:0;border:none;";document.body.appendChild(frame);}
-            const fdoc=frame.contentDocument||frame.contentWindow.document;
-            fdoc.open();fdoc.write(kotHTML);fdoc.close();
-            setTimeout(()=>{try{frame.contentWindow.focus();frame.contentWindow.print();}catch(e){}},500);
-            kotDone=true;
-          }catch(e){console.warn("[KOT-Only iframe]",e);}
+          try{ await printSilent(_mkKotOnly(_kotItems),{paperWidth:_kpOnly.paperWidth||"80mm"}); kotDone=true; }
+          catch(e){console.warn("[KOT-Only fallback]",e&&e.message);}
         }
         setPrintBanner({msg:"🍽️ "+inv.id+" — KOT Printed (no customer bill)",type:"success"});
       }catch(e){setPrintBanner({msg:"⚠️ KOT Only saved — KOT print failed: "+e.message,type:"error"});}
@@ -4238,11 +4239,14 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
         return;
       }
     }catch(e){console.warn("KOT ESC/POS failed, using browser:",e);}
-    // 3. Fallback: browser popup print
-    const win=window.open("","_blank","width=300,height=500");
-    if(!win){showN("❌ Allow pop-ups for KOT");return;}
-    win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>KOT ${newKot}</title><style>@page{size:80mm auto;margin:0}body{font-family:monospace;font-size:14px;width:80mm;padding:6mm}hr{border:none;border-top:1px dashed #000;margin:8px 0}.big{font-size:20px;font-weight:900;text-align:center}</style></head><body><div class="big">KOT #${newKot}</div><hr/><div>${orderType.toUpperCase()}${selectedTable?` · Table ${selectedTable}`:""}</div><div>${new Date().toLocaleTimeString()}</div><hr/>${cart.map(it=>`<div>${it.qty}x ${it.name}${it.nameAr?`<br><span style="direction:rtl;font-family:Arial">${it.nameAr}</span>`:""}</div>`).join("")}<hr/><script>window.onload=function(){window.print();window.close()}<\/script></body></html>`);
-    win.document.close();
+    // 3. Fallback: silent print (QZ if reachable, else OS default). Never a
+    //    pop-up — a blocked pop-up loses the ticket and an allowed one still
+    //    shows the print dialog.
+    const _kotFallbackHTML=`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>KOT ${newKot}</title><style>@page{size:80mm auto;margin:0}body{font-family:monospace;font-size:14px;width:80mm;padding:6mm}hr{border:none;border-top:1px dashed #000;margin:8px 0}.big{font-size:20px;font-weight:900;text-align:center}</style></head><body><div class="big">KOT #${newKot}</div><hr/><div>${orderType.toUpperCase()}${selectedTable?` · Table ${selectedTable}`:""}</div><div>${new Date().toLocaleTimeString()}</div><hr/>${cart.map(it=>`<div>${it.qty}x ${it.name}${it.nameAr?`<br><span style="direction:rtl;font-family:Arial">${it.nameAr}</span>`:""}</div>`).join("")}<hr/></body></html>`;
+    try{
+      await printSilent(_kotFallbackHTML,{paperWidth:"80mm"});
+      showN("🖨️ KOT #"+newKot+" sent");
+    }catch(e){ showN("❌ KOT print failed — check Printer Setup"); }
   }
   // POS categories — use saved order, only show cats with active items.
   // Orphan / uncategorised active items fall into the "Other" bucket.
@@ -7057,17 +7061,16 @@ async function reprintKOT(sale){
       type:sale.type,billType:sale.billType,table:sale.table,
       time:sale.time||new Date().toLocaleTimeString("en-SA"),items:sale.items||[]
     });
-    const kitchenPrinter=localStorage.getItem("restopos_qz_kitchen_printer")||_qzKitchenPrinter;
-    if(kitchenPrinter){
-      if(!isQZConnected())await connectQZ();
-      if(isQZConnected()){
-        await printWithQZ(kotHTML,kitchenPrinter,"80mm");
-        return true;
-      }
+    // Reprint goes to every configured station, same routing as a live sale.
+    if(!isQZConnected())await connectQZ();
+    let sent=false;
+    for(const {station}of routeKOT(sale?.items||[],getStations())){
+      try{ await printSilent(kotHTML,{printer:station.printer,paperWidth:station.paperWidth||"80mm"}); sent=true; }
+      catch(e){console.warn("[reprintKOT station]",station.name,e&&e.message);}
     }
-    // Fallback: hidden window print
-    const win=window.open("","_blank","width=300,height=500");
-    if(win){win.document.write(kotHTML.includes("window.print")?kotHTML:kotHTML.replace("</body>","<script>window.onload=function(){window.print();window.close()}<\/script></body>"));win.document.close();}
+    if(sent)return true;
+    // Fallback: still silent (OS default printer), never a pop-up.
+    try{ await printSilent(kotHTML,{paperWidth:"80mm"}); }catch(e){console.warn("[reprintKOT fallback]",e&&e.message);}
     return false;
   }catch(e){console.warn("[reprintKOT]",e.message);return false;}
 }
@@ -14238,6 +14241,43 @@ async function silentPrintHTML(html, { printer, paperWidth = "80mm", a4 = false 
     console.warn("[silentPrint iframe]", e.message);
     throw e;
   }
+}
+
+// ── printSilent — the ONLY printing entry point that is guaranteed dialog-free.
+//
+// Order: QZ Tray (truly silent, chosen printer) → hidden iframe (silent to the
+// OS default printer). It never opens a pop-up window, because a blocked
+// pop-up loses the ticket and an unblocked one still shows the OS print
+// dialog — both break "printing is instant, no confirmation".
+//
+// Always tries to (re)connect QZ first: a socket that dropped between sales is
+// the common case, and reconnecting is far better than silently degrading to
+// the default printer. Returns "QZ Tray" | "Browser", or throws if both fail.
+async function printSilent(html, { printer, paperWidth = "80mm" } = {}) {
+  const target = printer || localStorage.getItem("restopos_qz_bill_printer") || _qzBillPrinter;
+  if (target) {
+    try {
+      if (!isQZConnected()) await connectQZ();
+      if (isQZConnected()) {
+        await printWithQZ(html, target, paperWidth);
+        return "QZ Tray";
+      }
+    } catch (e) { console.warn("[printSilent QZ]", e && e.message); }
+  }
+  // Hidden iframe — silent, no pop-up, goes to the OS default printer.
+  let frame = document.getElementById("restopos-print-frame");
+  if (!frame) {
+    frame = document.createElement("iframe");
+    frame.id = "restopos-print-frame";
+    frame.style.cssText = "position:fixed;left:-9999px;top:-9999px;width:0;height:0;border:none;";
+    document.body.appendChild(frame);
+  }
+  const doc = frame.contentDocument || frame.contentWindow.document;
+  doc.open(); doc.write(html); doc.close();
+  await new Promise((r) => setTimeout(r, 400));
+  frame.contentWindow.focus();
+  frame.contentWindow.print();
+  return "Browser";
 }
 
 // Check if QZ is available and connected
