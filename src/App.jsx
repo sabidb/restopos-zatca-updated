@@ -5057,7 +5057,7 @@ function printDraftReceipt(order,license){
 // ═══════════════════════════════════════════════════════════════════
 // POS SCREEN
 // ═══════════════════════════════════════════════════════════════════
-function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang="en",currentUser=null,goScreen=null,onLogout=null}){
+function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang="en",currentUser=null,goScreen=null,onLogout=null,nav=[],screen="pos"}){
   const allCats=[...new Set(items.map(i=>i.category))];
   const [activeCat,setActiveCat]=useState("ALL");const [cart,setCart]=useState([]);const [orderType,setOrderType]=useState("takeaway");const [selectedTable,setSelectedTable]=useState(null);const [billType,setBillType]=useState("normal");
   const [showPayment,setShowPayment]=useState(false);const [showReceipt,setShowReceipt]=useState(false);const [lastOrder,setLastOrder]=useState(null);const [lastZatcaInvoice,setLastZatcaInvoice]=useState(null);
@@ -5763,36 +5763,66 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   // Bilingual olive-style till button (Arabic tag over English label, like the FEC screen).
   const fecBtn=(ar,en,onClick,bg=FEC.olive,fg="#fff",opts={})=>(
     <button onClick={onClick} disabled={opts.disabled} title={en}
-      style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:1,padding:"5px 3px",borderRadius:6,border:"1px solid rgba(0,0,0,0.18)",background:opts.disabled?"#c9cbb6":bg,color:fg,cursor:opts.disabled?"not-allowed":"pointer",fontFamily:"inherit",lineHeight:1.05,minHeight:50,textAlign:"center",opacity:opts.disabled?0.7:1,boxShadow:"inset 0 1px 0 rgba(255,255,255,0.25),0 1px 1px rgba(0,0,0,0.12)"}}>
-      <span dir="rtl" style={{fontSize:9,opacity:0.9,fontWeight:700,whiteSpace:"nowrap"}}>{ar}</span>
-      <span style={{fontSize:11,fontWeight:800}}>{en}</span>
+      style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:2,padding:"4px 3px",borderRadius:8,border:"1px solid rgba(0,0,0,0.14)",background:opts.disabled?"#c9cbb6":bg,color:fg,cursor:opts.disabled?"not-allowed":"pointer",fontFamily:"inherit",lineHeight:1.08,minHeight:opts.minH||46,textAlign:"center",opacity:opts.disabled?0.7:1,boxShadow:"inset 0 1px 0 rgba(255,255,255,0.28),0 1px 2px rgba(0,0,0,0.12)"}}>
+      <span dir="rtl" style={{fontSize:9,opacity:0.85,fontWeight:700,whiteSpace:"nowrap"}}>{ar}</span>
+      <span style={{fontSize:11.5,fontWeight:800,whiteSpace:"nowrap"}}>{en}</span>
     </button>
   );
-  const fecNumKey=(label,onClick,bg=FEC.num,fg=FEC.text)=>(
-    <button onClick={onClick} style={{padding:"0",borderRadius:6,border:"1px solid rgba(0,0,0,0.18)",background:bg,color:fg,cursor:"pointer",fontFamily:"inherit",fontSize:18,fontWeight:800,minHeight:50,boxShadow:"inset 0 1px 0 rgba(255,255,255,0.4),0 1px 1px rgba(0,0,0,0.1)"}}>{label}</button>
+  const fecNumKey=(label,onClick,opts={})=>(
+    <button onClick={onClick} style={{padding:"0",borderRadius:9,border:"1px solid #cfd3bd",background:opts.bg||"#fcfdf8",color:opts.fg||FEC.text,cursor:"pointer",fontFamily:"inherit",fontSize:opts.fs||20,fontWeight:800,minHeight:opts.minH||46,gridColumn:opts.span?`span ${opts.span}`:"auto",boxShadow:"inset 0 1px 0 rgba(255,255,255,0.7),0 1px 2px rgba(0,0,0,0.08)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:1}}>
+      {opts.ar&&<span dir="rtl" style={{fontSize:8.5,opacity:0.8,fontWeight:700}}>{opts.ar}</span>}
+      <span style={{fontSize:opts.fs||20,fontWeight:800}}>{label}</span>
+    </button>
   );
   const fecPad=(v)=>{ setFecEntry(s=>s+v); focusScanner(); };
+  const clientLogo=LS.get("restopos_invoice_format")?.logoUrl||"";
 
   const fecLayout=(
-    <div style={{flex:1,display:"flex",flexDirection:"column",background:FEC.bg,overflow:"hidden",fontFamily:"'Segoe UI',system-ui,sans-serif",color:FEC.text}}>
-      {/* Item no. + status + business */}
-      <div style={{display:"flex",gap:8,padding:"8px 10px",background:FEC.panel,borderBottom:`1px solid ${FEC.line}`,alignItems:"stretch"}}>
+    <div style={{flex:1,display:"flex",background:FEC.bg,overflow:"hidden",fontFamily:"'Segoe UI',system-ui,sans-serif",color:FEC.text}}>
+      {/* ── Left navigation sidebar (the common RestoPOS menu, role-filtered) ── */}
+      {nav&&nav.length>0&&(
+        <div style={{width:138,flexShrink:0,background:"linear-gradient(180deg,#204034,#152a22)",display:"flex",flexDirection:"column",overflowY:"auto"}}>
+          <div style={{padding:"12px 10px 10px",display:"flex",flexDirection:"column",alignItems:"center",gap:6,borderBottom:"1px solid rgba(255,255,255,0.08)"}}>
+            {clientLogo
+              ? <img src={clientLogo} alt="logo" style={{maxWidth:"100%",maxHeight:46,objectFit:"contain"}}/>
+              : <div style={{width:44,height:44,borderRadius:10,background:"rgba(255,255,255,0.1)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:22}}>🏬</div>}
+            <div style={{fontSize:11,fontWeight:800,color:"#fff",textAlign:"center",lineHeight:1.2}}>{license?.businessName||"Hypermarket"}</div>
+          </div>
+          <div style={{flex:1,display:"flex",flexDirection:"column",gap:2,padding:"6px 6px"}}>
+            {nav.map(([id,icon,label])=>{ const on=screen===id; return(
+              <button key={id} onClick={()=>goScreen&&goScreen(id)}
+                style={{display:"flex",alignItems:"center",gap:9,padding:"9px 10px",borderRadius:8,border:"none",background:on?"rgba(255,255,255,0.16)":"transparent",color:on?"#fff":"rgba(255,255,255,0.72)",cursor:"pointer",fontFamily:"inherit",fontSize:12.5,fontWeight:on?800:600,textAlign:"left",whiteSpace:"nowrap"}}>
+                <span style={{fontSize:15}}>{icon}</span>{label}
+              </button>
+            );})}
+          </div>
+          <button onClick={fecLogoff} style={{margin:"6px",padding:"9px 0",borderRadius:8,border:"none",background:"rgba(255,255,255,0.1)",color:"#ffd7cf",cursor:"pointer",fontFamily:"inherit",fontSize:12,fontWeight:800,display:"flex",flexDirection:"column",alignItems:"center",gap:1}}>
+            <span dir="rtl" style={{fontSize:9,opacity:0.85}}>تسجيل الخروج</span>Logoff
+          </button>
+        </div>
+      )}
+
+      {/* ── Main till ── */}
+      <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minWidth:0}}>
+      {/* Item no. + status + logo */}
+      <div style={{display:"flex",gap:10,padding:"8px 12px",background:FEC.panel,borderBottom:`1px solid ${FEC.line}`,alignItems:"stretch"}}>
         <div style={{flex:1,display:"flex",flexDirection:"column",gap:5,minWidth:0}}>
           <div style={{display:"flex",alignItems:"center",gap:8}}>
-            <span style={{fontSize:12,fontWeight:700,color:FEC.text,width:64,flexShrink:0}}>Item no.:</span>
+            <span style={{fontSize:12,fontWeight:700,color:FEC.text,width:60,flexShrink:0}}>Item no.:</span>
             <input ref={barcodeRef} value={fecEntry} onChange={e=>setFecEntry(e.target.value)}
               onKeyDown={e=>{if(e.key==="Enter")fecEnter();}}
               placeholder={priceCheck?"🔍 Price check — scan to view":"Scan barcode / type item no."}
-              style={{flex:1,minWidth:0,padding:"7px 10px",border:`1.5px solid ${priceCheck?C.warning:"#4a90c2"}`,borderRadius:5,fontSize:15,fontWeight:600,fontFamily:"inherit",background:"#fff",color:"#111"}}/>
+              style={{flex:1,minWidth:0,padding:"7px 10px",border:`1.5px solid ${priceCheck?C.warning:"#4a90c2"}`,borderRadius:6,fontSize:15,fontWeight:600,fontFamily:"inherit",background:"#fff",color:"#111"}}/>
           </div>
           <div style={{display:"flex",alignItems:"center",gap:8}}>
-            <span style={{fontSize:12,fontWeight:700,width:64,flexShrink:0,color:FEC.text}}>Status:</span>
-            <div style={{flex:1,padding:"6px 10px",border:`1px solid ${FEC.line}`,borderRadius:5,fontSize:12,fontWeight:700,background:"#fff",color:fecStatus.startsWith("✗")||fecStatus.startsWith("⚠")?C.danger:C.primary,minHeight:16}}>{fecStatus||`Ready — ${cart.length} item(s)`}{fecCoupon?`  ·  🎟 ${fecCoupon}`:""}{(customerName||customerPhone)?`  ·  👤 ${customerName||customerPhone}`:""}</div>
+            <span style={{fontSize:12,fontWeight:700,width:60,flexShrink:0,color:FEC.text}}>Status:</span>
+            <div style={{flex:1,padding:"6px 10px",border:`1px solid ${FEC.line}`,borderRadius:6,fontSize:12,fontWeight:700,background:"#fff",color:fecStatus.startsWith("✗")||fecStatus.startsWith("⚠")?C.danger:C.primary,minHeight:16}}>{fecStatus||`Ready — ${cart.length} item(s)`}{fecCoupon?`  ·  🎟 ${fecCoupon}`:""}{(customerName||customerPhone)?`  ·  👤 ${customerName||customerPhone}`:""}</div>
           </div>
         </div>
-        <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",justifyContent:"center",paddingLeft:8,borderLeft:`1px solid ${FEC.line}`}}>
-          <span style={{fontSize:15,fontWeight:900,color:C.primary,letterSpacing:"-0.01em"}}>RestoPos</span>
-          <span style={{fontSize:10,fontWeight:700,color:FEC.text,opacity:0.7,whiteSpace:"nowrap"}}>{license?.businessName||"Hypermarket"}</span>
+        <div style={{display:"flex",alignItems:"center",gap:10,paddingLeft:10,borderLeft:`1px solid ${FEC.line}`}}>
+          {clientLogo
+            ? <img src={clientLogo} alt="logo" style={{maxHeight:48,maxWidth:150,objectFit:"contain"}}/>
+            : <div style={{textAlign:"right"}}><div style={{fontSize:16,fontWeight:900,color:C.primary}}>{license?.businessName||"Hypermarket"}</div><div style={{fontSize:10,fontWeight:700,color:FEC.text,opacity:0.55}}>powered by RestoPos</div></div>}
         </div>
       </div>
 
@@ -5810,7 +5840,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
                 <div key={idx} onClick={()=>setSelectedRow(idx===selectedRow?null:idx)}
                   style={{display:"grid",gridTemplateColumns:"1fr 52px 74px 56px 84px",cursor:"pointer",fontSize:12.5,fontWeight:600,background:selectedRow===idx?"#dcecc6":(idx%2?"#f4f6ec":"#fff"),borderBottom:`1px solid ${FEC.line}`,color:"#1f2a12"}}>
                   <div style={{padding:"8px",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{it.name}{it.weighed?" ⚖":""}</div>
-                  <div style={{padding:"8px",textAlign:"right"}}>{it.weighed?it.qty:it.qty}</div>
+                  <div style={{padding:"8px",textAlign:"right"}}>{it.qty}</div>
                   <div style={{padding:"8px",textAlign:"right"}}>{it.price.toFixed(2)}</div>
                   <div style={{padding:"8px",textAlign:"right",color:dpct>0?C.danger:"inherit"}}>{dpct>0?dpct:"—"}</div>
                   <div style={{padding:"8px",textAlign:"right",fontWeight:800}}>{fecLineNet(it).toFixed(2)}</div>
@@ -5828,55 +5858,57 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
           </div>
         </div>
 
-        {/* RIGHT — function matrix + keypad */}
-        <div style={{width:"clamp(430px, 52%, 620px)",flexShrink:0,display:"flex",flexDirection:"column",background:FEC.bg,overflow:"hidden"}}>
-          <div style={{flex:1,display:"flex",gap:6,padding:"6px",overflow:"auto"}}>
-            {/* Function buttons */}
-            <div style={{flex:1,display:"grid",gridTemplateColumns:"repeat(4,1fr)",gridAutoRows:"1fr",gap:5,minWidth:0}}>
-              {fecBtn("حذف الخط","Void Line",fecVoidLine,FEC.orange)}
-              {fecBtn("حذف الكل","Void All",fecVoidAll,FEC.grey)}
-              {fecBtn("فحص السعر","Price Check",()=>{setPriceCheck(p=>!p);flash(priceCheck?"Price check off":"🔍 Price check ON");},priceCheck?C.warning:FEC.olive)}
-              {fecBtn("تغيير السعر","Change Price",fecChangePrice,FEC.olive)}
-              {fecBtn("بحث","Search",()=>setSearchModal({mode:"add"}),FEC.olive)}
-              {fecBtn("استعلام","Lookup",()=>setSearchModal({mode:"view"}),FEC.olive)}
-              {fecBtn("كوبون","Coupon",fecCouponBtn,FEC.olive)}
-              {fecBtn("خصم الإجمالي","Total Disc %",fecTotalDisc,FEC.olive)}
-              {fecBtn("مبلغ الخصم","Line Disc Amt",fecLineDiscAmount,FEC.olive)}
-              {fecBtn("نسبة الخصم","Line Disc %",fecLineDiscPct,FEC.olive)}
-              {fecBtn("اختيار العميل","Select Customer",()=>setCustModal("select"),FEC.olive)}
-              {fecBtn("تعديل العميل","Edit Customer",()=>setCustModal("edit"),FEC.olive)}
-              {fecBtn("بطاقة العضوية","Member Card",()=>setCustModal("card"),FEC.olive)}
-              {fecBtn("اتصال العضو","Member Contact",()=>setCustModal("contact"),FEC.olive)}
-              {fecBtn("بحث الموظف","Staff Lookup",()=>setStaffModal(true),FEC.olive)}
-              {fecBtn("دخول المدير","Manager Login",()=>fecPinLogin("Manager","Manager Login"),FEC.blue)}
+        {/* RIGHT — function matrix + keypad + actions */}
+        <div style={{width:"clamp(452px, 50%, 600px)",flexShrink:0,display:"flex",flexDirection:"column",background:FEC.bg,overflow:"auto",padding:6,gap:6}}>
+          {/* Function buttons */}
+          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gridAutoRows:"1fr",gap:5}}>
+            {fecBtn("حذف الخط","Void Line",fecVoidLine,FEC.orange)}
+            {fecBtn("حذف الكل","Void All",fecVoidAll,FEC.grey)}
+            {fecBtn("فحص السعر","Price Check",()=>{setPriceCheck(p=>!p);flash(priceCheck?"Price check off":"🔍 Price check ON");},priceCheck?C.warning:FEC.olive)}
+            {fecBtn("تغيير السعر","Change Price",fecChangePrice,FEC.olive)}
+            {fecBtn("بحث","Search",()=>setSearchModal({mode:"add"}),FEC.olive)}
+            {fecBtn("استعلام","Lookup",()=>setSearchModal({mode:"view"}),FEC.olive)}
+            {fecBtn("كوبون","Coupon",fecCouponBtn,FEC.olive)}
+            {fecBtn("خصم الإجمالي","Total Disc %",fecTotalDisc,FEC.olive)}
+            {fecBtn("مبلغ الخصم","Line Disc Amt",fecLineDiscAmount,FEC.olive)}
+            {fecBtn("نسبة الخصم","Line Disc %",fecLineDiscPct,FEC.olive)}
+            {fecBtn("اختيار العميل","Select Customer",()=>setCustModal("select"),FEC.olive)}
+            {fecBtn("تعديل العميل","Edit Customer",()=>setCustModal("edit"),FEC.olive)}
+            {fecBtn("بطاقة العضوية","Member Card",()=>setCustModal("card"),FEC.olive)}
+            {fecBtn("اتصال العضو","Member Contact",()=>setCustModal("contact"),FEC.olive)}
+            {fecBtn("بحث الموظف","Staff Lookup",()=>setStaffModal(true),FEC.olive)}
+            {fecBtn("دخول المدير","Manager Login",()=>fecPinLogin("Manager","Manager Login"),FEC.blue)}
+          </div>
+
+          {/* Keypad card — grouped calculator block with a live entry display */}
+          <div style={{background:"#e3e7d4",border:`1px solid ${FEC.line}`,borderRadius:10,padding:7,display:"flex",flexDirection:"column",gap:6}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,background:"#fbfdf6",border:`1px solid ${FEC.line}`,borderRadius:7,padding:"7px 12px"}}>
+              <span style={{fontSize:10,fontWeight:800,letterSpacing:"0.06em",color:"#8a916f"}}>ENTRY</span>
+              <span style={{fontSize:20,fontWeight:900,color:FEC.text,fontVariantNumeric:"tabular-nums",fontFamily:"'Segoe UI',monospace"}}>{fecEntry||"0"}</span>
             </div>
-            {/* Keypad */}
-            <div style={{width:210,flexShrink:0,display:"grid",gridTemplateColumns:"1.15fr 1fr 1fr 1fr",gridAutoRows:"1fr",gap:5}}>
-              {fecBtn("سطر أعلى","Line Up",()=>fecLineMove(-1),FEC.olive)}
+            <div style={{display:"grid",gridTemplateColumns:"1.2fr 1fr 1fr 1fr",gridAutoRows:"1fr",gap:5}}>
+              {fecBtn("سطر أعلى","Line Up",()=>fecLineMove(-1),FEC.olive,"#fff",{minH:44})}
               {fecNumKey("7",()=>fecPad("7"))}{fecNumKey("8",()=>fecPad("8"))}{fecNumKey("9",()=>fecPad("9"))}
-              {fecBtn("سطر أسفل","Line Down",()=>fecLineMove(1),FEC.olive)}
+              {fecBtn("سطر أسفل","Line Down",()=>fecLineMove(1),FEC.olive,"#fff",{minH:44})}
               {fecNumKey("4",()=>fecPad("4"))}{fecNumKey("5",()=>fecPad("5"))}{fecNumKey("6",()=>fecPad("6"))}
-              {fecBtn("الكمية","QTY",fecSetQty,FEC.blue)}
+              {fecBtn("الكمية","QTY",fecSetQty,FEC.blue,"#fff",{minH:44})}
               {fecNumKey("1",()=>fecPad("1"))}{fecNumKey("2",()=>fecPad("2"))}{fecNumKey("3",()=>fecPad("3"))}
-              {fecNumKey(".",()=>fecPad("."))}
-              {fecNumKey("0",()=>fecPad("0"))}{fecNumKey("00",()=>fecPad("00"))}{fecNumKey("⌫",()=>setFecEntry(s=>s.slice(0,-1)),FEC.grey,"#fff")}
-              {fecBtn("إلغاء","Cancel",()=>{setFecEntry("");setSelectedRow(null);flash("Cleared");},FEC.orange)}
-              <button onClick={fecEnter} style={{gridColumn:"span 3",borderRadius:6,border:"1px solid rgba(0,0,0,0.2)",background:FEC.oliveD,color:"#fff",cursor:"pointer",fontFamily:"inherit",fontSize:14,fontWeight:900,boxShadow:"inset 0 1px 0 rgba(255,255,255,0.25)"}}><span dir="rtl" style={{fontSize:9,opacity:0.9,display:"block"}}>إدخال</span>ENTER</button>
+              {fecNumKey("⌫",()=>setFecEntry(s=>s.slice(0,-1)),{bg:"#efe6d8",fs:17})}
+              {fecNumKey(".",()=>fecPad("."))}{fecNumKey("0",()=>fecPad("0"))}{fecNumKey("00",()=>fecPad("00"),{fs:16})}
+              {fecBtn("إلغاء","Cancel",()=>{setFecEntry("");setSelectedRow(null);flash("Cleared");},FEC.orange,"#fff",{minH:44})}
+              {fecNumKey("ENTER",fecEnter,{bg:FEC.oliveD,fg:"#fff",fs:14,span:3,ar:"إدخال"})}
             </div>
           </div>
-          {/* START + Logoff */}
-          <div style={{display:"flex",gap:6,padding:"0 6px 6px"}}>
-            <button onClick={fecEnter} style={{flex:1,padding:"12px 0",borderRadius:7,border:"none",background:`linear-gradient(180deg,${FEC.orange},${FEC.orangeD})`,color:"#fff",cursor:"pointer",fontFamily:"inherit",fontSize:16,fontWeight:900,letterSpacing:"0.02em",boxShadow:"inset 0 1px 0 rgba(255,255,255,0.3)"}}>بدأ / START</button>
-            <button onClick={fecLogoff} style={{width:130,padding:"12px 0",borderRadius:7,border:"none",background:FEC.blue,color:"#fff",cursor:"pointer",fontFamily:"inherit",fontSize:12,fontWeight:800}}><span dir="rtl" style={{fontSize:9,opacity:0.9,display:"block"}}>تسجيل الخروج</span>Logoff</button>
-          </div>
-          {/* Bottom action strip */}
-          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6,padding:"0 6px 6px"}}>
-            {fecBtn("استرجاع","Refund",()=>{ if(goScreen)goScreen("transactions"); else flash("Open Transactions to refund"); },FEC.olive)}
-            {fecBtn("العمليات","Transactions",fecOpenTransactions,FEC.olive)}
-            {fecBtn("العميل","Customer",()=>setCustModal("select"),FEC.olive)}
-            {fecBtn("عمليات الدفع","Tender / Pay",fecTender,C.primary)}
-            {fecBtn("دفعة للحساب","Payment to Account",()=>setAcctModal(true),FEC.olive)}
-            {fecBtn("تعليق","Suspended",()=>setSuspendModal(true),FEC.olive)}
+
+          {/* START + action strip */}
+          <button onClick={fecEnter} style={{padding:"13px 0",borderRadius:9,border:"none",background:`linear-gradient(180deg,${FEC.orange},${FEC.orangeD})`,color:"#fff",cursor:"pointer",fontFamily:"inherit",fontSize:16,fontWeight:900,letterSpacing:"0.02em",boxShadow:"inset 0 1px 0 rgba(255,255,255,0.3)"}}>بدأ / START</button>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gridAutoRows:"1fr",gap:5}}>
+            {fecBtn("استرجاع","Refund",()=>{ if(goScreen)goScreen("transactions"); else flash("Open Transactions to refund"); },FEC.olive,"#fff",{minH:48})}
+            {fecBtn("العمليات","Transactions",fecOpenTransactions,FEC.olive,"#fff",{minH:48})}
+            {fecBtn("العميل","Customer",()=>setCustModal("select"),FEC.olive,"#fff",{minH:48})}
+            {fecBtn("عمليات الدفع","Tender / Pay",fecTender,C.primary,"#fff",{minH:48})}
+            {fecBtn("دفعة للحساب","Payment to Account",()=>setAcctModal(true),FEC.olive,"#fff",{minH:48})}
+            {fecBtn("تعليق","Suspended",()=>setSuspendModal(true),FEC.olive,"#fff",{minH:48})}
           </div>
         </div>
       </div>
@@ -5885,6 +5917,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
       <div style={{display:"flex",alignItems:"center",gap:0,background:FEC.head,borderTop:`1px solid ${FEC.line}`,fontSize:11,fontWeight:700,color:FEC.text}}>
         {[`SALES`,`FMode: ITEM`,`Receipt: ${String(vno).padStart(6,"0")}`,`Staff: ${currentUser?.name||"—"}`,`Mgr: ${mgrSession?"Yes":"No"}`].map((s,i)=><div key={i} style={{padding:"6px 12px",borderRight:`1px solid ${FEC.line}`,whiteSpace:"nowrap"}}>{s}</div>)}
         <div style={{marginLeft:"auto",padding:"6px 12px",whiteSpace:"nowrap"}}>{new Date().toLocaleDateString("en-GB")} {new Date().toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})}</div>
+      </div>
       </div>
     </div>
   );
@@ -16978,7 +17011,7 @@ export default function App(){
         )}
         <TabBoundary key={screen} name={screen}>
         {screen==="dashboard"&&<Dashboard sales={allSales} items={items} license={license} lang={lang}/>}
-        {screen==="pos"&&<POS items={items} setItems={setItems} sales={sales} setSales={setSales} tables={tables} setTables={setTables} promos={promos} license={license} lang={lang} currentUser={currentUser} goScreen={setScreen} onLogout={()=>{setCurrentUser(null);setStep("login");}}/>}
+        {screen==="pos"&&<POS items={items} setItems={setItems} sales={sales} setSales={setSales} tables={tables} setTables={setTables} promos={promos} license={license} lang={lang} currentUser={currentUser} goScreen={setScreen} onLogout={()=>{setCurrentUser(null);setStep("login");}} nav={NAV} screen={screen}/>}
         {screen==="settings"&&<Settings company={company} setCompany={setCompany} tables={tables} setTables={setTables} license={license} onClearLicense={handleClearLicense} onSwitchAccount={handleSwitchAccount} pins={pins} setPins={setPins} invoiceFormat={invoiceFormat} setInvoiceFormat={setInvoiceFormat} lang={lang} onLangChange={handleLangChange} sales={allSales} items={items}/>}
         {screen==="create"&&<Create items={items} setItems={setItems} promos={promos} setPromos={setPromos} lang={lang}/>}
         {screen==="transactions"&&<Transactions sales={allSales} setSales={setSales} license={license} lang={lang} autoSyncStatus={autoSyncStatus} archiveIndex={archiveIndex} fetchCloudRange={fetchCloudRange} cloudLoading={cloudLoading} cloudError={cloudError}/>}
