@@ -91,8 +91,14 @@ firebase functions:secrets:set EMAILJS_PRIVATE_KEY # EmailJS private key (server
 firebase functions:secrets:set AI_API_KEY          # optional: Anthropic key (else config/ai is used)
 
 # Deploy the functions
-firebase deploy --only functions:verifyLogin,functions:setClientCredentials,functions:aiChat,functions:qzSign,functions:requestPasswordReset,functions:resetPasswordWithOtp
+firebase deploy --only functions:verifyLogin,functions:setClientCredentials,functions:aiChat,functions:qzSign,functions:requestPasswordReset,functions:resetPasswordWithOtp,functions:zatcaArchive,functions:zatcaArchiveBatch,functions:zatcaChain,functions:zatcaExport
 ```
+
+> Deploy is **scoped by name on purpose** — the manager app's `getManagerData`
+> lives in a separate repo under the same `default` codebase, so an unscoped
+> `firebase deploy --only functions` would delete it. Keep every function the POS
+> frontend calls in this list; the ZATCA archive/chain/export functions belong
+> here too.
 
 Or run the **Deploy Firebase Functions** GitHub Action (`workflow_dispatch`).
 It needs the `FIREBASE_SERVICE_ACCOUNT` repo secret.

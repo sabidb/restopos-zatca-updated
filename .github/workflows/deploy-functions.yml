@@ -25,6 +25,6 @@ jobs:
       - name: Deploy to Firebase
         # No Secret Manager pre-provisioning needed: qz/emailjs/ai keys are read
         # at runtime from the locked Firestore doc config/secrets (Admin SDK).
-        run: npx firebase-tools@13 deploy --only functions:verifyLogin,functions:setClientCredentials,functions:aiChat,functions:qzSign,functions:requestPasswordReset,functions:resetPasswordWithOtp --project restopos-db
+        run: npx firebase-tools@13 deploy --only functions:verifyLogin,functions:setClientCredentials,functions:aiChat,functions:qzSign,functions:requestPasswordReset,functions:resetPasswordWithOtp,functions:zatcaArchive,functions:zatcaArchiveBatch,functions:zatcaChain,functions:zatcaExport --project restopos-db
         env:
           GOOGLE_APPLICATION_CREDENTIALS: /tmp/key.json
