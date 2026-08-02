@@ -32,8 +32,13 @@
 // browser don't collide. On registration, promoteTrialWorkspace() lifts
 // the namespace into the real one so 14 days of work carries over.
 // ═══════════════════════════════════════════════════════════════════
+import { BUSINESS_TYPES } from "./businessTypes/index.js";
 
 export const TRIAL_DAYS = 14;
+
+// A business type is valid iff it exists in the registry. New types added
+// under src/businessTypes/ are accepted automatically — no list to update here.
+const isValidBusinessType = (t) => !!BUSINESS_TYPES[t];
 
 // These live in the REAL localStorage (outside the trial namespace) — they are
 // the switch that decides whether the namespace is installed at all.
@@ -247,7 +252,7 @@ export function beginTrial(details) {
     email: details.email || "",
     address: details.address || "",
     city: details.city || "Riyadh",
-    businessType: ["restaurant","supermarket","hypermarket"].includes(details.businessType) ? details.businessType : "restaurant",
+    businessType: isValidBusinessType(details.businessType) ? details.businessType : "restaurant",
     startedAt,
     endsAt,
   };
@@ -330,7 +335,7 @@ export function promoteTrialWorkspace() {
 /** Persist a mode change (Restaurant ⇄ Supermarket ⇄ Hypermarket) into the trial meta. */
 export function setTrialBusinessType(businessType) {
   const real = realStore();
-  const bt = ["restaurant","supermarket","hypermarket"].includes(businessType) ? businessType : "restaurant";
+  const bt = isValidBusinessType(businessType) ? businessType : "restaurant";
   if (_meta) _meta = { ..._meta, businessType: bt };
   try { if (_meta) real.setItem(META_KEY, JSON.stringify(_meta)); } catch (e) {}
   return bt;

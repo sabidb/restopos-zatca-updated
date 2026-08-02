@@ -1,73 +1,10 @@
 // ═══════════════════════════════════════════════════════════════════
-// BUSINESS TYPES — single source of truth registry + helpers.
-// Extracted verbatim from App.jsx; registry and logic unchanged.
+// COMPAT SHIM. The business-type registry now lives in its own feature
+// folder, one sub-folder per type: src/businessTypes/.
+//
+// This file re-exports it so existing imports (`./config/businessTypes.js`)
+// keep working unchanged. Prefer importing from "../businessTypes/index.js"
+// in new code. Do not add type definitions here — add them under
+// src/businessTypes/<type>/.
 // ═══════════════════════════════════════════════════════════════════
-import { LS } from "../lib/storage.js";
-
-// ── BUSINESS TYPES ───────────────────────────────────────────────────────
-// Single source of truth for every business type. The whole app reads its
-// behaviour from the active profile instead of scattered `if (isSupermarket())`
-// checks — so adding a new type (pharmacy, salon, café, …) is one entry here
-// plus any screens unique to it, with nothing else to hunt down.
-//
-// Restaurant and Supermarket are defined to match today's behaviour exactly.
-// Fields:
-//   posLayout        "grid" (menu grid + cart) | "scan" (barcode-first till)
-//   nav              "topbar" (flat bar) | "sidebar" (☰ drawer + quick tabs)
-//   features         capability flags the UI switches on
-//   orderTypes       [id, icon, label] shown on the cart order-type toggle
-//   hideAdvancedTabs Advanced-screen tabs this type doesn't use
-//   navLabels        per-type wording overrides for nav items
-//
-// Optional Phase-2 fields (absent ⇒ off, so restaurant/supermarket are
-// unaffected; a new type opts in):
-//   roles              e.g. ["Admin","Manager","Supervisor","Cashier"] — which
-//                      staff roles this type uses (default: Admin/Manager/Cashier).
-//                      See src/config/roles.js.
-//   features.approvals true | { "sale.void":true, ... } — require a higher-ranked
-//                      PIN to approve gated till actions. See src/lib/permissions.js.
-//   features.loyalty   true — enable points/tiers/redemptions.
-//   loyalty            optional overrides for the default earn/redeem rules.
-//                      See src/config/loyalty.js.
-export const BUSINESS_TYPES={
-  restaurant:{
-    id:"restaurant", label:"Restaurant", labelAr:"مطعم", icon:"🍽️",
-    posLayout:"grid", nav:"topbar",
-    features:{ tables:true, dineIn:true, kot:true, kitchen:true, kds:true, recipes:true, weighing:false, barcodeFirst:false },
-    orderTypes:[["takeaway","🥡","Takeaway"],["dine-in","🍽","Dine-in"],["delivery","🛵","Delivery"]],
-    hideAdvancedTabs:[],
-    navLabels:{},
-  },
-  supermarket:{
-    id:"supermarket", label:"Supermarket", labelAr:"سوبرماركت", icon:"🛒",
-    posLayout:"scan", nav:"sidebar",
-    features:{ tables:false, dineIn:false, kot:false, kitchen:false, kds:false, recipes:false, weighing:true, barcodeFirst:true },
-    orderTypes:[["takeaway","🛒","Sale"],["delivery","🛵","Delivery"]],
-    hideAdvancedTabs:["kitchen","kds","recipes"],
-    navLabels:{ create:"Products" },
-  },
-  // Large hypermarket (Lulu-style): supermarket till, plus the Phase-2 shared
-  // systems switched ON — a Supervisor role with manager-approval overrides for
-  // void/refund/price-override, and a customer loyalty/rewards programme.
-  hypermarket:{
-    id:"hypermarket", label:"Hypermarket", labelAr:"هايبر ماركت", icon:"🏬",
-    posLayout:"scan", nav:"sidebar",
-    features:{ tables:false, dineIn:false, kot:false, kitchen:false, kds:false, recipes:false, weighing:true, barcodeFirst:true, approvals:true, loyalty:true },
-    orderTypes:[["takeaway","🛒","Sale"],["delivery","🛵","Delivery"]],
-    hideAdvancedTabs:["kitchen","kds","recipes"],
-    navLabels:{ create:"Products" },
-    roles:["Admin","Manager","Supervisor","Cashier"],
-  },
-};
-export const DEFAULT_BUSINESS_TYPE="restaurant";
-export function getBusinessType(license){
-  const lic = license || (typeof LS!=="undefined" ? LS.get("restopos_license_v2") : null);
-  const t = lic && lic.businessType;
-  return BUSINESS_TYPES[t] ? t : DEFAULT_BUSINESS_TYPE; // unknown/missing → default, never crashes
-}
-// The active type's full profile — the object the UI should read from.
-export function bizProfile(license){ return BUSINESS_TYPES[getBusinessType(license)]||BUSINESS_TYPES[DEFAULT_BUSINESS_TYPE]; }
-// One capability flag, e.g. bizFeature("tables") / bizFeature("kot").
-export function bizFeature(name,license){ return !!bizProfile(license).features[name]; }
-// Kept for compatibility across the app; now derived from the registry.
-export function isSupermarket(license){ return getBusinessType(license)==="supermarket"; }
+export * from "../businessTypes/index.js";
