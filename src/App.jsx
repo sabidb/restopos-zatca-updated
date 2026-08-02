@@ -14046,6 +14046,8 @@ let _qzPrinters = [];
 let _qzBillPrinter = localStorage.getItem("restopos_qz_bill_printer") || "";
 let _qzKitchenPrinter = localStorage.getItem("restopos_qz_kitchen_printer") || "";
 let _qzKeepAliveSet = false; // ensures the auto-reconnect callback is registered only once
+let _qzConnecting = null;      // single-flight guard: the in-flight connect promise (or null)
+let _qzSuppressReconnect = false; // true after a user-initiated Disconnect, so keep-alive stays down
 
 // Load QZ Tray script dynamically (+ jsrsasign for request signing → no popup)
 async function loadQZ() {
@@ -14101,12 +14103,24 @@ const RESTOPOS_QZ_CERT = "-----BEGIN CERTIFICATE-----\n" +
 // the key server-side (QZ_PRIVATE_KEY env). The certificate below is public.
 const qzSignFn = httpsCallable(functions, "qzSign");
 
-// Connect to QZ Tray
-async function connectQZ() {
+// Connect to QZ Tray.
+// Single-flight: many code paths (bill print, KOT print, settings, keep-alive)
+// can ask to connect at once. QZ Tray rejects a second qz.websocket.connect()
+// while one is still in progress, which showed up as intermittent "won't
+// connect" failures. So concurrent callers share ONE in-flight attempt.
+function connectQZ() {
+  if (isQZConnected()) return Promise.resolve(true);
+  if (_qzConnecting) return _qzConnecting;      // reuse the attempt already running
+  _qzSuppressReconnect = false;                 // an explicit connect clears any manual-disconnect hold
+  _qzConnecting = _connectQZOnce().finally(() => { _qzConnecting = null; });
+  return _qzConnecting;
+}
+
+async function _connectQZOnce() {
   try {
     const loaded = await loadQZ();
     if (!loaded || !window.qz) return false;
-    if (qz.websocket.isActive()) return true;
+    if (qz.websocket.isActive()) { _qzConnected = true; return true; }
 
     // ── Signed mode — RestoPOS signs every request so QZ Tray trusts it.
     // With the certificate installed as an override on the machine, the
@@ -14142,7 +14156,13 @@ async function connectQZ() {
     const savedBill = localStorage.getItem("restopos_qz_bill_printer");
     const savedKitchen = localStorage.getItem("restopos_qz_kitchen_printer");
     if (savedBill && _qzPrinters.includes(savedBill)) _qzBillPrinter = savedBill;
-    else if (!_qzBillPrinter && _qzPrinters.length > 0) _qzBillPrinter = _qzPrinters[0];
+    else if (!_qzBillPrinter && _qzPrinters.length > 0) {
+      // Auto-pick the first printer AND persist it, so the Settings screen shows
+      // the same printer that prints actually use (previously the default was
+      // held only in memory, so Settings looked "unselected" while prints worked).
+      _qzBillPrinter = _qzPrinters[0];
+      try { localStorage.setItem("restopos_qz_bill_printer", _qzBillPrinter); } catch (_e) {}
+    }
     if (savedKitchen && _qzPrinters.includes(savedKitchen)) _qzKitchenPrinter = savedKitchen;
 
     // ── Keep-alive: if QZ Tray drops (PC sleep, QZ restart, blip), reconnect
@@ -14151,8 +14171,9 @@ async function connectQZ() {
       try {
         qz.websocket.setClosedCallbacks(function () {
           _qzConnected = false;
+          if (_qzSuppressReconnect) return; // user pressed Disconnect — stay down
           console.warn("[QZ] Connection closed — auto-reconnecting…");
-          setTimeout(function () { connectQZ(); }, 2000);
+          setTimeout(function () { if (!_qzSuppressReconnect) connectQZ(); }, 2000);
         });
         _qzKeepAliveSet = true;
       } catch (_e) {}
@@ -14165,9 +14186,12 @@ async function connectQZ() {
   }
 }
 
-// Disconnect QZ
+// Disconnect QZ. Sets a hold so the keep-alive callback does not immediately
+// reconnect — a user who pressed Disconnect means it. The next explicit
+// connectQZ() clears the hold.
 async function disconnectQZ() {
   try {
+    _qzSuppressReconnect = true;
     if (window.qz && qz.websocket.isActive()) await qz.websocket.disconnect();
     _qzConnected = false;
   } catch (e) {}
