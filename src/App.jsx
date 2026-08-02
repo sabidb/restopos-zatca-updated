@@ -222,6 +222,8 @@ function escapeXML(str) { if (!str) return ""; return String(str).replace(/&/g,"
 function generateUBLXML(invoice) {
   const { invoice_number, uuid, timestamp, seller_name, seller_vat, seller_address, items, subtotal, vat_amount, total, prev_invoice_hash, icv, qr_string } = invoice;
   const dateStr = timestamp.slice(0, 10); const timeStr = timestamp.slice(11, 19);
+  // VAT rate for the e-invoice comes from the client's VAT config (default 15).
+  const _r = taxRate();
 
   // Fix #3: B2B vs B2C — ProfileID and InvoiceTypeCode name
   const isB2B = invoice.invoice_type === "B2B" || invoice.is_b2b === true;
@@ -246,7 +248,7 @@ function generateUBLXML(invoice) {
   // Fix #6: AllowanceCharge for discounts
   const discountAmt = parseFloat(invoice.discount || 0);
   const allowanceCharge = discountAmt > 0
-    ? `<cac:AllowanceCharge><cbc:ChargeIndicator>false</cbc:ChargeIndicator><cbc:AllowanceChargeReason>Discount</cbc:AllowanceChargeReason><cbc:Amount currencyID="SAR">${discountAmt.toFixed(2)}</cbc:Amount><cac:TaxCategory><cbc:ID>S</cbc:ID><cbc:Percent>15</cbc:Percent><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:TaxCategory></cac:AllowanceCharge>`
+    ? `<cac:AllowanceCharge><cbc:ChargeIndicator>false</cbc:ChargeIndicator><cbc:AllowanceChargeReason>Discount</cbc:AllowanceChargeReason><cbc:Amount currencyID="SAR">${discountAmt.toFixed(2)}</cbc:Amount><cac:TaxCategory><cbc:ID>S</cbc:ID><cbc:Percent>${_r}</cbc:Percent><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:TaxCategory></cac:AllowanceCharge>`
     : "";
 
   // Fix #7: CityName from invoice seller_city, fallback Riyadh
@@ -254,12 +256,12 @@ function generateUBLXML(invoice) {
 
   const lineItems = (items || []).map((item, idx) => {
     const lineTotal = (item.price * item.qty);
-    const lineVAT = parseFloat((lineTotal * (15 / 115)).toFixed(2));
-    const lineExclVAT = parseFloat((lineTotal - lineVAT).toFixed(2));
-    return `<cac:InvoiceLine><cbc:ID>${idx+1}</cbc:ID><cbc:InvoicedQuantity unitCode="PCE">${item.qty}</cbc:InvoicedQuantity><cbc:LineExtensionAmount currencyID="SAR">${lineExclVAT.toFixed(2)}</cbc:LineExtensionAmount><cac:TaxTotal><cbc:TaxAmount currencyID="SAR">${lineVAT.toFixed(2)}</cbc:TaxAmount></cac:TaxTotal><cac:Item><cbc:Name>${escapeXML(item.name)}</cbc:Name><cac:ClassifiedTaxCategory><cbc:ID>S</cbc:ID><cbc:Percent>15</cbc:Percent><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:ClassifiedTaxCategory></cac:Item><cac:Price><cbc:PriceAmount currencyID="SAR">${item.price.toFixed(2)}</cbc:PriceAmount></cac:Price></cac:InvoiceLine>`;
+    const lineVAT = parseFloat(taxVatOf(lineTotal).toFixed(2));
+    const lineExclVAT = parseFloat((taxIncl()? lineTotal - lineVAT : lineTotal).toFixed(2));
+    return `<cac:InvoiceLine><cbc:ID>${idx+1}</cbc:ID><cbc:InvoicedQuantity unitCode="PCE">${item.qty}</cbc:InvoicedQuantity><cbc:LineExtensionAmount currencyID="SAR">${lineExclVAT.toFixed(2)}</cbc:LineExtensionAmount><cac:TaxTotal><cbc:TaxAmount currencyID="SAR">${lineVAT.toFixed(2)}</cbc:TaxAmount></cac:TaxTotal><cac:Item><cbc:Name>${escapeXML(item.name)}</cbc:Name><cac:ClassifiedTaxCategory><cbc:ID>S</cbc:ID><cbc:Percent>${_r}</cbc:Percent><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:ClassifiedTaxCategory></cac:Item><cac:Price><cbc:PriceAmount currencyID="SAR">${item.price.toFixed(2)}</cbc:PriceAmount></cac:Price></cac:InvoiceLine>`;
   }).join("");
 
-  return `<?xml version="1.0" encoding="UTF-8"?><Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2" xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2" xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2" xmlns:ext="urn:oasis:names:specification:ubl:schema:xsd:CommonExtensionComponents-2"><ext:UBLExtensions><ext:UBLExtension><ext:ExtensionURI>urn:oasis:names:specification:ubl:dsig:ext:ZATCA</ext:ExtensionURI><ext:ExtensionContent><!-- ECDSA signature injected by Railway microservice --></ext:ExtensionContent></ext:UBLExtension></ext:UBLExtensions><cbc:UBLVersionID>2.1</cbc:UBLVersionID><cbc:CustomizationID>urn:zatca.gov.sa:trUBL:Invoice:2.0</cbc:CustomizationID><cbc:ProfileID>${profileID}</cbc:ProfileID><cbc:ID>${escapeXML(invoice_number)}</cbc:ID><cbc:UUID>${uuid}</cbc:UUID><cbc:IssueDate>${dateStr}</cbc:IssueDate><cbc:IssueTime>${timeStr}</cbc:IssueTime><cbc:InvoiceTypeCode name="${invoiceTypeCodeName}">${invoiceCode}</cbc:InvoiceTypeCode><cbc:DocumentCurrencyCode>SAR</cbc:DocumentCurrencyCode><cbc:TaxCurrencyCode>SAR</cbc:TaxCurrencyCode><cbc:AdditionalDocumentReference><cbc:ID>ICV</cbc:ID><cbc:UUID>${icv}</cbc:UUID></cbc:AdditionalDocumentReference><cbc:AdditionalDocumentReference><cbc:ID>PIH</cbc:ID><cac:Attachment><cbc:EmbeddedDocumentBinaryObject mimeCode="text/plain">${prev_invoice_hash||"NWZlY2ViNjZmZmM4NmYzOGQ5NTI3ODZjNmQ2OTZjNzljMmRiYzIzOWRkNGU5MWI0NjcyOWQ3M2EyN2ZhNTdlOQ=="}</cbc:EmbeddedDocumentBinaryObject></cac:Attachment></cbc:AdditionalDocumentReference><cbc:AdditionalDocumentReference><cbc:ID>QR</cbc:ID><cac:Attachment><cbc:EmbeddedDocumentBinaryObject mimeCode="text/plain">${qr_string}</cbc:EmbeddedDocumentBinaryObject></cac:Attachment></cbc:AdditionalDocumentReference>${billingRef}<cac:AccountingSupplierParty><cac:Party><cac:PartyIdentification><cbc:ID schemeID="CRN">${escapeXML(invoice.seller_cr||"")}</cbc:ID></cac:PartyIdentification><cac:PostalAddress><cbc:StreetName>${escapeXML(seller_address)}</cbc:StreetName><cbc:CityName>${cityName}</cbc:CityName><cbc:CountrySubentity>SA</cbc:CountrySubentity><cac:Country><cbc:IdentificationCode>SA</cbc:IdentificationCode></cac:Country></cac:PostalAddress><cac:PartyTaxScheme><cbc:CompanyID>${escapeXML(seller_vat)}</cbc:CompanyID><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:PartyTaxScheme><cac:PartyLegalEntity><cbc:RegistrationName>${escapeXML(seller_name)}</cbc:RegistrationName></cac:PartyLegalEntity></cac:Party></cac:AccountingSupplierParty><cac:AccountingCustomerParty>${buyerParty}</cac:AccountingCustomerParty>${allowanceCharge}<cac:PaymentMeans><cbc:PaymentMeansCode>${pmCode}</cbc:PaymentMeansCode></cac:PaymentMeans><cac:TaxTotal><cbc:TaxAmount currencyID="SAR">${vat_amount.toFixed(2)}</cbc:TaxAmount><cac:TaxSubtotal><cbc:TaxableAmount currencyID="SAR">${subtotal.toFixed(2)}</cbc:TaxableAmount><cbc:TaxAmount currencyID="SAR">${vat_amount.toFixed(2)}</cbc:TaxAmount><cac:TaxCategory><cbc:ID>S</cbc:ID><cbc:Percent>15</cbc:Percent><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal></cac:TaxTotal><cac:LegalMonetaryTotal><cbc:LineExtensionAmount currencyID="SAR">${subtotal.toFixed(2)}</cbc:LineExtensionAmount><cbc:TaxExclusiveAmount currencyID="SAR">${subtotal.toFixed(2)}</cbc:TaxExclusiveAmount><cbc:TaxInclusiveAmount currencyID="SAR">${total.toFixed(2)}</cbc:TaxInclusiveAmount><cbc:PayableAmount currencyID="SAR">${total.toFixed(2)}</cbc:PayableAmount></cac:LegalMonetaryTotal>${lineItems}</Invoice>`;
+  return `<?xml version="1.0" encoding="UTF-8"?><Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2" xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2" xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2" xmlns:ext="urn:oasis:names:specification:ubl:schema:xsd:CommonExtensionComponents-2"><ext:UBLExtensions><ext:UBLExtension><ext:ExtensionURI>urn:oasis:names:specification:ubl:dsig:ext:ZATCA</ext:ExtensionURI><ext:ExtensionContent><!-- ECDSA signature injected by Railway microservice --></ext:ExtensionContent></ext:UBLExtension></ext:UBLExtensions><cbc:UBLVersionID>2.1</cbc:UBLVersionID><cbc:CustomizationID>urn:zatca.gov.sa:trUBL:Invoice:2.0</cbc:CustomizationID><cbc:ProfileID>${profileID}</cbc:ProfileID><cbc:ID>${escapeXML(invoice_number)}</cbc:ID><cbc:UUID>${uuid}</cbc:UUID><cbc:IssueDate>${dateStr}</cbc:IssueDate><cbc:IssueTime>${timeStr}</cbc:IssueTime><cbc:InvoiceTypeCode name="${invoiceTypeCodeName}">${invoiceCode}</cbc:InvoiceTypeCode><cbc:DocumentCurrencyCode>SAR</cbc:DocumentCurrencyCode><cbc:TaxCurrencyCode>SAR</cbc:TaxCurrencyCode><cbc:AdditionalDocumentReference><cbc:ID>ICV</cbc:ID><cbc:UUID>${icv}</cbc:UUID></cbc:AdditionalDocumentReference><cbc:AdditionalDocumentReference><cbc:ID>PIH</cbc:ID><cac:Attachment><cbc:EmbeddedDocumentBinaryObject mimeCode="text/plain">${prev_invoice_hash||"NWZlY2ViNjZmZmM4NmYzOGQ5NTI3ODZjNmQ2OTZjNzljMmRiYzIzOWRkNGU5MWI0NjcyOWQ3M2EyN2ZhNTdlOQ=="}</cbc:EmbeddedDocumentBinaryObject></cac:Attachment></cbc:AdditionalDocumentReference><cbc:AdditionalDocumentReference><cbc:ID>QR</cbc:ID><cac:Attachment><cbc:EmbeddedDocumentBinaryObject mimeCode="text/plain">${qr_string}</cbc:EmbeddedDocumentBinaryObject></cac:Attachment></cbc:AdditionalDocumentReference>${billingRef}<cac:AccountingSupplierParty><cac:Party><cac:PartyIdentification><cbc:ID schemeID="CRN">${escapeXML(invoice.seller_cr||"")}</cbc:ID></cac:PartyIdentification><cac:PostalAddress><cbc:StreetName>${escapeXML(seller_address)}</cbc:StreetName><cbc:CityName>${cityName}</cbc:CityName><cbc:CountrySubentity>SA</cbc:CountrySubentity><cac:Country><cbc:IdentificationCode>SA</cbc:IdentificationCode></cac:Country></cac:PostalAddress><cac:PartyTaxScheme><cbc:CompanyID>${escapeXML(seller_vat)}</cbc:CompanyID><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:PartyTaxScheme><cac:PartyLegalEntity><cbc:RegistrationName>${escapeXML(seller_name)}</cbc:RegistrationName></cac:PartyLegalEntity></cac:Party></cac:AccountingSupplierParty><cac:AccountingCustomerParty>${buyerParty}</cac:AccountingCustomerParty>${allowanceCharge}<cac:PaymentMeans><cbc:PaymentMeansCode>${pmCode}</cbc:PaymentMeansCode></cac:PaymentMeans><cac:TaxTotal><cbc:TaxAmount currencyID="SAR">${vat_amount.toFixed(2)}</cbc:TaxAmount><cac:TaxSubtotal><cbc:TaxableAmount currencyID="SAR">${subtotal.toFixed(2)}</cbc:TaxableAmount><cbc:TaxAmount currencyID="SAR">${vat_amount.toFixed(2)}</cbc:TaxAmount><cac:TaxCategory><cbc:ID>S</cbc:ID><cbc:Percent>${_r}</cbc:Percent><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal></cac:TaxTotal><cac:LegalMonetaryTotal><cbc:LineExtensionAmount currencyID="SAR">${subtotal.toFixed(2)}</cbc:LineExtensionAmount><cbc:TaxExclusiveAmount currencyID="SAR">${subtotal.toFixed(2)}</cbc:TaxExclusiveAmount><cbc:TaxInclusiveAmount currencyID="SAR">${total.toFixed(2)}</cbc:TaxInclusiveAmount><cbc:PayableAmount currencyID="SAR">${total.toFixed(2)}</cbc:PayableAmount></cac:LegalMonetaryTotal>${lineItems}</Invoice>`;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -597,8 +599,8 @@ function buildZatcaReportPayload(inv, licenseKey) {
         // deliberately NOT rounded first: rounding each unit to two decimals and
         // then multiplying by quantity drifts from the gross the customer
         // actually paid, and ZATCA validates that the totals tie out.
-        tax_exclusive_price: it.price / 1.15,
-        VAT_percent: 0.15
+        tax_exclusive_price: taxIncl() ? it.price / (1 + taxRate()/100) : it.price,
+        VAT_percent: taxRate()/100
       }))
     }
   };
@@ -796,9 +798,10 @@ async function generateZATCAInvoice({seller_name,seller_vat,seller_address,selle
   const invoice_number = `INV-${String(icv).padStart(6,"0")}`;
   const timestamp = new Date().toISOString();
   const uuid = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const total = parseFloat(items.reduce((s,i)=>s+i.price*i.qty,0).toFixed(2));
-  const vat_amount = parseFloat((total*(15/115)).toFixed(2));
-  const subtotal = parseFloat((total-vat_amount).toFixed(2));
+  const _rawSum = parseFloat(items.reduce((s,i)=>s+i.price*i.qty,0).toFixed(2));
+  const vat_amount = parseFloat(taxVatOf(_rawSum).toFixed(2));
+  const subtotal = parseFloat((taxIncl()? _rawSum - vat_amount : _rawSum).toFixed(2));
+  const total = parseFloat((taxIncl()? _rawSum : _rawSum + vat_amount).toFixed(2));
   const prev_invoice_hash = invoiceStorage.getLastHash();
   // Buyer address is carried on the invoice because ZATCA requires it on every
   // standard (B2B) document — street, city and postal code are mandatory, and a
@@ -3756,15 +3759,20 @@ function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1
   // Combined discount
   const totalDiscountAmt=manualDiscountAmt+promoDiscountAmt+loyaltyRedeemAmt;
 
-  // Prices are VAT-INCLUSIVE. With NO discount, the final total must equal the
-  // original menu total exactly (35 → 35.00). The old code recomputed VAT as
-  // subtotal×0.15 which rounded differently from the parent's 15/115 extraction,
-  // producing 34.99. Here we keep the original inclusive total and only subtract
-  // the discount (which is computed on the subtotal, unchanged), then derive VAT
-  // from the resulting inclusive amount with 15/115 so everything stays consistent.
-  const finalTotal=parseFloat((Math.max(0,_origTotal-totalDiscountAmt)).toFixed(2));
-  const finalVat=parseFloat((finalTotal*(15/115)).toFixed(2));
-  const discountedSubtotal=parseFloat((finalTotal-finalVat).toFixed(2));
+  // Final total & VAT come from the client's VAT/Totals config (Advanced → VAT
+  // & Totals). Defaults (15%, VAT-inclusive, no rounding, 2dp) reproduce the old
+  // behaviour exactly: with no discount the total equals the original inclusive
+  // menu total and VAT is the 15/115 portion. Changing the config here is what
+  // makes the setting strictly apply to every recorded/printed invoice.
+  const _tc=getTaxConfig(); const _tr=Number(_tc.vatRate)||0;
+  const _tdp=Number.isFinite(Number(_tc.decimals))?Number(_tc.decimals):2;
+  const _preRound=Math.max(0,_origTotal-totalDiscountAmt); // discounted amount, price basis
+  let _grandRaw,_subRaw;
+  if(_tc.pricesIncludeVat){ _grandRaw=_preRound; _subRaw=_grandRaw-_grandRaw*_tr/(100+_tr); }
+  else { _subRaw=_preRound; _grandRaw=_subRaw*(1+_tr/100); }
+  const finalTotal=parseFloat(roundToRule(_grandRaw,_tc.rounding).toFixed(_tdp));
+  const finalVat=parseFloat((_tc.pricesIncludeVat? finalTotal*_tr/(100+_tr) : finalTotal-_subRaw).toFixed(_tdp));
+  const discountedSubtotal=parseFloat((finalTotal-finalVat).toFixed(_tdp));
 
   // Cash defaults to the EXACT amount automatically; user can still type a different amount.
   useEffect(()=>{
@@ -4359,7 +4367,7 @@ function ReceiptModal({order,license,zatcaInvoice,onClose}){
         ))}
         <hr style={{border:"none",borderTop:"1px dashed #ccc",margin:"8px 0"}}/>
                 {order.discount>0&&<div style={{display:"flex",justifyContent:"space-between",color:"#D94040"}}><span>Discount</span><span>-{fmtSAR(order.discount)}</span></div>}
-        <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:C.textLight}}><span>VAT 15% (incl.)</span><span>{fmtSAR(order.vat)}</span></div>
+        <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:C.textLight}}><span>VAT {taxRate()}%{taxIncl()?" (incl.)":""}</span><span>{fmtSAR(order.vat)}</span></div>
         <div style={{display:"flex",justifyContent:"space-between",fontWeight:900,fontSize:15,marginTop:6,borderTop:"2px solid #333",paddingTop:6}}><span>TOTAL</span><span>{fmtSAR(order.total)}</span></div>
         {order.payMethod==="Cash"&&<><div style={{display:"flex",justifyContent:"space-between",marginTop:4}}><span>Cash Given</span><span>{fmtSAR(order.given)}</span></div><div style={{display:"flex",justifyContent:"space-between",color:"#1A6B4A",fontWeight:700}}><span>Change</span><span>{fmtSAR(order.change)}</span></div></>}
         <hr style={{border:"none",borderTop:"1px dashed #ccc",margin:"8px 0"}}/>
@@ -4553,7 +4561,7 @@ ${SEP}
 ${itemsHTML}
 ${SEP}
 ${order.discount>0?`<div style="display:flex;justify-content:space-between;color:#b00;gap:6px"><span>Discount</span><span style="white-space:nowrap">-SAR ${order.discount.toFixed(2)}</span></div>`:""}
-${showVat?`<div style="display:flex;justify-content:space-between;font-size:${fontSize-1}px;color:#666;gap:6px"><span>VAT 15% (incl.)</span><span style="white-space:nowrap">SAR ${(order.vat||0).toFixed(2)}</span></div>`:""}
+${showVat?`<div style="display:flex;justify-content:space-between;font-size:${fontSize-1}px;color:#666;gap:6px"><span>VAT ${taxRate()}%${taxIncl()?" (incl.)":""}</span><span style="white-space:nowrap">SAR ${(order.vat||0).toFixed(2)}</span></div>`:""}
 <div style="display:flex;justify-content:space-between;font-weight:900;font-size:${totalSize}px;border-top:2px solid #000;padding-top:4px;margin-top:3px;gap:6px"><span>TOTAL</span><span style="white-space:nowrap">SAR ${(order.total||0).toFixed(2)}</span></div>
 ${order.payMethod==="Cash"?`<div style="display:flex;justify-content:space-between;font-size:${fontSize-1}px;gap:6px"><span>Cash Given</span><span style="white-space:nowrap">SAR ${(order.given||0).toFixed(2)}</span></div><div style="display:flex;justify-content:space-between;font-size:${fontSize-1}px;font-weight:700;gap:6px"><span>Change</span><span style="white-space:nowrap">SAR ${(order.change||0).toFixed(2)}</span></div>`:""}
 ${SEP}
@@ -4626,7 +4634,7 @@ ${order.note?`<div style="font-size:${fontSize-1}px;font-style:italic;word-break
 ${items.map(it=>`<div class="item"><span class="nm">${it.nameAr?`<div style="direction:rtl;font-family:'Tahoma','Arial','Times New Roman',serif;font-weight:700;word-break:break-word;margin-bottom:${nameGap}px">${_escHTML(it.nameAr)}</div>`:""}<div>${it.qty}x ${_escHTML(it.name)}</div></span><span class="pr">SAR ${(it.qty*it.price).toFixed(2)}</span></div>`).join("")}
 <div class="hr"/>
 ${order.discount>0?`<div class="row"><span>Discount</span><span>-SAR ${order.discount.toFixed(2)}</span></div>`:""}
-<div class="row"><span>VAT 15%</span><span>SAR ${(order.vat||0).toFixed(2)}</span></div>
+<div class="row"><span>VAT ${taxRate()}%</span><span>SAR ${(order.vat||0).toFixed(2)}</span></div>
 <div class="row b" style="font-size:${fontSize+2}px"><span>TOTAL</span><span>SAR ${(order.total||0).toFixed(2)}</span></div>
 ${order.payMethod==="Cash"?`<div class="row"><span>Cash</span><span>SAR ${(order.given||0).toFixed(2)}</span></div><div class="row"><span>Change</span><span>SAR ${(order.change||0).toFixed(2)}</span></div>`:""}
 <div class="hr"/>
@@ -4862,7 +4870,7 @@ function buildPresetHTML(order,license,zatcaInvoice,fmt,qrImgSrc,opts){
   const subtotal=(order.total||0)-(order.vat||0);
   const totalsHTML=`
     <div style="display:flex;justify-content:space-between;font-size:${bodyFont}px;font-weight:${wMeta};margin:2px 0"><span>${_arSpan("(مجموع)")} TOTAL</span><span>${subtotal.toFixed(2)}</span></div>
-    <div style="display:flex;justify-content:space-between;font-size:${bodyFont}px;font-weight:${wMeta};margin:2px 0"><span>${_arSpan("(ضريبة)")} VAT 15%</span><span>${(order.vat||0).toFixed(2)}</span></div>
+    <div style="display:flex;justify-content:space-between;font-size:${bodyFont}px;font-weight:${wMeta};margin:2px 0"><span>${_arSpan("(ضريبة)")} VAT ${taxRate()}%</span><span>${(order.vat||0).toFixed(2)}</span></div>
     <div style="display:flex;justify-content:space-between;font-weight:${wTotal};font-size:${totalFont}px;border-top:${style==="s4"?"3px double #000":"2px solid #000"};padding-top:4px;margin-top:3px"><span>${_arSpan("(المجموع الإجمالي)")} GRAND TOTAL</span><span>${(order.total||0).toFixed(2)}</span></div>`;
   // ── AMOUNT IN WORDS + RECEIVED/BALANCE ──
   const wordsHTML=`<div style="font-size:${bodyFont-1}px;font-style:italic;margin:5px 0;word-break:break-word">Amount in Words: ${_amountWords(order.total||0)}</div>`;
@@ -5096,6 +5104,15 @@ function computeBillTotals(lines, cfg=getTaxConfig(), billDiscPct=0){
   else { subF=subtotal; vatF=grand-subF; }
   return { gross:r(gross), discount:r(discount), subtotal:r(subF), vat:r(vatF), rounding:r(rounding), grand:r(grand), rate, decimals:dp };
 }
+// Convenience readers used across the money / receipt / ZATCA paths. Default
+// config (15%, VAT-inclusive) makes every one of these byte-identical to the
+// old hardcoded 15/115 behaviour.
+function taxRate(){ return Number(getTaxConfig().vatRate)||0; }
+function taxIncl(){ return getTaxConfig().pricesIncludeVat!==false; }
+// VAT contained in (inclusive) or added to (exclusive) a price-basis amount.
+function taxVatOf(amount){ const rr=taxRate(); const a=Number(amount)||0; return taxIncl()? a*rr/(100+rr) : a*rr/100; }
+// Tax-exclusive (net) portion of a price-basis amount.
+function taxNetOf(amount){ const rr=taxRate(); const a=Number(amount)||0; return taxIncl()? a*100/(100+rr) : a; }
 
 // ═══════════════════════════════════════════════════════════════════
 // POS SCREEN
@@ -5163,7 +5180,10 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   useEffect(()=>{ if(superMode) setTimeout(()=>barcodeRef.current?.focus(),200); },[superMode]);
   // Live clock for the classic-till status bar — ticks every second while shown.
   useEffect(()=>{ if(!fecTill)return; const id=setInterval(()=>setFecNow(new Date()),1000); return()=>clearInterval(id); },[fecTill]);
-  const total=cart.reduce((s,i)=>s+i.price*i.qty,0);const vat=parseFloat((total*(15/115)).toFixed(2));const subtotal=parseFloat((total-vat).toFixed(2));
+  // `total` is the price-basis sum (what PaymentModal receives and then applies
+  // the VAT/rounding config to). vat/subtotal here are for display and the
+  // discount base, derived per the active VAT config (default = 15% inclusive).
+  const total=cart.reduce((s,i)=>s+i.price*i.qty,0);const vat=parseFloat(taxVatOf(total).toFixed(2));const subtotal=parseFloat((taxIncl()?total-vat:total).toFixed(2));
   function addToCart(item){
     // Weighed item (price is per-kg): open the weight modal. qty carries the
     // weight in kg, so line total (price*qty) stays correct; each weigh is a line.
@@ -5223,7 +5243,9 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
       billType:extraData.billType||"normal",
       table:selectedTable,customer:customerName,customerPhone,customerAddress,
       items:[...cart],
-      subtotal,
+      // Record the net that ties out to the charged total/VAT (subtotal+vat=total),
+      // under the active VAT config.
+      subtotal:Math.max(0,parseFloat((finalTotal-finalVat).toFixed(2))),
       discount:totalDiscountAmt||0,
       manualDiscount:manualDiscountAmt||0,
       promoDiscount:promoDiscountAmt||0,
@@ -5774,12 +5796,13 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   const fecLineGross=(it)=>it.price*it.qty;
   const fecLineDiscAmt=(it)=>Math.min(fecLineGross(it),(Number(it.discAmt)||0)+fecLineGross(it)*(Number(it.discPct)||0)/100);
   const fecLineNet=(it)=>Math.max(0,fecLineGross(it)-fecLineDiscAmt(it));
-  const fecGross=cart.reduce((s,i)=>s+fecLineGross(i),0);
-  const fecLineDiscTotal=cart.reduce((s,i)=>s+fecLineDiscAmt(i),0);
-  const fecAfterLine=Math.max(0,fecGross-fecLineDiscTotal);
-  const fecBillDisc=parseFloat((fecLineDiscTotal+fecAfterLine*(Number(fecTotalDiscPct)||0)/100).toFixed(2));
-  const fecNet=parseFloat(Math.max(0,fecGross-fecBillDisc).toFixed(2));
-  const fecVatAmt=parseFloat((fecNet*(15/115)).toFixed(2));
+  // Totals via the shared VAT/Totals config so the till display exactly matches
+  // what the payment sheet charges (rate, inclusive/exclusive, rounding).
+  const _fecBill=computeBillTotals(cart,getTaxConfig(),fecTotalDiscPct);
+  const fecGross=_fecBill.gross;
+  const fecBillDisc=_fecBill.discount;
+  const fecNet=_fecBill.grand;
+  const fecVatAmt=_fecBill.vat;
   const flash=(m)=>setFecStatus(m);
   function fecClearSale(){setCart([]);setSelectedRow(null);setFecTotalDiscPct(0);setFecCoupon("");setFecEntry("");}
   function fecNeedRow(){ if(selectedRow===null||!cart[selectedRow]){flash("⚠ Select a line first");return true;} return false; }
@@ -9193,8 +9216,8 @@ function Reports({sales,allSales,items,setSales,lang="en",archiveIndex={},fetchC
       const lineTotal=(it.qty||0)*(it.price||0);
       catMap[cat].qty+=(it.qty||0);
       catMap[cat].revenue+=lineTotal;
-      // VAT portion of an inclusive price: total × 15/115
-      catMap[cat].tax+=lineTotal*15/115;
+      // VAT portion under the active VAT config (default inclusive 15%).
+      catMap[cat].tax+=taxVatOf(lineTotal);
     }));
     const catList=Object.values(catMap).sort((a,b)=>b.revenue-a.revenue);
     const expenses=(LS.get("restopos_expenses")||[]).filter(e=>e.date===dateStr);
@@ -15733,9 +15756,13 @@ function PrintTypeSettings({onGoToQZ}){
 function TaxTotalsSettings(){
   const [cfg,setCfg]=useState(()=>getTaxConfig());
   const [saved,setSaved]=useState(false);
-  const set=(k,v)=>{ setCfg(c=>({...c,[k]:v})); setSaved(false); };
-  const save=()=>{ saveTaxConfig(cfg); setSaved(true); };
-  const reset=()=>{ setCfg({...DEFAULT_TAX_CFG}); setSaved(false); };
+  const [confirming,setConfirming]=useState(false); // second-confirmation gate
+  const set=(k,v)=>{ setCfg(c=>({...c,[k]:v})); setSaved(false); setConfirming(false); };
+  // Save is a two-step action: the button arms a confirmation, and only the
+  // explicit "Apply to all invoices" confirm actually writes the config that
+  // every till, receipt and ZATCA e-invoice will then use.
+  const applyNow=()=>{ saveTaxConfig(cfg); setSaved(true); setConfirming(false); };
+  const reset=()=>{ setCfg({...DEFAULT_TAX_CFG}); setSaved(false); setConfirming(false); };
   // Editable sample bill for the "how the calculation works" preview.
   const [sample,setSample]=useState([{name:"Rice 5kg",price:42,qty:1},{name:"Milk 1L",price:5.25,qty:2}]);
   const [sampleDisc,setSampleDisc]=useState(0);
@@ -15779,10 +15806,22 @@ function TaxTotalsSettings(){
         {row("Decimal places",`How many decimals to show on money amounts.`,
           seg("decimals",[[2,"2 (0.00)"],[3,"3 (0.000)"],[0,"0 (whole)"]]))}
         <div style={{display:"flex",alignItems:"center",gap:12,marginTop:18}}>
-          <Btn onClick={save}>💾 Save VAT settings</Btn>
+          <Btn onClick={()=>{setConfirming(true);setSaved(false);}}>💾 Save VAT settings</Btn>
           <Btn variant="ghost" onClick={reset}>↺ Reset to default</Btn>
-          {saved&&<span style={{fontSize:12.5,color:C.success,fontWeight:800}}>✓ Saved</span>}
+          {saved&&<span style={{fontSize:12.5,color:C.success,fontWeight:800}}>✓ Saved — now applied to all invoices</span>}
         </div>
+        {confirming&&(
+          <div style={{marginTop:14,padding:"14px 16px",background:C.warningLight,border:`1.5px solid ${C.warning}`,borderRadius:12}}>
+            <div style={{fontSize:13.5,fontWeight:800,color:"#8a6000",marginBottom:6}}>⚠️ Confirm — this changes real invoices</div>
+            <div style={{fontSize:12.5,color:C.text,lineHeight:1.6,marginBottom:12}}>
+              Once applied, these settings <strong>strictly control every new bill</strong> — the till totals, the printed receipt, and the ZATCA e-invoice — for <strong>all cashiers and business types</strong>. Existing invoices are not changed. Apply <strong>VAT {cfg.vatRate}% · {cfg.pricesIncludeVat?"prices include VAT":"VAT added on top"} · {roundLabel[cfg.rounding]}</strong>?
+            </div>
+            <div style={{display:"flex",gap:10}}>
+              <Btn onClick={applyNow}>✓ Yes, apply to all invoices</Btn>
+              <Btn variant="ghost" onClick={()=>setConfirming(false)}>Cancel</Btn>
+            </div>
+          </div>
+        )}
         {/* Plain-English summary */}
         <div style={{marginTop:16,padding:"12px 14px",background:C.primaryLight,border:`1px solid ${C.primary}33`,borderRadius:10,fontSize:12.5,color:C.text,lineHeight:1.6}}>
           <strong>In plain words:</strong> Prices are entered <strong>{cfg.pricesIncludeVat?"VAT-inclusive":"before VAT"}</strong> at <strong>{cfg.vatRate}%</strong>. The grand total uses <strong>{roundLabel[cfg.rounding]}</strong> and is shown to <strong>{dp} decimal{dp===1?"":"s"}</strong>.
@@ -15856,10 +15895,8 @@ function AdvancedFeatures({sales,items,setItems,license,company,invoiceFormat,se
   const [tab,setTab]=useState(()=>getBusinessType()==="hypermarket"?"vattotals":"qztray");
   const tabs=[["vattotals","🧮 VAT & Totals"],["qztray","🖨️ QZ Tray"],["printtype",`🖨️ ${_t("Print Type")}`],["silentprint",`🔇 ${_t("Silent Printing")}`],["description",`📋 ${_t("Description (Item Modifiers")}`],["progressbar",`📊 ${_t("Sales Progress Bar")}`],["kitchen",`🍽️ ${_t("Kitchen Printer")}`],["users",`👤 ${_t("Users")}`],["kds","🍳 KDS"],["stocktakes",`📦 ${_t("Stock Takes")}`],["recipes",`📋 ${_t("Recipes")}`],["giftcards",`🎁 ${_t("Gift Cards")}`],["delivery",`🛵 ${_t("Delivery")}`],["locations",`🏢 ${_t("Locations")}`],["accounting",`📤 ${_t("Accounting")}`],["reports",`📅 ${_t("Reports")}`],["printer","🖨️ ESC/POS"],["errorlog",`⚠️ ${_t("Error Log")}`],["analytics",`📉 ${_t("Analytics")}`],["audit",`🔍 ${_t("Audit Trail")}`],["tools",`🔧 ${_t("Tools")}`]]
     // Hide the tabs this business type doesn't use (e.g. supermarket has no kitchen/KDS/recipes).
-    .filter(([id])=>!bizProfile().hideAdvancedTabs.includes(id))
-    // VAT & Totals is being previewed for Hypermarket first; rolled out to all
-    // business types once approved.
-    .filter(([id])=>id!=="vattotals"||getBusinessType()==="hypermarket");
+    .filter(([id])=>!bizProfile().hideAdvancedTabs.includes(id));
+    // VAT & Totals is available to every business type — it governs invoice totals for all.
   return(
     <div>
       <div style={{display:"flex",gap:6,marginBottom:20,flexWrap:"wrap"}}>
