@@ -32,6 +32,8 @@ import { Card, Btn, Inp, Sel, TextArea, Slider, ToggleRow, Badge, StatCard, Moda
 import { TabBoundary, ErrorBoundary } from "./components/boundaries.jsx";
 import { AuditTrail } from "./screens/AuditTrail.jsx";
 import { UserAdmin } from "./screens/UserAdmin.jsx";
+import { can, canUse, isGrandfathered, requiredPlan as reqPlanFor, benefitsGained, isUpgrade, trialStatus, effectivePlan, TRIAL_PLAN, DEFAULT_TRIAL_DAYS } from "./config/planFeatures.js";
+import { PlanUpgradeCelebration, UpgradeWall, TrialCountdownBanner, TrialEndPrompt } from "./components/PlanCelebration.jsx";
 import { StockTakes } from "./screens/StockTakes.jsx";
 import { RecipeCosting } from "./screens/RecipeCosting.jsx";
 import { AdvancedReports } from "./screens/AdvancedReports.jsx";
@@ -1991,9 +1993,11 @@ function ForgotPassword({onBack,onReset}){
 // SUBSCRIPTION PLANS
 // ═══════════════════════════════════════════════════════════════════
 const SUBSCRIPTION_PLANS={
-  basic:{id:"basic",name:"Basic",nameAr:"الأساسية",price:150,color:"#6366f1",features:["1 device/location","2 users (Admin + Cashier)","Up to 100 items","Up to 10 tables","Basic reports (daily/weekly/monthly)","Standard receipt printing","ZATCA Phase 2 compliance","Email support (48h response)","Data retention: 3 months"],limits:{devices:1,users:2,items:100,tables:10}},
-  professional:{id:"professional",name:"Professional",nameAr:"الاحترافية",price:299,color:"#F0A500",features:["3 devices/locations","5 users","Up to 500 items","Up to 30 tables","Advanced reports & analytics","Custom receipt branding","Multi-location sync","Inventory tracking & alerts","Priority support (24h response)","Data retention: 12 months","Export data (Excel/PDF)"],limits:{devices:3,users:5,items:500,tables:30}},
-  premium:{id:"premium",name:"Premium",nameAr:"المميزة",price:399,color:"#1A8A4A",features:["5 devices/locations","10 users","Up to 2000 items","Up to 100 tables","Real-time analytics & insights","Advanced inventory management","Customer loyalty program","Employee performance tracking","WhatsApp/SMS receipts","Priority phone support (12h response)","Data retention: Lifetime","API access"],limits:{devices:5,users:10,items:2000,tables:100}}
+  // limits: null = unlimited. Items and tables are unlimited on every plan
+  // (never capped); only `users` is currently enforced in-app.
+  basic:{id:"basic",name:"Basic",nameAr:"الأساسية",price:99,color:"#6366f1",features:["1 branch · 2 devices","2 users (Admin + Cashier)","Unlimited items & tables","Basic reports (daily/weekly/monthly)","Standard receipt printing","ZATCA Phase 2 compliance","Priority chat support","7-day reporting history"],limits:{devices:2,users:2,items:null,tables:null,branches:1}},
+  professional:{id:"professional",name:"Professional",nameAr:"الاحترافية",price:149,color:"#F0A500",features:["Up to 3 branches · unlimited devices","5 users","Unlimited items & tables","Advanced reports & analytics","Custom receipt branding","Multi-location sync","Inventory tracking & alerts","Priority chat support (24h response)","30-day reporting history","Export data (Excel/PDF)"],limits:{devices:null,users:5,items:null,tables:null,branches:3}},
+  premium:{id:"premium",name:"Premium",nameAr:"المميزة",price:249,color:"#1A8A4A",features:["Unlimited branches & devices","Unlimited users","Unlimited items & tables","Real-time analytics & insights","Advanced inventory management","Customer loyalty program","Employee performance tracking","WhatsApp/SMS receipts","Priority chat & phone support (12h response)","90-day reporting history","API access"],limits:{devices:null,users:null,items:null,tables:null,branches:null}}
 };
 
 // Activity log helper
@@ -4058,10 +4062,11 @@ function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1
               {custName&&<div style={{marginTop:5,fontSize:10,color:"#1A6B4A",fontWeight:600}}>✓ {custName}{custPhone?" · "+custPhone:""}</div>}
             </div>
 
-            {/* Loyalty — renders only for loyalty-enabled types with a saved customer */}
-            <LoyaltyPanel customer={loyaltyCustomer} billTotal={preLoyaltyTotal} rules={loyaltyRules}
+            {/* Loyalty — renders only for loyalty-enabled types with a saved
+                customer, and is a Premium feature (grandfathered/trial-aware). */}
+            {canUse(license,"loyalty")&&<LoyaltyPanel customer={loyaltyCustomer} billTotal={preLoyaltyTotal} rules={loyaltyRules}
               redeemedPoints={loyaltyRedeemPts}
-              onRedeemChange={(pts)=>setLoyaltyRedeemPts(pts)}/>
+              onRedeemChange={(pts)=>setLoyaltyRedeemPts(pts)}/>}
 
 
             {/* Discount */}
@@ -9956,6 +9961,34 @@ function OwnerDashboardInline(){
     }catch(e){alert("Error: "+e.message);}
   }
 
+  // ── Premium-trial admin controls (full control: grant / extend / end) ──
+  async function grantPremiumTrial(clientId,days=DEFAULT_TRIAL_DAYS){
+    const start=new Date();const until=new Date(start.getTime()+days*86400000);
+    const patch={premiumTrialStart:start.toISOString(),premiumTrialUntil:until.toISOString(),premiumTrialUsed:true,premiumTrialGrantedAt:start.toISOString()};
+    try{
+      await updateDoc(doc(db,"pending_activations",clientId),patch);
+      setActivations(prev=>prev.map(a=>a.id===clientId?{...a,...patch}:a));
+      logActivity("PREMIUM_TRIAL_GRANT",{clientId,days},"Owner");
+    }catch(e){alert("Error: "+e.message);}
+  }
+  async function extendPremiumTrial(clientId,addDays,currentUntil){
+    const base=(currentUntil&&new Date(currentUntil)>new Date())?new Date(currentUntil):new Date();
+    const until=new Date(base.getTime()+addDays*86400000);
+    try{
+      await updateDoc(doc(db,"pending_activations",clientId),{premiumTrialUntil:until.toISOString()});
+      setActivations(prev=>prev.map(a=>a.id===clientId?{...a,premiumTrialUntil:until.toISOString()}:a));
+      logActivity("PREMIUM_TRIAL_EXTEND",{clientId,addDays},"Owner");
+    }catch(e){alert("Error: "+e.message);}
+  }
+  async function endPremiumTrial(clientId){
+    const nowIso=new Date().toISOString();
+    try{
+      await updateDoc(doc(db,"pending_activations",clientId),{premiumTrialUntil:nowIso,premiumTrialEndedAt:nowIso});
+      setActivations(prev=>prev.map(a=>a.id===clientId?{...a,premiumTrialUntil:nowIso}:a));
+      logActivity("PREMIUM_TRIAL_END",{clientId},"Owner");
+    }catch(e){alert("Error: "+e.message);}
+  }
+
   async function suspendClient(clientId,suspend){
     try{
       await updateDoc(doc(db,"pending_activations",clientId),{status:suspend?"suspended":"approved",isActive:!suspend,statusUpdatedAt:new Date().toISOString()});
@@ -9981,7 +10014,7 @@ function OwnerDashboardInline(){
 
   const totalMRR=activations.filter(a=>a.status==="approved").reduce((s,a)=>{
     const plan=SUBSCRIPTION_PLANS[a.subscriptionPlan||"basic"];
-    return s+(plan?.price||150);
+    return s+(plan?.price||99);
   },0);
   const totalARR=totalMRR*12;
 
@@ -10223,7 +10256,7 @@ function OwnerDashboardInline(){
                       ["Device",a.deviceInfo?.browser||a.deviceInfo?.os||"—"],
                       ["OS / Brand",a.deviceInfo?`${a.deviceInfo.os} · ${a.deviceInfo.brand}`:"—"],
                       ["Submitted",a.submittedAt?fmtDateTime(a.submittedAt):"—"],
-                      ["Plan MRR",`SAR ${SUBSCRIPTION_PLANS[a.subscriptionPlan||"basic"]?.price||150}/mo`],
+                      ["Plan MRR",`SAR ${SUBSCRIPTION_PLANS[a.subscriptionPlan||"basic"]?.price||99}/mo`],
                       ["Status Updated",a.statusUpdatedAt?fmtDate(a.statusUpdatedAt):"—"],
                       ["License ID",a.licenseKey||"—"],
                     ].map(([k,v])=>(
@@ -10491,6 +10524,7 @@ function OwnerDashboardInline(){
                             ["Phone",client.phone||"—"],
                             ["Activated",client.activatedAt?fmtDate(client.activatedAt):"—"],
                             ["Plan",SUBSCRIPTION_PLANS[client.subscriptionPlan||"basic"]?.name||"Basic"],
+                            ["Premium Trial",(()=>{const t=trialStatus(client);return t.active?`Active · ${t.daysLeft}d left`:(client.premiumTrialUsed?"Used / ended":"—");})()],
                             ["Status",client.status||"—"],
                             ["Email",client.email||"—"],
                             ["Device OS",client.deviceInfo?.os||"—"],
@@ -10558,6 +10592,19 @@ function OwnerDashboardInline(){
                             style={{padding:"7px 16px",background:"rgba(99,102,241,0.08)",border:"1.5px solid rgba(99,102,241,0.25)",borderRadius:8,color:"#818cf8",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
                             📋 Change Plan
                           </button>
+                          {/* PREMIUM TRIAL — grant / extend / end, full admin control */}
+                          {(()=>{const tst=trialStatus(client);return tst.active?(
+                            <>
+                              <span style={{padding:"7px 12px",background:"rgba(26,138,74,0.12)",border:"1.5px solid rgba(26,138,74,0.4)",borderRadius:8,color:"#1A8A4A",fontSize:11,fontWeight:800}}>🎁 Premium trial · {tst.daysLeft}d left</span>
+                              <button onClick={()=>{const d=prompt("Extend the Premium trial by how many days?","7");const n=parseInt(d,10);if(n>0)extendPremiumTrial(client.id,n,client.premiumTrialUntil);}}
+                                style={{padding:"7px 16px",background:"rgba(26,138,74,0.10)",border:"1.5px solid rgba(26,138,74,0.35)",borderRadius:8,color:"#1A8A4A",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>➕ Extend Trial</button>
+                              <button onClick={()=>{if(confirm(`End ${client.businessName}'s Premium trial now? They revert to their own plan — nothing is deleted.`))endPremiumTrial(client.id);}}
+                                style={{padding:"7px 16px",background:"rgba(217,64,64,0.10)",border:"1.5px solid rgba(217,64,64,0.35)",borderRadius:8,color:"#D94040",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>⏹ End Trial</button>
+                            </>
+                          ):(
+                            <button onClick={()=>{const d=prompt("Grant a Premium trial for how many days?",String(DEFAULT_TRIAL_DAYS));const n=parseInt(d,10);if(n>0)grantPremiumTrial(client.id,n);}}
+                              style={{padding:"7px 16px",background:"rgba(26,138,74,0.10)",border:"1.5px solid rgba(26,138,74,0.35)",borderRadius:8,color:"#1A8A4A",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>🎁 {client.premiumTrialUsed?"Grant Trial Again":"Grant Premium Trial"}</button>
+                          );})()}
                         </div>
                       </div>
                     ):(
@@ -10699,7 +10746,7 @@ function OwnerDashboardInline(){
             ["MRR",`SAR ${totalMRR.toLocaleString()}`,"#C07800"],
             ["ARR Projection",`SAR ${totalARR.toLocaleString()}`,"#1A8A4A"],
             ["Avg Revenue/Client",active.length>0?`SAR ${Math.round(totalMRR/active.length)}`:"—","#6366f1"],
-            ["Revenue at Risk",`SAR ${suspended.reduce((s,a)=>{const p=SUBSCRIPTION_PLANS[a.subscriptionPlan||"basic"];return s+(p?.price||150);},0).toLocaleString()}`,"#D94040"],
+            ["Revenue at Risk",`SAR ${suspended.reduce((s,a)=>{const p=SUBSCRIPTION_PLANS[a.subscriptionPlan||"basic"];return s+(p?.price||99);},0).toLocaleString()}`,"#D94040"],
           ].map(([k,v,c])=>(
             <div key={k} style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:`1px solid ${DS.border}`}}>
               <span style={{fontSize:12,color:DS.sub}}>{k}</span>
@@ -15334,7 +15381,7 @@ function AdvancedFeatures({sales,items,setItems,license,company,invoiceFormat,se
       {tab==="silentprint"&&<SilentPrintSetup/>}
       {tab==="description"&&<DescriptionSettings/>}
       {tab==="progressbar"&&<ProgressBarSettings/>}
-      {tab==="users"&&<UserAdmin users={users} setUsers={setUsers}/>}
+      {tab==="users"&&<UserAdmin users={users} setUsers={setUsers} plan={SUBSCRIPTION_PLANS[effectivePlan(license)]} grandfathered={isGrandfathered(license)} lang={lang}/>}
       {tab==="qztray"&&<QZTraySettings/>}
       {tab==="printtype"&&<PrintTypeSettings onGoToQZ={()=>setTab("qztray")}/>}
       {tab==="kds"&&<KitchenDisplay sales={sales}/>}
@@ -15347,7 +15394,9 @@ function AdvancedFeatures({sales,items,setItems,license,company,invoiceFormat,se
       {tab==="reports"&&<ScheduledReports sales={sales} items={items}/>}
       {tab==="printer"&&<ThermalPrinterSettings/>}
       {tab==="errorlog"&&<ErrorLogViewer/>}
-      {tab==="analytics"&&<AdvancedReports sales={sales} items={items}/>}
+      {tab==="analytics"&&(canUse(license,"advancedAnalytics")
+        ?<AdvancedReports sales={sales} items={items}/>
+        :<UpgradeWall feature="Advanced Analytics" requiredPlanName={SUBSCRIPTION_PLANS[reqPlanFor("advancedAnalytics")]?.name||"Professional"} planColor={SUBSCRIPTION_PLANS[reqPlanFor("advancedAnalytics")]?.color} note="Hourly sales patterns, product trends and deep analytics come with Professional. Your dashboard, ZATCA status and invoice details stay available on every plan — upgrade anytime from Help → Support."/>)}
       {tab==="audit"&&<AuditTrail/>}
       {tab==="tools"&&<Tools sales={sales} items={items} setItems={setItems}/>}
     </div>
@@ -15834,6 +15883,28 @@ export default function App(){
   },[]);
   const [announcementBanner,setAnnouncementBanner]=useState(()=>{try{return LS.get("restopos_announcement")||"";}catch{return "";}});
   const [adminNotification,setAdminNotification]=useState(null);
+  // Set to {from,to} when the admin upgrades this client's plan, so we can show
+  // the animated congratulations screen the moment the change syncs down.
+  const [planCelebration,setPlanCelebration]=useState(null);
+  // Premium-trial UX: the gift screen when it starts, the soft prompt when it
+  // ends, a banner-dismissed-for-today flag, and a 60s tick so gates flip and
+  // the countdown updates the moment the trial lapses (no data change fires).
+  const [trialGift,setTrialGift]=useState(null);
+  const [trialEndModal,setTrialEndModal]=useState(null);
+  const [trialBannerHidden,setTrialBannerHidden]=useState(()=>{try{return LS.get("restopos_trial_banner_hidden")===new Date().toISOString().slice(0,10);}catch{return false;}});
+  const [nowTick,setNowTick]=useState(0);
+  useEffect(()=>{const id=setInterval(()=>setNowTick(t=>t+1),60000);return()=>clearInterval(id);},[]);
+  // Soft landing when a trial lapses: fires once, only if they haven't already
+  // converted to Premium. Gates revert on their own via effectivePlan().
+  useEffect(()=>{
+    const lic=license;if(!lic?.premiumTrialStart||!lic?.premiumTrialUntil)return;
+    const st=trialStatus(lic);
+    const alreadyPremium=(lic.subscriptionPlan||"basic")==="premium";
+    if(!st.active&&!alreadyPremium&&LS.get("restopos_trial_end_ack")!==lic.premiumTrialUntil){
+      LS.set("restopos_trial_end_ack",lic.premiumTrialUntil);
+      setTrialEndModal({});
+    }
+  },[license,nowTick]);
   // What the cloud archive put back on a new device, and what it deliberately
   // left in the cloud. Shown once so the client can see their history survived
   // rather than assuming the older months are gone.
@@ -16157,9 +16228,27 @@ export default function App(){
       }else{
         accountVerdictRef.current=null;decide();
         // Sync subscriptionPlan, phone, ownerName from Firestore into local license
-        const updatedLic={...LS.get("restopos_license_v2"),subscriptionPlan:data.subscriptionPlan||"basic",ownerName:data.ownerName||"",phone:data.phone||savedLic.phone||"",businessType:data.businessType||LS.get("restopos_license_v2")?.businessType||"restaurant"};
+        const prevPlanRaw=LS.get("restopos_license_v2")?.subscriptionPlan; // undefined on very first sync
+        const nextPlan=data.subscriptionPlan||"basic";
+        const prevLicSnap=LS.get("restopos_license_v2");
+        const updatedLic={...prevLicSnap,subscriptionPlan:nextPlan,ownerName:data.ownerName||"",phone:data.phone||savedLic.phone||"",businessType:data.businessType||prevLicSnap?.businessType||"restaurant",activatedAt:data.activatedAt||prevLicSnap?.activatedAt||null,submittedAt:data.submittedAt||prevLicSnap?.submittedAt||null,premiumTrialStart:data.premiumTrialStart||null,premiumTrialUntil:data.premiumTrialUntil||null,premiumTrialUsed:!!data.premiumTrialUsed};
         LS.set("restopos_license_v2",updatedLic);
         setLicense(updatedLic);
+        // A new Premium trial just landed → gift celebration (once per trial).
+        const nowTrial=trialStatus(updatedLic);
+        if(nowTrial.active&&LS.get("restopos_trial_started_ack")!==updatedLic.premiumTrialStart){
+          LS.set("restopos_trial_started_ack",updatedLic.premiumTrialStart);
+          LS.set("restopos_trial_end_ack",""); // arm the end prompt for this trial
+          setTrialBannerHidden(false);
+          setTrialGift({days:Math.max(1,nowTrial.daysLeft)});
+        }
+        // Instant upgrade celebration — only when a plan we already knew about
+        // moves strictly UP a tier (never on first load or on a downgrade). The
+        // LS write above means the next snapshot sees prevPlanRaw===nextPlan, so
+        // this fires exactly once per real upgrade.
+        if(prevPlanRaw&&isUpgrade(prevPlanRaw,nextPlan)){
+          setPlanCelebration({from:prevPlanRaw,to:nextPlan});
+        }
         // ── Subscription expiry enforcement ──────────────────────────
         const planMonths={basic:1,professional:12,premium:12};
         const activatedAt=data.activatedAt||data.submittedAt;
@@ -16648,6 +16737,42 @@ export default function App(){
             <div style={{fontSize:10,color:"rgba(255,255,255,0.35)"}}>{adminNotification.sentAt?.slice(0,16).replace("T"," ")}</div>
           </div>
         )}
+        {planCelebration&&(
+          <PlanUpgradeCelebration
+            fromPlan={SUBSCRIPTION_PLANS[planCelebration.from]}
+            toPlan={SUBSCRIPTION_PLANS[planCelebration.to]}
+            benefits={benefitsGained(planCelebration.from,planCelebration.to,SUBSCRIPTION_PLANS)}
+            onClose={()=>setPlanCelebration(null)}
+          />
+        )}
+        {trialGift&&(
+          <PlanUpgradeCelebration
+            gift trialDays={trialGift.days}
+            toPlan={SUBSCRIPTION_PLANS[TRIAL_PLAN]}
+            benefits={benefitsGained(license?.subscriptionPlan||"basic",TRIAL_PLAN,SUBSCRIPTION_PLANS)}
+            onClose={()=>setTrialGift(null)}
+          />
+        )}
+        {trialEndModal&&(
+          <TrialEndPrompt
+            planName={SUBSCRIPTION_PLANS[TRIAL_PLAN]?.name||"Premium"}
+            planColor={SUBSCRIPTION_PLANS[TRIAL_PLAN]?.color}
+            price={SUBSCRIPTION_PLANS[TRIAL_PLAN]?.price}
+            benefits={benefitsGained(license?.subscriptionPlan||"basic",TRIAL_PLAN,SUBSCRIPTION_PLANS)}
+            onKeep={()=>{setTrialEndModal(null);setScreen("help");}}
+            onClose={()=>setTrialEndModal(null)}
+          />
+        )}
+        {(()=>{const st=trialStatus(license);const converted=(license?.subscriptionPlan||"basic")==="premium";
+          return st.active&&!converted&&!trialBannerHidden?(
+            <TrialCountdownBanner
+              planName={SUBSCRIPTION_PLANS[TRIAL_PLAN]?.name||"Premium"}
+              price={SUBSCRIPTION_PLANS[TRIAL_PLAN]?.price}
+              daysLeft={st.daysLeft}
+              onKeep={()=>setScreen("help")}
+              onDismiss={()=>{setTrialBannerHidden(true);LS.set("restopos_trial_banner_hidden",new Date().toISOString().slice(0,10));}}
+            />
+          ):null;})()}
         <TabBoundary key={screen} name={screen}>
         {screen==="dashboard"&&<Dashboard sales={allSales} items={items} license={license} lang={lang}/>}
         {screen==="pos"&&<POS items={items} setItems={setItems} sales={sales} setSales={setSales} tables={tables} setTables={setTables} promos={promos} license={license} lang={lang} currentUser={currentUser}/>}
@@ -16662,7 +16787,9 @@ export default function App(){
         {screen==="reports"&&<Reports sales={sales} allSales={allSales} items={items} setSales={setSales} lang={lang}
           archiveIndex={archiveIndex} fetchCloudRange={fetchCloudRange} cloudLoading={cloudLoading} cloudError={cloudError}/>}
         {screen==="advanced"&&<AdvancedFeatures sales={allSales} items={items} setItems={setItems} license={license} company={company} invoiceFormat={invoiceFormat} setInvoiceFormat={setInvoiceFormat} users={users} setUsers={setUsers} lang={lang}/>}
-        {screen==="inventory"&&<InventoryManagement items={items} setItems={setItems} lang={lang}/>}
+        {screen==="inventory"&&(canUse(license,"inventory")
+          ?<InventoryManagement items={items} setItems={setItems} lang={lang}/>
+          :<UpgradeWall feature="Inventory Management" requiredPlanName={SUBSCRIPTION_PLANS[reqPlanFor("inventory")]?.name||"Professional"} planColor={SUBSCRIPTION_PLANS[reqPlanFor("inventory")]?.color} note="Inventory tracking, stock alerts and supplier management come with the Professional plan. Upgrade anytime from Help → Support — it switches on instantly." onUpgrade={()=>setScreen("help")}/>)}
         {screen==="vat"&&<ZATCAVatEngine lang={lang}/>}
         {/* Backup moved into Settings → Backup tab; Users moved into Advanced → Users tab */}
         {screen==="shifts"&&<ShiftManager sales={allSales} currentUser={currentUser} lang={lang}/>}

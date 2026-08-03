@@ -63,6 +63,11 @@ service cloud.firestore {
       return !request.resource.data.diff(resource.data).affectedKeys().hasAny([
         'credentialsApproved', 'isActive', 'status', 'passwordHash',
         'clientUsername', 'subscriptionPlan', 'customExpiryDate',
+        // Premium-trial grant is a paid benefit the admin panel controls; a
+        // client that could set its own trial window would unlock every
+        // higher-tier feature for free. Reserved to the admin, same as the plan.
+        'premiumTrialStart', 'premiumTrialUntil', 'premiumTrialUsed',
+        'premiumTrialGrantedAt', 'premiumTrialEndedAt',
         // Brute-force lockout counters — only the Admin SDK (verifyLogin) writes these.
         'loginFailCount', 'loginLockUntil',
         // Terms acceptance is a legal record: the client writes it once, at
