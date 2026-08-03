@@ -32,6 +32,8 @@ import { Card, Btn, Inp, Sel, TextArea, Slider, ToggleRow, Badge, StatCard, Moda
 import { TabBoundary, ErrorBoundary } from "./components/boundaries.jsx";
 import { AuditTrail } from "./screens/AuditTrail.jsx";
 import { UserAdmin } from "./screens/UserAdmin.jsx";
+import { can, requiredPlan as reqPlanFor, benefitsGained, isUpgrade } from "./config/planFeatures.js";
+import { PlanUpgradeCelebration, UpgradeWall } from "./components/PlanCelebration.jsx";
 import { StockTakes } from "./screens/StockTakes.jsx";
 import { RecipeCosting } from "./screens/RecipeCosting.jsx";
 import { AdvancedReports } from "./screens/AdvancedReports.jsx";
@@ -15836,6 +15838,9 @@ export default function App(){
   },[]);
   const [announcementBanner,setAnnouncementBanner]=useState(()=>{try{return LS.get("restopos_announcement")||"";}catch{return "";}});
   const [adminNotification,setAdminNotification]=useState(null);
+  // Set to {from,to} when the admin upgrades this client's plan, so we can show
+  // the animated congratulations screen the moment the change syncs down.
+  const [planCelebration,setPlanCelebration]=useState(null);
   // What the cloud archive put back on a new device, and what it deliberately
   // left in the cloud. Shown once so the client can see their history survived
   // rather than assuming the older months are gone.
@@ -16159,9 +16164,18 @@ export default function App(){
       }else{
         accountVerdictRef.current=null;decide();
         // Sync subscriptionPlan, phone, ownerName from Firestore into local license
-        const updatedLic={...LS.get("restopos_license_v2"),subscriptionPlan:data.subscriptionPlan||"basic",ownerName:data.ownerName||"",phone:data.phone||savedLic.phone||"",businessType:data.businessType||LS.get("restopos_license_v2")?.businessType||"restaurant"};
+        const prevPlanRaw=LS.get("restopos_license_v2")?.subscriptionPlan; // undefined on very first sync
+        const nextPlan=data.subscriptionPlan||"basic";
+        const updatedLic={...LS.get("restopos_license_v2"),subscriptionPlan:nextPlan,ownerName:data.ownerName||"",phone:data.phone||savedLic.phone||"",businessType:data.businessType||LS.get("restopos_license_v2")?.businessType||"restaurant"};
         LS.set("restopos_license_v2",updatedLic);
         setLicense(updatedLic);
+        // Instant upgrade celebration — only when a plan we already knew about
+        // moves strictly UP a tier (never on first load or on a downgrade). The
+        // LS write above means the next snapshot sees prevPlanRaw===nextPlan, so
+        // this fires exactly once per real upgrade.
+        if(prevPlanRaw&&isUpgrade(prevPlanRaw,nextPlan)){
+          setPlanCelebration({from:prevPlanRaw,to:nextPlan});
+        }
         // ── Subscription expiry enforcement ──────────────────────────
         const planMonths={basic:1,professional:12,premium:12};
         const activatedAt=data.activatedAt||data.submittedAt;
@@ -16650,6 +16664,14 @@ export default function App(){
             <div style={{fontSize:10,color:"rgba(255,255,255,0.35)"}}>{adminNotification.sentAt?.slice(0,16).replace("T"," ")}</div>
           </div>
         )}
+        {planCelebration&&(
+          <PlanUpgradeCelebration
+            fromPlan={SUBSCRIPTION_PLANS[planCelebration.from]}
+            toPlan={SUBSCRIPTION_PLANS[planCelebration.to]}
+            benefits={benefitsGained(planCelebration.from,planCelebration.to,SUBSCRIPTION_PLANS)}
+            onClose={()=>setPlanCelebration(null)}
+          />
+        )}
         <TabBoundary key={screen} name={screen}>
         {screen==="dashboard"&&<Dashboard sales={allSales} items={items} license={license} lang={lang}/>}
         {screen==="pos"&&<POS items={items} setItems={setItems} sales={sales} setSales={setSales} tables={tables} setTables={setTables} promos={promos} license={license} lang={lang} currentUser={currentUser}/>}
@@ -16664,7 +16686,9 @@ export default function App(){
         {screen==="reports"&&<Reports sales={sales} allSales={allSales} items={items} setSales={setSales} lang={lang}
           archiveIndex={archiveIndex} fetchCloudRange={fetchCloudRange} cloudLoading={cloudLoading} cloudError={cloudError}/>}
         {screen==="advanced"&&<AdvancedFeatures sales={allSales} items={items} setItems={setItems} license={license} company={company} invoiceFormat={invoiceFormat} setInvoiceFormat={setInvoiceFormat} users={users} setUsers={setUsers} lang={lang}/>}
-        {screen==="inventory"&&<InventoryManagement items={items} setItems={setItems} lang={lang}/>}
+        {screen==="inventory"&&(can(license?.subscriptionPlan,"inventory")
+          ?<InventoryManagement items={items} setItems={setItems} lang={lang}/>
+          :<UpgradeWall feature="Inventory Management" requiredPlanName={SUBSCRIPTION_PLANS[reqPlanFor("inventory")]?.name||"Professional"} planColor={SUBSCRIPTION_PLANS[reqPlanFor("inventory")]?.color} note="Inventory tracking, stock alerts and supplier management are included from the Professional plan. Upgrade from Help → Support to switch it on." onUpgrade={()=>setScreen("help")}/>)}
         {screen==="vat"&&<ZATCAVatEngine lang={lang}/>}
         {/* Backup moved into Settings → Backup tab; Users moved into Advanced → Users tab */}
         {screen==="shifts"&&<ShiftManager sales={allSales} currentUser={currentUser} lang={lang}/>}
