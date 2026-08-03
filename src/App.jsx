@@ -32,7 +32,7 @@ import { Card, Btn, Inp, Sel, TextArea, Slider, ToggleRow, Badge, StatCard, Moda
 import { TabBoundary, ErrorBoundary } from "./components/boundaries.jsx";
 import { AuditTrail } from "./screens/AuditTrail.jsx";
 import { UserAdmin } from "./screens/UserAdmin.jsx";
-import { can, requiredPlan as reqPlanFor, benefitsGained, isUpgrade } from "./config/planFeatures.js";
+import { can, canUse, isGrandfathered, requiredPlan as reqPlanFor, benefitsGained, isUpgrade } from "./config/planFeatures.js";
 import { PlanUpgradeCelebration, UpgradeWall } from "./components/PlanCelebration.jsx";
 import { StockTakes } from "./screens/StockTakes.jsx";
 import { RecipeCosting } from "./screens/RecipeCosting.jsx";
@@ -15338,7 +15338,7 @@ function AdvancedFeatures({sales,items,setItems,license,company,invoiceFormat,se
       {tab==="silentprint"&&<SilentPrintSetup/>}
       {tab==="description"&&<DescriptionSettings/>}
       {tab==="progressbar"&&<ProgressBarSettings/>}
-      {tab==="users"&&<UserAdmin users={users} setUsers={setUsers} plan={SUBSCRIPTION_PLANS[license?.subscriptionPlan||"basic"]} lang={lang}/>}
+      {tab==="users"&&<UserAdmin users={users} setUsers={setUsers} plan={SUBSCRIPTION_PLANS[license?.subscriptionPlan||"basic"]} grandfathered={isGrandfathered(license)} lang={lang}/>}
       {tab==="qztray"&&<QZTraySettings/>}
       {tab==="printtype"&&<PrintTypeSettings onGoToQZ={()=>setTab("qztray")}/>}
       {tab==="kds"&&<KitchenDisplay sales={sales}/>}
@@ -16166,7 +16166,7 @@ export default function App(){
         // Sync subscriptionPlan, phone, ownerName from Firestore into local license
         const prevPlanRaw=LS.get("restopos_license_v2")?.subscriptionPlan; // undefined on very first sync
         const nextPlan=data.subscriptionPlan||"basic";
-        const updatedLic={...LS.get("restopos_license_v2"),subscriptionPlan:nextPlan,ownerName:data.ownerName||"",phone:data.phone||savedLic.phone||"",businessType:data.businessType||LS.get("restopos_license_v2")?.businessType||"restaurant"};
+        const updatedLic={...LS.get("restopos_license_v2"),subscriptionPlan:nextPlan,ownerName:data.ownerName||"",phone:data.phone||savedLic.phone||"",businessType:data.businessType||LS.get("restopos_license_v2")?.businessType||"restaurant",activatedAt:data.activatedAt||LS.get("restopos_license_v2")?.activatedAt||null,submittedAt:data.submittedAt||LS.get("restopos_license_v2")?.submittedAt||null};
         LS.set("restopos_license_v2",updatedLic);
         setLicense(updatedLic);
         // Instant upgrade celebration — only when a plan we already knew about
@@ -16686,9 +16686,9 @@ export default function App(){
         {screen==="reports"&&<Reports sales={sales} allSales={allSales} items={items} setSales={setSales} lang={lang}
           archiveIndex={archiveIndex} fetchCloudRange={fetchCloudRange} cloudLoading={cloudLoading} cloudError={cloudError}/>}
         {screen==="advanced"&&<AdvancedFeatures sales={allSales} items={items} setItems={setItems} license={license} company={company} invoiceFormat={invoiceFormat} setInvoiceFormat={setInvoiceFormat} users={users} setUsers={setUsers} lang={lang}/>}
-        {screen==="inventory"&&(can(license?.subscriptionPlan,"inventory")
+        {screen==="inventory"&&(canUse(license,"inventory")
           ?<InventoryManagement items={items} setItems={setItems} lang={lang}/>
-          :<UpgradeWall feature="Inventory Management" requiredPlanName={SUBSCRIPTION_PLANS[reqPlanFor("inventory")]?.name||"Professional"} planColor={SUBSCRIPTION_PLANS[reqPlanFor("inventory")]?.color} note="Inventory tracking, stock alerts and supplier management are included from the Professional plan. Upgrade from Help → Support to switch it on." onUpgrade={()=>setScreen("help")}/>)}
+          :<UpgradeWall feature="Inventory Management" requiredPlanName={SUBSCRIPTION_PLANS[reqPlanFor("inventory")]?.name||"Professional"} planColor={SUBSCRIPTION_PLANS[reqPlanFor("inventory")]?.color} note="Inventory tracking, stock alerts and supplier management come with the Professional plan. Upgrade anytime from Help → Support — it switches on instantly." onUpgrade={()=>setScreen("help")}/>)}
         {screen==="vat"&&<ZATCAVatEngine lang={lang}/>}
         {/* Backup moved into Settings → Backup tab; Users moved into Advanced → Users tab */}
         {screen==="shifts"&&<ShiftManager sales={allSales} currentUser={currentUser} lang={lang}/>}

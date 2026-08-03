@@ -44,6 +44,34 @@ export function can(planId, capability) {
   return planRank(planId) >= planRank(min);
 }
 
+// ── Grandfathering ────────────────────────────────────────────────
+// Our goal is winning and keeping customers, not taking features away. So
+// accounts that already existed when tier-enforcement rolled out keep full
+// access forever — we never disrupt a live business. Only clients who sign up
+// from the rollout date onward are held to their plan's limits strictly.
+export const ENFORCE_FROM = new Date("2026-08-03T00:00:00+03:00").getTime();
+
+export function isGrandfathered(license) {
+  const raw = license?.activatedAt || license?.submittedAt || license?.grandfatherSince || null;
+  if (!raw) return true;               // unknown age → be generous, never lock out
+  const t = new Date(raw).getTime();
+  if (isNaN(t)) return true;
+  return t < ENFORCE_FROM;             // predates enforcement → grandfathered
+}
+
+// The gate the whole app should use: a capability is available if the plan
+// unlocks it OR the account is grandfathered. Pass the full license object.
+export function canUse(license, capability) {
+  return can(license?.subscriptionPlan, capability) || isGrandfathered(license);
+}
+
+// Numeric-limit gate (users/devices) with the same grandfathering. Returns the
+// effective cap, or null for "unlimited" (grandfathered or plan is unlimited).
+export function effectiveLimit(license, limitValue) {
+  if (isGrandfathered(license)) return null; // existing clients: no new cap
+  return limitValue ?? null;
+}
+
 // The lowest plan that unlocks a capability (for "Upgrade to X" copy).
 export function requiredPlan(capability) {
   return CAP_MIN_PLAN[capability] || "basic";

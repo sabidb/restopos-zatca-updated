@@ -6,10 +6,11 @@ import { useState } from "react";
 import { C } from "../lib/theme.js";
 import { Card, Btn, Inp, Sel, Modal, Badge, DataTable } from "../components/ui.jsx";
 
-export function UserAdmin({users,setUsers,plan,lang="en"}){
+export function UserAdmin({users,setUsers,plan,grandfathered=false,lang="en"}){
   const [showModal,setShowModal]=useState(false);const [editUser,setEditUser]=useState(null);const blank={name:"",username:"",role:"Cashier",active:true};const [form,setForm]=useState(blank);
   // User-count limit for the current plan. null = unlimited (Premium).
-  const maxUsers=plan?.limits?.users??null;
+  // Grandfathered accounts (existing before tier enforcement) are never capped.
+  const maxUsers=grandfathered?null:(plan?.limits?.users??null);
   const atLimit=maxUsers!=null&&users.length>=maxUsers;
     function openModal(u=null){
       // Block only NEW users past the plan cap; editing existing users is always allowed.
