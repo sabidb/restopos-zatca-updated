@@ -4062,10 +4062,11 @@ function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1
               {custName&&<div style={{marginTop:5,fontSize:10,color:"#1A6B4A",fontWeight:600}}>✓ {custName}{custPhone?" · "+custPhone:""}</div>}
             </div>
 
-            {/* Loyalty — renders only for loyalty-enabled types with a saved customer */}
-            <LoyaltyPanel customer={loyaltyCustomer} billTotal={preLoyaltyTotal} rules={loyaltyRules}
+            {/* Loyalty — renders only for loyalty-enabled types with a saved
+                customer, and is a Premium feature (grandfathered/trial-aware). */}
+            {canUse(license,"loyalty")&&<LoyaltyPanel customer={loyaltyCustomer} billTotal={preLoyaltyTotal} rules={loyaltyRules}
               redeemedPoints={loyaltyRedeemPts}
-              onRedeemChange={(pts)=>setLoyaltyRedeemPts(pts)}/>
+              onRedeemChange={(pts)=>setLoyaltyRedeemPts(pts)}/>}
 
 
             {/* Discount */}
@@ -15393,7 +15394,9 @@ function AdvancedFeatures({sales,items,setItems,license,company,invoiceFormat,se
       {tab==="reports"&&<ScheduledReports sales={sales} items={items}/>}
       {tab==="printer"&&<ThermalPrinterSettings/>}
       {tab==="errorlog"&&<ErrorLogViewer/>}
-      {tab==="analytics"&&<AdvancedReports sales={sales} items={items}/>}
+      {tab==="analytics"&&(canUse(license,"advancedAnalytics")
+        ?<AdvancedReports sales={sales} items={items}/>
+        :<UpgradeWall feature="Advanced Analytics" requiredPlanName={SUBSCRIPTION_PLANS[reqPlanFor("advancedAnalytics")]?.name||"Professional"} planColor={SUBSCRIPTION_PLANS[reqPlanFor("advancedAnalytics")]?.color} note="Hourly sales patterns, product trends and deep analytics come with Professional. Your dashboard, ZATCA status and invoice details stay available on every plan — upgrade anytime from Help → Support."/>)}
       {tab==="audit"&&<AuditTrail/>}
       {tab==="tools"&&<Tools sales={sales} items={items} setItems={setItems}/>}
     </div>
