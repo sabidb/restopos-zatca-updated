@@ -8636,7 +8636,7 @@ function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,arch
  * a statement about their figures rather than about storage.
  */
 
-function Reports({sales,allSales,items,setSales,lang="en",archiveIndex={},fetchCloudRange,cloudLoading,cloudError}){
+function Reports({sales,allSales,items,setSales,lang="en",license,archiveIndex={},fetchCloudRange,cloudLoading,cloudError}){
   const _t=s=>t(s,lang);
   // ── All hooks first ──────────────────────────────────────────────
   const [tab,setTab]=useState("summary");
@@ -8808,6 +8808,13 @@ function Reports({sales,allSales,items,setSales,lang="en",archiveIndex={},fetchC
   // a file that looks complete and is not — the worst possible outcome for
   // something they may file with ZATCA. Pull the missing days first, always.
   async function exportToExcel(type){
+    // Excel/CSV data export is a Professional feature (grandfathered/trial-aware).
+    // Note: this is business-data export only — the ZATCA invoice archive export
+    // in Help → History stays available on every plan for compliance.
+    if(!canUse(license,"dataExport")){
+      alert(`Exporting reports to Excel/CSV is included from the ${SUBSCRIPTION_PLANS[reqPlanFor("dataExport")]?.name||"Professional"} plan. Upgrade anytime from Help → Support — your ZATCA invoice archive export stays available on every plan.`);
+      return;
+    }
     const gap=cloudGapFor(dateFrom,dateTo);
     let extra=[];
     if(gap.days.length&&fetchCloudRange){
@@ -16784,7 +16791,7 @@ export default function App(){
         {/* Invoices moved into Settings → Invoices tab */}
         {/* Expenses moved to Financials tab */}
         {screen==="customers"&&<Customers sales={allSales} lang={lang} archiveIndex={archiveIndex} fetchCloudRange={fetchCloudRange} cloudLoading={cloudLoading} cloudError={cloudError}/>}
-        {screen==="reports"&&<Reports sales={sales} allSales={allSales} items={items} setSales={setSales} lang={lang}
+        {screen==="reports"&&<Reports sales={sales} allSales={allSales} items={items} setSales={setSales} lang={lang} license={license}
           archiveIndex={archiveIndex} fetchCloudRange={fetchCloudRange} cloudLoading={cloudLoading} cloudError={cloudError}/>}
         {screen==="advanced"&&<AdvancedFeatures sales={allSales} items={items} setItems={setItems} license={license} company={company} invoiceFormat={invoiceFormat} setInvoiceFormat={setInvoiceFormat} users={users} setUsers={setUsers} lang={lang}/>}
         {screen==="inventory"&&(canUse(license,"inventory")
