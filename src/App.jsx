@@ -1991,9 +1991,9 @@ function ForgotPassword({onBack,onReset}){
 // SUBSCRIPTION PLANS
 // ═══════════════════════════════════════════════════════════════════
 const SUBSCRIPTION_PLANS={
-  basic:{id:"basic",name:"Basic",nameAr:"الأساسية",price:150,color:"#6366f1",features:["1 device/location","2 users (Admin + Cashier)","Up to 100 items","Up to 10 tables","Basic reports (daily/weekly/monthly)","Standard receipt printing","ZATCA Phase 2 compliance","Email support (48h response)","Data retention: 3 months"],limits:{devices:1,users:2,items:100,tables:10}},
-  professional:{id:"professional",name:"Professional",nameAr:"الاحترافية",price:299,color:"#F0A500",features:["3 devices/locations","5 users","Up to 500 items","Up to 30 tables","Advanced reports & analytics","Custom receipt branding","Multi-location sync","Inventory tracking & alerts","Priority support (24h response)","Data retention: 12 months","Export data (Excel/PDF)"],limits:{devices:3,users:5,items:500,tables:30}},
-  premium:{id:"premium",name:"Premium",nameAr:"المميزة",price:399,color:"#1A8A4A",features:["5 devices/locations","10 users","Up to 2000 items","Up to 100 tables","Real-time analytics & insights","Advanced inventory management","Customer loyalty program","Employee performance tracking","WhatsApp/SMS receipts","Priority phone support (12h response)","Data retention: Lifetime","API access"],limits:{devices:5,users:10,items:2000,tables:100}}
+  basic:{id:"basic",name:"Basic",nameAr:"الأساسية",price:99,color:"#6366f1",features:["1 device/location","2 users (Admin + Cashier)","Up to 100 items","Up to 10 tables","Basic reports (daily/weekly/monthly)","Standard receipt printing","ZATCA Phase 2 compliance","Priority chat support","Data retention: 3 months"],limits:{devices:1,users:2,items:100,tables:10}},
+  professional:{id:"professional",name:"Professional",nameAr:"الاحترافية",price:149,color:"#F0A500",features:["3 devices/locations","5 users","Up to 500 items","Up to 30 tables","Advanced reports & analytics","Custom receipt branding","Multi-location sync","Inventory tracking & alerts","Priority chat support (24h response)","Data retention: 12 months","Export data (Excel/PDF)"],limits:{devices:3,users:5,items:500,tables:30}},
+  premium:{id:"premium",name:"Premium",nameAr:"المميزة",price:249,color:"#1A8A4A",features:["5 devices/locations","10 users","Up to 2000 items","Up to 100 tables","Real-time analytics & insights","Advanced inventory management","Customer loyalty program","Employee performance tracking","WhatsApp/SMS receipts","Priority chat & phone support (12h response)","Data retention: Lifetime","API access"],limits:{devices:5,users:10,items:2000,tables:100}}
 };
 
 // Activity log helper
@@ -9981,7 +9981,7 @@ function OwnerDashboardInline(){
 
   const totalMRR=activations.filter(a=>a.status==="approved").reduce((s,a)=>{
     const plan=SUBSCRIPTION_PLANS[a.subscriptionPlan||"basic"];
-    return s+(plan?.price||150);
+    return s+(plan?.price||99);
   },0);
   const totalARR=totalMRR*12;
 
@@ -10223,7 +10223,7 @@ function OwnerDashboardInline(){
                       ["Device",a.deviceInfo?.browser||a.deviceInfo?.os||"—"],
                       ["OS / Brand",a.deviceInfo?`${a.deviceInfo.os} · ${a.deviceInfo.brand}`:"—"],
                       ["Submitted",a.submittedAt?fmtDateTime(a.submittedAt):"—"],
-                      ["Plan MRR",`SAR ${SUBSCRIPTION_PLANS[a.subscriptionPlan||"basic"]?.price||150}/mo`],
+                      ["Plan MRR",`SAR ${SUBSCRIPTION_PLANS[a.subscriptionPlan||"basic"]?.price||99}/mo`],
                       ["Status Updated",a.statusUpdatedAt?fmtDate(a.statusUpdatedAt):"—"],
                       ["License ID",a.licenseKey||"—"],
                     ].map(([k,v])=>(
@@ -10699,7 +10699,7 @@ function OwnerDashboardInline(){
             ["MRR",`SAR ${totalMRR.toLocaleString()}`,"#C07800"],
             ["ARR Projection",`SAR ${totalARR.toLocaleString()}`,"#1A8A4A"],
             ["Avg Revenue/Client",active.length>0?`SAR ${Math.round(totalMRR/active.length)}`:"—","#6366f1"],
-            ["Revenue at Risk",`SAR ${suspended.reduce((s,a)=>{const p=SUBSCRIPTION_PLANS[a.subscriptionPlan||"basic"];return s+(p?.price||150);},0).toLocaleString()}`,"#D94040"],
+            ["Revenue at Risk",`SAR ${suspended.reduce((s,a)=>{const p=SUBSCRIPTION_PLANS[a.subscriptionPlan||"basic"];return s+(p?.price||99);},0).toLocaleString()}`,"#D94040"],
           ].map(([k,v,c])=>(
             <div key={k} style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:`1px solid ${DS.border}`}}>
               <span style={{fontSize:12,color:DS.sub}}>{k}</span>
