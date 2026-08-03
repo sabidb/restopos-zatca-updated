@@ -963,9 +963,11 @@ function ZATCAInvoiceHistory(){
             {selected?.invoice_number===inv.invoice_number&&(
               <div style={{background:C.bg,border:`1px solid ${C.zatca}`,borderRadius:10,padding:16,marginTop:-4,marginBottom:8}}>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,fontSize:12,marginBottom:12}}>
-                  {[["ICV",inv.icv],["UUID",inv.uuid?.slice(0,18)+"..."],["Hash",inv.invoice_hash?.slice(0,20)+"..."],["Type",inv.is_b2b?"B2B Standard":"B2C Simplified"],["Phase",inv.phase||1],["Payment",inv.payMethod||"—"]].map(([l,v])=>(<div key={l}><div style={{fontSize:10,color:C.textLight,textTransform:"uppercase",letterSpacing:1}}>{l}</div><div style={{fontFamily:"monospace",fontSize:11}}>{v}</div></div>))}
+                  {[["ICV",inv.icv],["UUID",inv.uuid?.slice(0,18)+"..."],["Hash",inv.invoice_hash?.slice(0,20)+"..."],["Type",inv.is_credit_note?"Credit Note (381)":inv.is_b2b?"B2B Standard":"B2C Simplified"],["Phase",inv.phase||1],["Payment",inv.payMethod||"—"]].map(([l,v])=>(<div key={l}><div style={{fontSize:10,color:C.textLight,textTransform:"uppercase",letterSpacing:1}}>{l}</div><div style={{fontFamily:"monospace",fontSize:11}}>{v}</div></div>))}
+                  {inv.is_credit_note&&inv.original_invoice_number&&<div style={{gridColumn:"1 / -1"}}><div style={{fontSize:10,color:C.textLight,textTransform:"uppercase",letterSpacing:1}}>Original Invoice</div><div style={{fontFamily:"monospace",fontSize:11}}>{inv.original_invoice_number}{inv.credit_note_reason?` · ${inv.credit_note_reason}`:""}</div></div>}
                 </div>
                 <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                <button style={{background:C.success,color:"#fff",border:"none",borderRadius:6,padding:"7px 14px",cursor:"pointer",fontSize:12,fontFamily:"inherit",fontWeight:600}} onClick={async()=>{try{await printZatcaInvoice(inv,LS.get("restopos_license_v2"));}catch(e){alert("Print failed: "+e.message);}}}>🖨️ Print {inv.is_credit_note?"Credit Note":"Invoice"}</button>
                 <button style={{background:C.primary,color:"#fff",border:"none",borderRadius:6,padding:"7px 14px",cursor:"pointer",fontSize:12,fontFamily:"inherit",fontWeight:600}} onClick={()=>zatcaUtils.downloadXML(inv)}>⬇️ Download XML</button>
                 {!inv.zatca_reported&&!inv.is_b2b&&<button style={{background:C.zatca,color:"#fff",border:"none",borderRadius:6,padding:"7px 14px",cursor:reporting===inv.invoice_number?"not-allowed":"pointer",fontSize:12,fontFamily:"inherit",fontWeight:600,opacity:reporting===inv.invoice_number?0.7:1}} onClick={()=>handleReportToFatoora(inv)} disabled={reporting===inv.invoice_number}>{reporting===inv.invoice_number?"Reporting…":"📡 Report to FATOORA"}</button>}
                 {!inv.zatca_reported&&inv.is_b2b&&<button style={{background:"#7c3aed",color:"#fff",border:"none",borderRadius:6,padding:"7px 14px",cursor:reporting===inv.invoice_number?"not-allowed":"pointer",fontSize:12,fontFamily:"inherit",fontWeight:600,opacity:reporting===inv.invoice_number?0.7:1}} onClick={()=>handleClearanceB2B(inv)} disabled={reporting===inv.invoice_number}>{reporting===inv.invoice_number?"Clearing…":"🔐 Submit for Clearance (B2B)"}</button>}
@@ -2010,15 +2012,23 @@ function getDeviceInfo(){
   const browser=ua.includes("Chrome")?"Chrome":ua.includes("Firefox")?"Firefox":ua.includes("Safari")?"Safari":ua.includes("Edge")?"Edge":"Other";
   return{brand,os,browser,userAgent:ua.slice(0,120),screenW:screen.width,screenH:screen.height};
 }
-const APP_VERSION="v29.14.10";
-const APP_VERSION_FULL="RestoPOS v29.14.10 · ZATCA Phase 2";
+const APP_VERSION="v29.15.0";
+const APP_VERSION_FULL="RestoPOS v29.15.0 · ZATCA Phase 2";
 
 // ── Changelog — add a new entry here with every release ──────────
 const CHANGELOG=[
   {
+    version:"v29.15.0",
+    date:"03 Aug 2026",
+    badge:"Latest",
+    badgeColor:"#10b981",
+    notes:[
+      "↩️ Sales returns now print a proper credit-note receipt. Confirming a refund generates the ZATCA credit note (type 381) AND prints it on your bill printer — labelled “Credit Note”, showing the original invoice number, the reason, negative totals and its own ZATCA QR. Included on every plan. You can also reprint any credit note or past invoice from Transactions → ZATCA Invoices with the new 🖨️ Print button.",
+    ]
+  },
+  {
     version:"v29.14.10",
     date:"22 Jun 2026",
-    badge:"Latest",
     badgeColor:"#10b981",
     notes:[
       "📊 Report was printing too wide and clipping on the left edge — narrowed it to 40 characters per line (from 42) with proper left margin so the whole report stays on the paper. Added a “📏 Characters per line” slider in Preset Report (26–48) to fine-tune the exact width for your printer if needed.",
@@ -4512,6 +4522,13 @@ function buildReceiptHTML(order,license,zatcaInvoice,fmt,qrImgSrc){
   if(showOrderType&&(order.type||order.payMethod))meta+=`<div style="font-size:${fontSize-2}px;color:#555">${_escHTML(order.type||"Sale")}${order.table?" · Table "+_escHTML(order.table):""}${order.payMethod?" · "+_escHTML(order.payMethod):""}</div>`;
   if(showCustomer&&(order.customer||order.customerPhone))meta+=`<div style="font-size:${fontSize-2}px;word-break:break-word">Customer: ${_escHTML([order.customer,order.customerPhone].filter(Boolean).join(" · "))}</div>`;
   if(order.note)meta+=`<div style="font-size:${fontSize-2}px;font-style:italic;word-break:break-word">Note: ${_escHTML(order.note)}</div>`;
+  // Credit note (ZATCA type 381): reference the original invoice (BillingReference,
+  // BR-KSA-56) and the reason it was issued (BR-KSA-17), directly on the printout.
+  const isCreditNote=!!order.is_credit_note;
+  if(isCreditNote){
+    if(order.original_invoice_number)meta+=`<div style="font-size:${fontSize-2}px;word-break:break-word">Original Invoice: ${_escHTML(order.original_invoice_number)}</div>`;
+    if(order.credit_note_reason)meta+=`<div style="font-size:${fontSize-2}px;font-style:italic;word-break:break-word">Reason: ${_escHTML(order.credit_note_reason)}</div>`;
+  }
   // Items — Arabic name printed directly ABOVE the English name (stacked, same column).
   // Long names wrap; price stays right-aligned and never overflows.
   function lineHTML(it){
@@ -4543,15 +4560,17 @@ body{font-family:${fontFamily};font-size:${fontSize}px;width:${paperWidth};paddi
 img{max-width:100%}
 </style></head><body>
 ${header}
+${isCreditNote?`<div style="text-align:center;border:2px solid #b00;color:#b00;border-radius:6px;padding:5px 6px;margin:6px 0"><div style="font-weight:900;font-size:${fontSize+1}px">CREDIT NOTE · إشعار دائن</div><div style="font-size:${fontSize-3}px;font-weight:700">ZATCA Type 381 · Refund</div></div>`:""}
 ${SEP}
 ${meta}
 ${SEP}
 ${itemsHTML}
 ${SEP}
 ${order.discount>0?`<div style="display:flex;justify-content:space-between;color:#b00;gap:6px"><span>Discount</span><span style="white-space:nowrap">-SAR ${order.discount.toFixed(2)}</span></div>`:""}
-${showVat?`<div style="display:flex;justify-content:space-between;font-size:${fontSize-1}px;color:#666;gap:6px"><span>VAT 15% (incl.)</span><span style="white-space:nowrap">SAR ${(order.vat||0).toFixed(2)}</span></div>`:""}
-<div style="display:flex;justify-content:space-between;font-weight:900;font-size:${totalSize}px;border-top:2px solid #000;padding-top:4px;margin-top:3px;gap:6px"><span>TOTAL</span><span style="white-space:nowrap">SAR ${(order.total||0).toFixed(2)}</span></div>
-${order.payMethod==="Cash"?`<div style="display:flex;justify-content:space-between;font-size:${fontSize-1}px;gap:6px"><span>Cash Given</span><span style="white-space:nowrap">SAR ${(order.given||0).toFixed(2)}</span></div><div style="display:flex;justify-content:space-between;font-size:${fontSize-1}px;font-weight:700;gap:6px"><span>Change</span><span style="white-space:nowrap">SAR ${(order.change||0).toFixed(2)}</span></div>`:""}
+${showVat?`<div style="display:flex;justify-content:space-between;font-size:${fontSize-1}px;color:#666;gap:6px"><span>VAT 15% (incl.)</span><span style="white-space:nowrap">${isCreditNote?"-":""}SAR ${(order.vat||0).toFixed(2)}</span></div>`:""}
+<div style="display:flex;justify-content:space-between;font-weight:900;font-size:${totalSize}px;border-top:2px solid #000;padding-top:4px;margin-top:3px;gap:6px"><span>${isCreditNote?"TOTAL REFUNDED":"TOTAL"}</span><span style="white-space:nowrap">${isCreditNote?"-":""}SAR ${(order.total||0).toFixed(2)}</span></div>
+${(order.payMethod==="Cash"&&!isCreditNote)?`<div style="display:flex;justify-content:space-between;font-size:${fontSize-1}px;gap:6px"><span>Cash Given</span><span style="white-space:nowrap">SAR ${(order.given||0).toFixed(2)}</span></div><div style="display:flex;justify-content:space-between;font-size:${fontSize-1}px;font-weight:700;gap:6px"><span>Change</span><span style="white-space:nowrap">SAR ${(order.change||0).toFixed(2)}</span></div>`:""}
+${isCreditNote?`<div style="display:flex;justify-content:space-between;font-size:${fontSize-1}px;font-weight:700;gap:6px"><span>Refund via ${_escHTML(order.payMethod||"Cash")}</span><span style="white-space:nowrap">-SAR ${(order.total||0).toFixed(2)}</span></div>`:""}
 ${SEP}
 ${qrBlock}
 ${fmt.website?`<div style="text-align:center;font-size:${fontSize-2}px;color:#666;word-break:break-word">${_escHTML(fmt.website)}</div>`:""}
@@ -4799,7 +4818,12 @@ function buildPresetHTML(order,license,zatcaInvoice,fmt,qrImgSrc,opts){
     header=`<div style="text-align:center">${logoHTML}${headBlock}</div>`;
   }
   // ── INVOICE TYPE BOX ──
-  const typeBox=boxed(`${_arBlock("فاتورة ضريبية مبسطة",bodyFont)}<div style="font-weight:900;font-size:${headFont}px">Simplified Tax Invoice</div>`,true);
+  // A credit note is a ZATCA type-381 document, not a tax invoice — label it as
+  // such so the printout can never be mistaken for the original sale.
+  const isCreditNote=!!order.is_credit_note;
+  const typeBox=isCreditNote
+    ? boxed(`${_arBlock("إشعار دائن",bodyFont)}<div style="font-weight:900;font-size:${headFont}px">Credit Note · Refund</div><div style="font-size:${bodyFont-3}px">ZATCA Type 381</div>`,true)
+    : boxed(`${_arBlock("فاتورة ضريبية مبسطة",bodyFont)}<div style="font-weight:900;font-size:${headFont}px">Simplified Tax Invoice</div>`,true);
   // Optional divider AFTER the Simplified Tax Invoice box (toggle: lineAfterTitle)
   const lineAfterTitle=fmt.lineAfterTitle?SEP:"";
   // ── TOKEN + ORDER TYPE BOX (smart labels: Parcel / Dine in / Telephone) ──
@@ -4818,6 +4842,10 @@ function buildPresetHTML(order,license,zatcaInvoice,fmt,qrImgSrc,opts){
   // ── CUSTOMER (was missing entirely from the preset builder — now included) ──
   const customerBlock=(fmt.showCustomer!==false&&(order.customer||order.customerPhone))
     ? `<div style="text-align:center;font-size:${bodyFont-1}px;font-weight:${wMeta};margin:2px 0;word-break:break-word">Customer: ${_escHTML([order.customer,order.customerPhone].filter(Boolean).join(" · "))}</div>`
+    : "";
+  // Credit-note references (original invoice + reason) — required by ZATCA on a 381.
+  const cnRefBlock=isCreditNote&&(order.original_invoice_number||order.credit_note_reason)
+    ? `<div style="text-align:center;font-size:${bodyFont-1}px;font-weight:${wMeta};margin:2px 0;word-break:break-word">${order.original_invoice_number?`Original Invoice: ${_escHTML(order.original_invoice_number)}`:""}${order.original_invoice_number&&order.credit_note_reason?"<br/>":""}${order.credit_note_reason?`Reason: ${_escHTML(order.credit_note_reason)}`:""}</div>`
     : "";
   // ── USER/DATE | PAYMENT/TIME ──
   const metaGrid=`<div style="display:flex;justify-content:space-between;font-size:${bodyFont-1}px;font-weight:${wMeta};margin:3px 0;gap:8px">
@@ -4856,13 +4884,16 @@ function buildPresetHTML(order,license,zatcaInvoice,fmt,qrImgSrc,opts){
   const itemsHTML=th+rows;
   // ── TOTALS ──
   const subtotal=(order.total||0)-(order.vat||0);
+  const cnSign=isCreditNote?"-":"";
   const totalsHTML=`
-    <div style="display:flex;justify-content:space-between;font-size:${bodyFont}px;font-weight:${wMeta};margin:2px 0"><span>${_arSpan("(مجموع)")} TOTAL</span><span>${subtotal.toFixed(2)}</span></div>
-    <div style="display:flex;justify-content:space-between;font-size:${bodyFont}px;font-weight:${wMeta};margin:2px 0"><span>${_arSpan("(ضريبة)")} VAT 15%</span><span>${(order.vat||0).toFixed(2)}</span></div>
-    <div style="display:flex;justify-content:space-between;font-weight:${wTotal};font-size:${totalFont}px;border-top:${style==="s4"?"3px double #000":"2px solid #000"};padding-top:4px;margin-top:3px"><span>${_arSpan("(المجموع الإجمالي)")} GRAND TOTAL</span><span>${(order.total||0).toFixed(2)}</span></div>`;
-  // ── AMOUNT IN WORDS + RECEIVED/BALANCE ──
+    <div style="display:flex;justify-content:space-between;font-size:${bodyFont}px;font-weight:${wMeta};margin:2px 0"><span>${_arSpan("(مجموع)")} TOTAL</span><span>${cnSign}${subtotal.toFixed(2)}</span></div>
+    <div style="display:flex;justify-content:space-between;font-size:${bodyFont}px;font-weight:${wMeta};margin:2px 0"><span>${_arSpan("(ضريبة)")} VAT 15%</span><span>${cnSign}${(order.vat||0).toFixed(2)}</span></div>
+    <div style="display:flex;justify-content:space-between;font-weight:${wTotal};font-size:${totalFont}px;border-top:${style==="s4"?"3px double #000":"2px solid #000"};padding-top:4px;margin-top:3px"><span>${_arSpan(isCreditNote?"(إجمالي المسترد)":"(المجموع الإجمالي)")} ${isCreditNote?"TOTAL REFUNDED":"GRAND TOTAL"}</span><span>${cnSign}${(order.total||0).toFixed(2)}</span></div>`;
+  // ── AMOUNT IN WORDS + RECEIVED/BALANCE (or REFUNDED for a credit note) ──
   const wordsHTML=`<div style="font-size:${bodyFont-1}px;font-style:italic;margin:5px 0;word-break:break-word">Amount in Words: ${_amountWords(order.total||0)}</div>`;
-  const payHTML=`
+  const payHTML=isCreditNote
+    ? `<div style="display:flex;justify-content:space-between;font-size:${bodyFont-1}px;font-weight:${wMeta}"><span>Refunded via ${_escHTML(order.payMethod||"Cash")} ${_arSpan("(المبلغ المسترد)")}</span><span>-${(order.total||0).toFixed(2)}</span></div>`
+    : `
     <div style="display:flex;justify-content:space-between;font-size:${bodyFont-1}px"><span>Received by ${_escHTML(order.payMethod||"Cash")} ${_arSpan("(تلقى النقدية)")}</span><span>${(order.given||order.total||0).toFixed(2)}</span></div>
     <div style="display:flex;justify-content:space-between;font-size:${bodyFont-1}px"><span>Balance ${_arSpan("(توازن)")}</span><span>${(order.change||0).toFixed(2)}</span></div>`;
   // ── ZATCA QR (not on draft) ──
@@ -4892,6 +4923,7 @@ ${tokenBox}
 ${lineAfterToken}
 ${voucher}
 ${customerBlock}
+${cnRefBlock}
 ${SEP}
 ${metaGrid}
 ${SEP}
@@ -8388,6 +8420,43 @@ async function reprintReceipt(sale,license){
   }catch(e){ console.warn("[reprint fallback]",e.message); alert("Could not print. Check QZ Tray connection."); }
 }
 
+// Map a stored ZATCA invoice record (invoiceStorage shape: timestamp, items,
+// vat_amount, total, invoice_number, is_credit_note…) onto the `order` shape
+// buildReceiptHTML expects, so a credit note (or any past ZATCA document)
+// reprints through the EXACT same builder, invoice format and silent-QZ path
+// as a live customer receipt.
+function zatcaInvoiceToOrder(inv){
+  inv=inv||{};
+  const ts=inv.timestamp?new Date(inv.timestamp):null;
+  const date=inv.date||(ts&&!isNaN(ts)?ts.toISOString().slice(0,10):"");
+  const time=inv.time||(ts&&!isNaN(ts)?ts.toTimeString().slice(0,8):"");
+  return {
+    id:inv.invoice_number,
+    displayNumber:inv.invoice_number,
+    date,time,
+    items:inv.items||[],
+    vat:inv.vat_amount||0,
+    total:inv.total||0,
+    discount:inv.discount||0,
+    payMethod:inv.payMethod||"Cash",
+    type:inv.is_credit_note?"Credit Note":(inv.invoice_type||(inv.is_b2b?"B2B":"B2C")),
+    customer:inv.buyer_name||"",
+    is_credit_note:!!inv.is_credit_note,
+    original_invoice_number:inv.original_invoice_number||"",
+    credit_note_reason:inv.credit_note_reason||"",
+    icv:inv.icv||"",
+    zatcaInvoiceNumber:inv.invoice_number,
+    qr_string:inv.signed_qr_string||inv.qr_string||"",
+  };
+}
+
+// Print any stored ZATCA invoice / credit note through the same silent-QZ (or
+// hidden-iframe fallback) path as live receipts. Used by the refund flow and
+// the ZATCA Invoices tab print button.
+async function printZatcaInvoice(inv,license){
+  return reprintReceipt(zatcaInvoiceToOrder(inv),license);
+}
+
 // Print a kitchen KOT for an existing sale. Silent via QZ Tray if a kitchen
 // printer is set; otherwise a hidden-window fallback. Returns true if it
 // reached a printer silently.
@@ -8518,7 +8587,7 @@ function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,arch
             const lic=LS.get("restopos_license_v2");
             const comp=LS.get("restopos_company")||{};
             const origInv=invoiceStorage.getOne(refundTarget.zatcaInvNumber||refundTarget.id);
-            await generateZATCAInvoice({
+            const creditNote=await generateZATCAInvoice({
               seller_name:lic?.businessName||"",
               seller_vat:lic?.vatNumber||"",
               seller_address:lic?.address||"Riyadh",
@@ -8541,7 +8610,15 @@ function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,arch
               buyer_postal_code:origInv?.buyer_postal_code||"",
               payMethod:refundTarget.payMethod||"Cash",
             });
-            alert("✅ Credit note generated and queued for FATOORA reporting.");
+            // Print the credit-note receipt through the same silent-QZ path as a
+            // live sale. A print failure must never block the (already generated
+            // and queued) credit note, so it is caught separately.
+            let printed=true;
+            try{ await printZatcaInvoice(creditNote,license); }
+            catch(pErr){ printed=false; console.warn("[CreditNote print]",pErr); }
+            alert(printed
+              ? "✅ Credit note generated, printed, and queued for FATOORA reporting."
+              : "✅ Credit note generated and queued for FATOORA reporting.\n\n⚠️ Could not print automatically — reprint it from Transactions → ZATCA Invoices.");
           }catch(e){console.warn("[CreditNote]",e);}
           setRefundTarget(null);
         }} style={{flex:1}}>✅ Confirm Refund + Credit Note</Btn>
