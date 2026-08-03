@@ -32,8 +32,8 @@ import { Card, Btn, Inp, Sel, TextArea, Slider, ToggleRow, Badge, StatCard, Moda
 import { TabBoundary, ErrorBoundary } from "./components/boundaries.jsx";
 import { AuditTrail } from "./screens/AuditTrail.jsx";
 import { UserAdmin } from "./screens/UserAdmin.jsx";
-import { can, canUse, isGrandfathered, requiredPlan as reqPlanFor, benefitsGained, isUpgrade } from "./config/planFeatures.js";
-import { PlanUpgradeCelebration, UpgradeWall } from "./components/PlanCelebration.jsx";
+import { can, canUse, isGrandfathered, requiredPlan as reqPlanFor, benefitsGained, isUpgrade, trialStatus, effectivePlan, TRIAL_PLAN, DEFAULT_TRIAL_DAYS } from "./config/planFeatures.js";
+import { PlanUpgradeCelebration, UpgradeWall, TrialCountdownBanner, TrialEndPrompt } from "./components/PlanCelebration.jsx";
 import { StockTakes } from "./screens/StockTakes.jsx";
 import { RecipeCosting } from "./screens/RecipeCosting.jsx";
 import { AdvancedReports } from "./screens/AdvancedReports.jsx";
@@ -9960,6 +9960,34 @@ function OwnerDashboardInline(){
     }catch(e){alert("Error: "+e.message);}
   }
 
+  // ── Premium-trial admin controls (full control: grant / extend / end) ──
+  async function grantPremiumTrial(clientId,days=DEFAULT_TRIAL_DAYS){
+    const start=new Date();const until=new Date(start.getTime()+days*86400000);
+    const patch={premiumTrialStart:start.toISOString(),premiumTrialUntil:until.toISOString(),premiumTrialUsed:true,premiumTrialGrantedAt:start.toISOString()};
+    try{
+      await updateDoc(doc(db,"pending_activations",clientId),patch);
+      setActivations(prev=>prev.map(a=>a.id===clientId?{...a,...patch}:a));
+      logActivity("PREMIUM_TRIAL_GRANT",{clientId,days},"Owner");
+    }catch(e){alert("Error: "+e.message);}
+  }
+  async function extendPremiumTrial(clientId,addDays,currentUntil){
+    const base=(currentUntil&&new Date(currentUntil)>new Date())?new Date(currentUntil):new Date();
+    const until=new Date(base.getTime()+addDays*86400000);
+    try{
+      await updateDoc(doc(db,"pending_activations",clientId),{premiumTrialUntil:until.toISOString()});
+      setActivations(prev=>prev.map(a=>a.id===clientId?{...a,premiumTrialUntil:until.toISOString()}:a));
+      logActivity("PREMIUM_TRIAL_EXTEND",{clientId,addDays},"Owner");
+    }catch(e){alert("Error: "+e.message);}
+  }
+  async function endPremiumTrial(clientId){
+    const nowIso=new Date().toISOString();
+    try{
+      await updateDoc(doc(db,"pending_activations",clientId),{premiumTrialUntil:nowIso,premiumTrialEndedAt:nowIso});
+      setActivations(prev=>prev.map(a=>a.id===clientId?{...a,premiumTrialUntil:nowIso}:a));
+      logActivity("PREMIUM_TRIAL_END",{clientId},"Owner");
+    }catch(e){alert("Error: "+e.message);}
+  }
+
   async function suspendClient(clientId,suspend){
     try{
       await updateDoc(doc(db,"pending_activations",clientId),{status:suspend?"suspended":"approved",isActive:!suspend,statusUpdatedAt:new Date().toISOString()});
@@ -10495,6 +10523,7 @@ function OwnerDashboardInline(){
                             ["Phone",client.phone||"—"],
                             ["Activated",client.activatedAt?fmtDate(client.activatedAt):"—"],
                             ["Plan",SUBSCRIPTION_PLANS[client.subscriptionPlan||"basic"]?.name||"Basic"],
+                            ["Premium Trial",(()=>{const t=trialStatus(client);return t.active?`Active · ${t.daysLeft}d left`:(client.premiumTrialUsed?"Used / ended":"—");})()],
                             ["Status",client.status||"—"],
                             ["Email",client.email||"—"],
                             ["Device OS",client.deviceInfo?.os||"—"],
@@ -10562,6 +10591,19 @@ function OwnerDashboardInline(){
                             style={{padding:"7px 16px",background:"rgba(99,102,241,0.08)",border:"1.5px solid rgba(99,102,241,0.25)",borderRadius:8,color:"#818cf8",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
                             📋 Change Plan
                           </button>
+                          {/* PREMIUM TRIAL — grant / extend / end, full admin control */}
+                          {(()=>{const tst=trialStatus(client);return tst.active?(
+                            <>
+                              <span style={{padding:"7px 12px",background:"rgba(26,138,74,0.12)",border:"1.5px solid rgba(26,138,74,0.4)",borderRadius:8,color:"#1A8A4A",fontSize:11,fontWeight:800}}>🎁 Premium trial · {tst.daysLeft}d left</span>
+                              <button onClick={()=>{const d=prompt("Extend the Premium trial by how many days?","7");const n=parseInt(d,10);if(n>0)extendPremiumTrial(client.id,n,client.premiumTrialUntil);}}
+                                style={{padding:"7px 16px",background:"rgba(26,138,74,0.10)",border:"1.5px solid rgba(26,138,74,0.35)",borderRadius:8,color:"#1A8A4A",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>➕ Extend Trial</button>
+                              <button onClick={()=>{if(confirm(`End ${client.businessName}'s Premium trial now? They revert to their own plan — nothing is deleted.`))endPremiumTrial(client.id);}}
+                                style={{padding:"7px 16px",background:"rgba(217,64,64,0.10)",border:"1.5px solid rgba(217,64,64,0.35)",borderRadius:8,color:"#D94040",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>⏹ End Trial</button>
+                            </>
+                          ):(
+                            <button onClick={()=>{const d=prompt("Grant a Premium trial for how many days?",String(DEFAULT_TRIAL_DAYS));const n=parseInt(d,10);if(n>0)grantPremiumTrial(client.id,n);}}
+                              style={{padding:"7px 16px",background:"rgba(26,138,74,0.10)",border:"1.5px solid rgba(26,138,74,0.35)",borderRadius:8,color:"#1A8A4A",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>🎁 {client.premiumTrialUsed?"Grant Trial Again":"Grant Premium Trial"}</button>
+                          );})()}
                         </div>
                       </div>
                     ):(
@@ -15338,7 +15380,7 @@ function AdvancedFeatures({sales,items,setItems,license,company,invoiceFormat,se
       {tab==="silentprint"&&<SilentPrintSetup/>}
       {tab==="description"&&<DescriptionSettings/>}
       {tab==="progressbar"&&<ProgressBarSettings/>}
-      {tab==="users"&&<UserAdmin users={users} setUsers={setUsers} plan={SUBSCRIPTION_PLANS[license?.subscriptionPlan||"basic"]} grandfathered={isGrandfathered(license)} lang={lang}/>}
+      {tab==="users"&&<UserAdmin users={users} setUsers={setUsers} plan={SUBSCRIPTION_PLANS[effectivePlan(license)]} grandfathered={isGrandfathered(license)} lang={lang}/>}
       {tab==="qztray"&&<QZTraySettings/>}
       {tab==="printtype"&&<PrintTypeSettings onGoToQZ={()=>setTab("qztray")}/>}
       {tab==="kds"&&<KitchenDisplay sales={sales}/>}
@@ -15841,6 +15883,25 @@ export default function App(){
   // Set to {from,to} when the admin upgrades this client's plan, so we can show
   // the animated congratulations screen the moment the change syncs down.
   const [planCelebration,setPlanCelebration]=useState(null);
+  // Premium-trial UX: the gift screen when it starts, the soft prompt when it
+  // ends, a banner-dismissed-for-today flag, and a 60s tick so gates flip and
+  // the countdown updates the moment the trial lapses (no data change fires).
+  const [trialGift,setTrialGift]=useState(null);
+  const [trialEndModal,setTrialEndModal]=useState(null);
+  const [trialBannerHidden,setTrialBannerHidden]=useState(()=>{try{return LS.get("restopos_trial_banner_hidden")===new Date().toISOString().slice(0,10);}catch{return false;}});
+  const [nowTick,setNowTick]=useState(0);
+  useEffect(()=>{const id=setInterval(()=>setNowTick(t=>t+1),60000);return()=>clearInterval(id);},[]);
+  // Soft landing when a trial lapses: fires once, only if they haven't already
+  // converted to Premium. Gates revert on their own via effectivePlan().
+  useEffect(()=>{
+    const lic=license;if(!lic?.premiumTrialStart||!lic?.premiumTrialUntil)return;
+    const st=trialStatus(lic);
+    const alreadyPremium=(lic.subscriptionPlan||"basic")==="premium";
+    if(!st.active&&!alreadyPremium&&LS.get("restopos_trial_end_ack")!==lic.premiumTrialUntil){
+      LS.set("restopos_trial_end_ack",lic.premiumTrialUntil);
+      setTrialEndModal({});
+    }
+  },[license,nowTick]);
   // What the cloud archive put back on a new device, and what it deliberately
   // left in the cloud. Shown once so the client can see their history survived
   // rather than assuming the older months are gone.
@@ -16166,9 +16227,18 @@ export default function App(){
         // Sync subscriptionPlan, phone, ownerName from Firestore into local license
         const prevPlanRaw=LS.get("restopos_license_v2")?.subscriptionPlan; // undefined on very first sync
         const nextPlan=data.subscriptionPlan||"basic";
-        const updatedLic={...LS.get("restopos_license_v2"),subscriptionPlan:nextPlan,ownerName:data.ownerName||"",phone:data.phone||savedLic.phone||"",businessType:data.businessType||LS.get("restopos_license_v2")?.businessType||"restaurant",activatedAt:data.activatedAt||LS.get("restopos_license_v2")?.activatedAt||null,submittedAt:data.submittedAt||LS.get("restopos_license_v2")?.submittedAt||null};
+        const prevLicSnap=LS.get("restopos_license_v2");
+        const updatedLic={...prevLicSnap,subscriptionPlan:nextPlan,ownerName:data.ownerName||"",phone:data.phone||savedLic.phone||"",businessType:data.businessType||prevLicSnap?.businessType||"restaurant",activatedAt:data.activatedAt||prevLicSnap?.activatedAt||null,submittedAt:data.submittedAt||prevLicSnap?.submittedAt||null,premiumTrialStart:data.premiumTrialStart||null,premiumTrialUntil:data.premiumTrialUntil||null,premiumTrialUsed:!!data.premiumTrialUsed};
         LS.set("restopos_license_v2",updatedLic);
         setLicense(updatedLic);
+        // A new Premium trial just landed → gift celebration (once per trial).
+        const nowTrial=trialStatus(updatedLic);
+        if(nowTrial.active&&LS.get("restopos_trial_started_ack")!==updatedLic.premiumTrialStart){
+          LS.set("restopos_trial_started_ack",updatedLic.premiumTrialStart);
+          LS.set("restopos_trial_end_ack",""); // arm the end prompt for this trial
+          setTrialBannerHidden(false);
+          setTrialGift({days:Math.max(1,nowTrial.daysLeft)});
+        }
         // Instant upgrade celebration — only when a plan we already knew about
         // moves strictly UP a tier (never on first load or on a downgrade). The
         // LS write above means the next snapshot sees prevPlanRaw===nextPlan, so
@@ -16672,6 +16742,34 @@ export default function App(){
             onClose={()=>setPlanCelebration(null)}
           />
         )}
+        {trialGift&&(
+          <PlanUpgradeCelebration
+            gift trialDays={trialGift.days}
+            toPlan={SUBSCRIPTION_PLANS[TRIAL_PLAN]}
+            benefits={benefitsGained(license?.subscriptionPlan||"basic",TRIAL_PLAN,SUBSCRIPTION_PLANS)}
+            onClose={()=>setTrialGift(null)}
+          />
+        )}
+        {trialEndModal&&(
+          <TrialEndPrompt
+            planName={SUBSCRIPTION_PLANS[TRIAL_PLAN]?.name||"Premium"}
+            planColor={SUBSCRIPTION_PLANS[TRIAL_PLAN]?.color}
+            price={SUBSCRIPTION_PLANS[TRIAL_PLAN]?.price}
+            benefits={benefitsGained(license?.subscriptionPlan||"basic",TRIAL_PLAN,SUBSCRIPTION_PLANS)}
+            onKeep={()=>{setTrialEndModal(null);setScreen("help");}}
+            onClose={()=>setTrialEndModal(null)}
+          />
+        )}
+        {(()=>{const st=trialStatus(license);const converted=(license?.subscriptionPlan||"basic")==="premium";
+          return st.active&&!converted&&!trialBannerHidden?(
+            <TrialCountdownBanner
+              planName={SUBSCRIPTION_PLANS[TRIAL_PLAN]?.name||"Premium"}
+              price={SUBSCRIPTION_PLANS[TRIAL_PLAN]?.price}
+              daysLeft={st.daysLeft}
+              onKeep={()=>setScreen("help")}
+              onDismiss={()=>{setTrialBannerHidden(true);LS.set("restopos_trial_banner_hidden",new Date().toISOString().slice(0,10));}}
+            />
+          ):null;})()}
         <TabBoundary key={screen} name={screen}>
         {screen==="dashboard"&&<Dashboard sales={allSales} items={items} license={license} lang={lang}/>}
         {screen==="pos"&&<POS items={items} setItems={setItems} sales={sales} setSales={setSales} tables={tables} setTables={setTables} promos={promos} license={license} lang={lang} currentUser={currentUser}/>}

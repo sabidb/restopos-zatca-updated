@@ -44,6 +44,37 @@ export function can(planId, capability) {
   return planRank(planId) >= planRank(min);
 }
 
+// ── Premium trial ─────────────────────────────────────────────────
+// A client can be given a temporary taste of a higher tier (default Premium)
+// without changing their real subscriptionPlan. While the trial is live the
+// whole app treats them as that tier; when it lapses they fall straight back
+// to their own plan — no hard lock, nothing deleted.
+export const TRIAL_PLAN = "premium";
+export const DEFAULT_TRIAL_DAYS = 14;
+
+// {active, daysLeft, hoursLeft, endsAt, startedAt, used}
+export function trialStatus(license) {
+  const untilRaw = license?.premiumTrialUntil;
+  const until = untilRaw ? new Date(untilRaw).getTime() : null;
+  const now = Date.now();
+  const active = until != null && !isNaN(until) && until > now;
+  return {
+    active,
+    daysLeft: active ? Math.ceil((until - now) / 86400000) : 0,
+    hoursLeft: active ? Math.ceil((until - now) / 3600000) : 0,
+    endsAt: until && !isNaN(until) ? new Date(until) : null,
+    startedAt: license?.premiumTrialStart || null,
+    used: !!license?.premiumTrialUsed,
+  };
+}
+
+// The tier the app should actually enforce: the trial tier while a trial is
+// live, otherwise the client's own plan.
+export function effectivePlan(license) {
+  if (trialStatus(license).active) return TRIAL_PLAN;
+  return license?.subscriptionPlan || "basic";
+}
+
 // ── Grandfathering ────────────────────────────────────────────────
 // Our goal is winning and keeping customers, not taking features away. So
 // accounts that already existed when tier-enforcement rolled out keep full
@@ -59,10 +90,11 @@ export function isGrandfathered(license) {
   return t < ENFORCE_FROM;             // predates enforcement → grandfathered
 }
 
-// The gate the whole app should use: a capability is available if the plan
-// unlocks it OR the account is grandfathered. Pass the full license object.
+// The gate the whole app should use: a capability is available if the client's
+// effective plan (real plan, or the trial tier while a trial is live) unlocks
+// it OR the account is grandfathered. Pass the full license object.
 export function canUse(license, capability) {
-  return can(license?.subscriptionPlan, capability) || isGrandfathered(license);
+  return can(effectivePlan(license), capability) || isGrandfathered(license);
 }
 
 // Numeric-limit gate (users/devices) with the same grandfathering. Returns the
