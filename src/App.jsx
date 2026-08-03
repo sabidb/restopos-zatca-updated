@@ -1991,9 +1991,11 @@ function ForgotPassword({onBack,onReset}){
 // SUBSCRIPTION PLANS
 // ═══════════════════════════════════════════════════════════════════
 const SUBSCRIPTION_PLANS={
-  basic:{id:"basic",name:"Basic",nameAr:"الأساسية",price:99,color:"#6366f1",features:["1 device/location","2 users (Admin + Cashier)","Up to 100 items","Up to 10 tables","Basic reports (daily/weekly/monthly)","Standard receipt printing","ZATCA Phase 2 compliance","Priority chat support","Data retention: 3 months"],limits:{devices:1,users:2,items:100,tables:10}},
-  professional:{id:"professional",name:"Professional",nameAr:"الاحترافية",price:149,color:"#F0A500",features:["3 devices/locations","5 users","Up to 500 items","Up to 30 tables","Advanced reports & analytics","Custom receipt branding","Multi-location sync","Inventory tracking & alerts","Priority chat support (24h response)","Data retention: 12 months","Export data (Excel/PDF)"],limits:{devices:3,users:5,items:500,tables:30}},
-  premium:{id:"premium",name:"Premium",nameAr:"المميزة",price:249,color:"#1A8A4A",features:["5 devices/locations","10 users","Up to 2000 items","Up to 100 tables","Real-time analytics & insights","Advanced inventory management","Customer loyalty program","Employee performance tracking","WhatsApp/SMS receipts","Priority chat & phone support (12h response)","Data retention: Lifetime","API access"],limits:{devices:5,users:10,items:2000,tables:100}}
+  // limits: null = unlimited. Items and tables are unlimited on every plan
+  // (never capped); only `users` is currently enforced in-app.
+  basic:{id:"basic",name:"Basic",nameAr:"الأساسية",price:99,color:"#6366f1",features:["1 branch · 2 devices","2 users (Admin + Cashier)","Unlimited items & tables","Basic reports (daily/weekly/monthly)","Standard receipt printing","ZATCA Phase 2 compliance","Priority chat support","7-day reporting history"],limits:{devices:2,users:2,items:null,tables:null,branches:1}},
+  professional:{id:"professional",name:"Professional",nameAr:"الاحترافية",price:149,color:"#F0A500",features:["Up to 3 branches · unlimited devices","5 users","Unlimited items & tables","Advanced reports & analytics","Custom receipt branding","Multi-location sync","Inventory tracking & alerts","Priority chat support (24h response)","30-day reporting history","Export data (Excel/PDF)"],limits:{devices:null,users:5,items:null,tables:null,branches:3}},
+  premium:{id:"premium",name:"Premium",nameAr:"المميزة",price:249,color:"#1A8A4A",features:["Unlimited branches & devices","Unlimited users","Unlimited items & tables","Real-time analytics & insights","Advanced inventory management","Customer loyalty program","Employee performance tracking","WhatsApp/SMS receipts","Priority chat & phone support (12h response)","90-day reporting history","API access"],limits:{devices:null,users:null,items:null,tables:null,branches:null}}
 };
 
 // Activity log helper
@@ -15334,7 +15336,7 @@ function AdvancedFeatures({sales,items,setItems,license,company,invoiceFormat,se
       {tab==="silentprint"&&<SilentPrintSetup/>}
       {tab==="description"&&<DescriptionSettings/>}
       {tab==="progressbar"&&<ProgressBarSettings/>}
-      {tab==="users"&&<UserAdmin users={users} setUsers={setUsers}/>}
+      {tab==="users"&&<UserAdmin users={users} setUsers={setUsers} plan={SUBSCRIPTION_PLANS[license?.subscriptionPlan||"basic"]} lang={lang}/>}
       {tab==="qztray"&&<QZTraySettings/>}
       {tab==="printtype"&&<PrintTypeSettings onGoToQZ={()=>setTab("qztray")}/>}
       {tab==="kds"&&<KitchenDisplay sales={sales}/>}
