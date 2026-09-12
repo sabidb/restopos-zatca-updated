@@ -1,4 +1,5 @@
 import { onCall, HttpsError } from "firebase-functions/v2/https";
+import { onSchedule } from "firebase-functions/v2/scheduler";
 import { initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import { getAuth } from "firebase-admin/auth";
@@ -617,4 +618,147 @@ export const zatcaExport = onCall({ cors: true, region: "us-central1" }, async (
       ? { timestamp: last.timestamp, invoiceNumber: last.invoice_number }
       : null,
   };
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// UNREPORTED-INVOICE RECONCILIATION
+// ═══════════════════════════════════════════════════════════════════
+//
+// There are two archives and only one of them was ever checked.
+//
+// Every invoice is filed here, to `zatca_invoices`, the moment it is
+// generated — before it goes anywhere near ZATCA, so that a five-year record
+// exists even if reporting never succeeds. The signing service keeps its own
+// archive of documents that reached it, and the fleet sweep reports on its
+// outbox: documents that were submitted at least once and are being retried.
+//
+// Nothing looked at the gap between the two. An invoice generated on a till
+// and then lost — the browser closed before the queue flushed, site data
+// cleared, the device replaced — sits in `zatca_invoices` with
+// zatca_reported false and is invisible to every alarm the system has. The
+// merchant finds out at audit.
+//
+// This closes that. It is deliberately a separate signal from the fleet
+// sweep, because it means something different: the fleet sweep says ZATCA
+// rejected or could not be reached, this says nobody ever tried.
+
+// Simplified invoices must reach ZATCA within 24 hours of issue. Anything
+// unreported past this is late, not merely in flight.
+const REPORTING_WINDOW_HOURS = 24;
+// Recent invoices are skipped: one generated a minute ago and still being
+// submitted is not a finding, it is the normal path.
+const RECONCILE_GRACE_HOURS = 2;
+// Enough to tell a stuck till from a stuck fleet without reading every
+// invoice a busy chain has ever issued.
+const RECONCILE_SCAN_LIMIT = 5000;
+const RECONCILE_SAMPLE = 10;
+
+/**
+ * Scans the archive for invoices that never reached the signing service and
+ * records one summary per taxpayer in `zatca_unreported_status`.
+ *
+ * `zatca_pending_report` separates the two cases that matter. Set, the
+ * service has the document and its outbox is retrying — already covered by
+ * the fleet sweep, counted here only for context. Unset, no submission ever
+ * succeeded from the till, and if that invoice is older than the reporting
+ * window it is late with nothing working on it.
+ */
+async function reconcileUnreported() {
+  const now = Date.now();
+  const graceCutoff = new Date(now - RECONCILE_GRACE_HOURS * 3600_000).toISOString();
+  const lateCutoff = new Date(now - REPORTING_WINDOW_HOURS * 3600_000).toISOString();
+
+  const snap = await db.collection("zatca_invoices")
+    .where("zatca_reported", "==", false)
+    .where("timestamp", "<", graceCutoff)
+    .orderBy("timestamp", "asc")
+    .limit(RECONCILE_SCAN_LIMIT)
+    .get();
+
+  const byTaxpayer = new Map();
+  for (const doc of snap.docs) {
+    const inv = doc.data();
+    const vat = String(inv.seller_vat || "").trim();
+    if (!vat) continue;
+
+    if (!byTaxpayer.has(vat)) {
+      byTaxpayer.set(vat, {
+        sellerVat: vat,
+        sellerName: inv.seller_name || null,
+        neverSubmitted: 0,
+        awaitingRetry: 0,
+        late: 0,
+        lateValue: 0,
+        oldestAt: null,
+        sample: [],
+      });
+    }
+    const row = byTaxpayer.get(vat);
+
+    if (inv.zatca_pending_report === true) {
+      row.awaitingRetry += 1;
+      continue;
+    }
+
+    row.neverSubmitted += 1;
+    if (!row.oldestAt || inv.timestamp < row.oldestAt) row.oldestAt = inv.timestamp || null;
+    if (inv.timestamp && inv.timestamp < lateCutoff) {
+      row.late += 1;
+      row.lateValue = Math.round((row.lateValue + (Number(inv.total) || 0)) * 100) / 100;
+      // Named so the merchant can be told which documents to chase rather
+      // than only how many there are.
+      if (row.sample.length < RECONCILE_SAMPLE) {
+        row.sample.push({ invoiceNumber: inv.invoice_number || null, timestamp: inv.timestamp, total: Number(inv.total) || 0 });
+      }
+    }
+  }
+
+  const sweptAt = new Date().toISOString();
+  const scanTruncated = snap.size === RECONCILE_SCAN_LIMIT;
+  const summaries = [];
+
+  for (const row of byTaxpayer.values()) {
+    const summary = {
+      ...row,
+      // Late means past the 24-hour window with nothing retrying it. That is
+      // the only state here a merchant has to act on today.
+      level: row.late > 0 ? "urgent" : row.neverSubmitted > 0 ? "attention" : "ok",
+      scanTruncated,
+      sweptAt,
+    };
+    await db.collection("zatca_unreported_status").doc(row.sellerVat).set(summary);
+    summaries.push(summary);
+  }
+
+  // A taxpayer that has cleared its backlog must stop showing as a problem.
+  // Without this the last bad sweep would stand for ever.
+  const previous = await db.collection("zatca_unreported_status").get();
+  for (const doc of previous.docs) {
+    if (byTaxpayer.has(doc.id)) continue;
+    await doc.ref.set({ sellerVat: doc.id, neverSubmitted: 0, awaitingRetry: 0, late: 0, lateValue: 0,
+      oldestAt: null, sample: [], level: "ok", scanTruncated: false, sweptAt }, { merge: true });
+  }
+
+  return { scanned: snap.size, scanTruncated, taxpayers: summaries.length,
+    urgent: summaries.filter((s) => s.level === "urgent").length, sweptAt };
+}
+
+export const zatcaReconcileUnreported = onSchedule(
+  { schedule: "30 5 * * *", timeZone: "Asia/Riyadh", region: "us-central1" },
+  async () => {
+    const result = await reconcileUnreported();
+    console.log("[ZATCA reconcile]", JSON.stringify(result));
+  }
+);
+
+/**
+ * The same sweep on demand, for the admin panel. Restricted to the owner
+ * account: it reads across every tenant's archive, which no merchant may do.
+ */
+export const zatcaReconcileNow = onCall({ cors: true, region: "us-central1" }, async (req) => {
+  const email = req.auth?.token?.email;
+  if (!email || email !== ADMIN_EMAIL) {
+    throw new HttpsError("permission-denied", "Only the owner account may run the reconciliation.");
+  }
+  return reconcileUnreported();
 });

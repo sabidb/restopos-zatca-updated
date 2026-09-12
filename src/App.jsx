@@ -534,6 +534,26 @@ const invoiceStorage = {
       try{window.dispatchEvent(new Event("restopos-invoice"));}catch(e){}
       // Whatever the server just returned is, by definition, filed.
       if(Array.isArray(recent))this.markArchived(recent.map(r=>r.invoice_number));
+
+      // 3) Re-queue anything the archive holds that was never reported.
+      //
+      //    Filing an invoice and reporting it are separate steps: the archive
+      //    write happens as the invoice is generated, the report follows. A
+      //    till that lost its localStorage between the two — cache cleared,
+      //    device replaced — used to get its history back here and nothing
+      //    else. The invoices returned as unreported, and no queue entry
+      //    existed to make anything try again, so they stayed unreported for
+      //    good and the only trace was in an audit.
+      //
+      //    A document the signing service already holds (zatca_pending_report)
+      //    is left alone: its outbox owns the retry, and submitting again from
+      //    here would only race it.
+      if(isPhase2Active()&&Array.isArray(recent)){
+        const unreported=recent.filter(r=>
+          r&&r.invoice_number&&r.zatca_reported!==true&&r.zatca_cleared!==true&&r.zatca_pending_report!==true);
+        for(const r of unreported)fatooraQueue.enqueue(r);
+        if(unreported.length)console.log(`[ZATCA] Re-queued ${unreported.length} unreported invoice(s) recovered from the archive.`);
+      }
     }catch(e){ console.warn("[ZATCA] chain sync failed:",e.message); }
 
     // Deliberately outside the block above. Reading the chain is a network call
@@ -557,7 +577,16 @@ const invoiceStorage = {
 if (typeof window !== "undefined") { window.__restoposDebug.invoiceStorage = invoiceStorage; }
 
 const fatooraQueue = {
-  enqueue(inv) { const q=this.getQueue(); q.push({invoice_number:inv.invoice_number,queued_at:new Date().toISOString(),attempts:0,status:"pending"}); localStorage.setItem(ZATCA_QUEUE_KEY,JSON.stringify(q)); },
+  // Idempotent: an invoice already in the queue is left where it is, with the
+  // attempt count and the queued-at time it already had. Those feed the
+  // 24-hour urgency check, so re-queuing an invoice would reset the clock on
+  // exactly the documents that most need it running.
+  enqueue(inv) {
+    const q=this.getQueue();
+    if(q.some(e=>e.invoice_number===inv.invoice_number))return;
+    q.push({invoice_number:inv.invoice_number,queued_at:inv.timestamp||new Date().toISOString(),attempts:0,status:"pending"});
+    localStorage.setItem(ZATCA_QUEUE_KEY,JSON.stringify(q));
+  },
   getQueue() { try{return JSON.parse(localStorage.getItem(ZATCA_QUEUE_KEY)||"[]");}catch{return[];} },
   markSent(n) { localStorage.setItem(ZATCA_QUEUE_KEY,JSON.stringify(this.getQueue().map(q=>q.invoice_number===n?{...q,status:"reported",sent_at:new Date().toISOString()}:q))); },
   markFailed(n) { localStorage.setItem(ZATCA_QUEUE_KEY,JSON.stringify(this.getQueue().map(q=>q.invoice_number===n?{...q,status:"failed",attempts:(q.attempts||0)+1}:q))); },

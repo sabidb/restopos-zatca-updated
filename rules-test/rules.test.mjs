@@ -138,6 +138,12 @@ await t('client CANNOT read another shop ZATCA fleet health', () =>
   assertFails(getDoc(doc(owner, 'zatca_fleet_status', 'REALCLIENT'))));
 await t('nobody in a browser can forge fleet health', () =>
   assertFails(setDoc(doc(admin, 'zatca_fleet_status', TRIAL), { certificateDaysLeft: 999 })));
+await t('admin reads unreported-invoice reconciliation', () =>
+  assertSucceeds(getDoc(doc(admin, 'zatca_unreported_status', '399999999900003'))));
+await t('client CANNOT read another taxpayer unreported count', () =>
+  assertFails(getDoc(doc(owner, 'zatca_unreported_status', '311111111100003'))));
+await t('nobody in a browser can clear their own unreported count', () =>
+  assertFails(setDoc(doc(admin, 'zatca_unreported_status', '399999999900003'), { late: 0 })));
 await t('client records terms acceptance at registration', () =>
   assertSucceeds(setDoc(doc(stranger, 'pending_activations', 'TRIAL-0577777777'), {
     licenseKey: 'TRIAL-0577777777', status: 'pending', credentialsApproved: false,

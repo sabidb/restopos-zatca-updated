@@ -143,6 +143,13 @@ service cloud.firestore {
     // Deliberately a separate collection from zatca_egs, which holds key
     // material and stays closed to every browser including this one.
     match /zatca_fleet_status/{licenseKey} { allow read: if isAdmin(); allow write: if false; }
+
+    // Invoices the archive holds that were never reported to ZATCA, one row
+    // per taxpayer, written by the scheduled reconciliation with the Admin
+    // SDK. A separate signal from the fleet sweep above and a separate
+    // collection: that one says ZATCA rejected the document or could not be
+    // reached, this one says nothing ever tried to send it.
+    match /zatca_unreported_status/{sellerVat} { allow read: if isAdmin(); allow write: if false; }
     match /manager_logins/{key}    { allow read, write: if isAdmin(); }
     match /orgs/{orgId}            { allow read, write: if false; }
     match /activity_log/{doc}      { allow read, write: if isAdmin(); }
