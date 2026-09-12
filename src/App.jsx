@@ -841,6 +841,59 @@ async function generateZATCAInvoice({seller_name,seller_vat,seller_address,selle
   return invoice;
 }
 
+/**
+ * Issues a ZATCA credit note against an earlier sale.
+ *
+ * Phase 2 has no such thing as voiding or deleting a reported invoice. Once a
+ * document has been given a sequential number, signed and reported, the only
+ * lawful way to reverse it is a credit note that references it (BR-KSA-56) and
+ * states why it was issued (BR-KSA-17). A local status change reverses nothing:
+ * the original stays in FATOORA, uncancelled, and the merchant keeps owing the
+ * VAT on it.
+ *
+ * `items` defaults to the whole of the original, which is the full reversal a
+ * void needs. A partial refund passes the lines actually being credited.
+ *
+ * Returns the note, or null when the sale never produced a ZATCA document at
+ * all (a Phase 1 terminal, or a generation that failed) — there is nothing to
+ * reverse in that case and inventing a reference would be worse than omitting
+ * one.
+ */
+async function issueCreditNoteFor(sale, { reason, items = null } = {}) {
+  const originalNumber = sale.zatcaInvoiceNumber || sale.displayNumber || sale.voucher || null;
+  if (!originalNumber) return null;
+
+  const original = invoiceStorage.getOne(originalNumber);
+  const lines = items || original?.items || sale.items || [];
+  if (!lines.length) return null;
+
+  const lic = LS.get("restopos_license_v2");
+  const comp = LS.get("restopos_company") || {};
+
+  // A credit note against a standard invoice is itself a standard document, so
+  // it carries the same buyer party as the original.
+  return generateZATCAInvoice({
+    seller_name: lic?.businessName || "",
+    seller_vat: lic?.vatNumber || "",
+    seller_address: lic?.address || "Riyadh",
+    seller_cr: lic?.crNumber || "",
+    seller_city: comp?.city || "",
+    items: lines.map(i => ({ name: i.name, price: i.price, qty: i.qty })),
+    is_credit_note: true,
+    original_invoice_number: originalNumber,
+    credit_note_reason: reason,
+    invoice_type: original?.invoice_type || (sale.isB2B ? "B2B" : "B2C"),
+    buyer_name: original?.buyer_name || "",
+    buyer_vat: original?.buyer_vat || "",
+    buyer_street: original?.buyer_street || "",
+    buyer_building: original?.buyer_building || "",
+    buyer_district: original?.buyer_district || "",
+    buyer_city: original?.buyer_city || "",
+    buyer_postal_code: original?.buyer_postal_code || "",
+    payMethod: sale.payMethod || "Cash",
+  });
+}
+
 const zatcaUtils = {
   validateVATNumber(v){return /^3\d{14}$/.test(v);},
   getQueueStatus(){const q=fatooraQueue.getQueue();return{total:q.length,reported:q.filter(x=>x.status==="reported").length,pending:q.filter(x=>x.status==="pending").length,urgent:fatooraQueue.getUrgent().length};},
@@ -8470,7 +8523,90 @@ function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,arch
   // Manager-approval gate for void/refund. requiresApproval() is false unless
   // the active business type opts in, so existing types keep today's flow.
   const [pendingApproval,setPendingApproval]=useState(null); // {action,onApproved}
-  const doVoid=(s)=>setSales(prev=>prev.map(x=>x.id===s.id?{...x,status:"voided"}:x));
+  // ── Refunds ───────────────────────────────────────────────────────
+  // A refund is a credit note for what was actually returned, so the lines and
+  // quantities are chosen rather than assumed. Crediting the whole invoice for
+  // a partial return reclaims VAT that is still owed on the part the customer
+  // kept, which is why the previous behaviour — always the full original — was
+  // only ever right by accident.
+  const [refundLines,setRefundLines]=useState([]);
+  const [refundReason,setRefundReason]=useState("");
+  const [refundBusy,setRefundBusy]=useState(false);
+
+  const refundOriginalNumber=refundTarget
+    ? (refundTarget.zatcaInvoiceNumber||refundTarget.displayNumber||refundTarget.voucher||null)
+    : null;
+  const refundAmount=round2(refundLines.reduce((sum,l)=>sum+l.price*l.refundQty,0));
+
+  // Seeded from the ZATCA invoice where there is one, since that is the
+  // document being credited; the sale's own lines are the fallback.
+  useEffect(()=>{
+    if(!refundTarget){setRefundLines([]);setRefundReason("");return;}
+    const original=refundOriginalNumber?invoiceStorage.getOne(refundOriginalNumber):null;
+    const source=original?.items||refundTarget.items||[];
+    setRefundLines(source.map(i=>({name:i.name,price:i.price,qty:i.qty,refundQty:i.qty})));
+    setRefundReason("");
+  },[refundTarget]);
+
+  function setRefundQty(index,qty){
+    setRefundLines(ls=>ls.map((l,i)=>i===index?{...l,refundQty:Math.max(0,Math.min(l.qty,qty))}:l));
+  }
+  function closeRefund(){setRefundTarget(null);setRefundLines([]);setRefundReason("");}
+
+  async function doRefund(){
+    const credited=refundLines.filter(l=>l.refundQty>0).map(l=>({name:l.name,price:l.price,qty:l.refundQty}));
+    if(!credited.length)return;
+    const full=refundLines.every(l=>l.refundQty===l.qty);
+
+    setRefundBusy(true);
+    try{
+      const note=await issueCreditNoteFor(refundTarget,{reason:refundReason.trim(),items:credited});
+      // Marked only once the reversal exists. A sale shown as refunded whose
+      // credit note failed to generate is the state worth avoiding: the VAT
+      // still stands against the original and nothing on screen says so.
+      setSales(prev=>prev.map(s=>s.id===refundTarget.id
+        ?{...s,status:full?"refunded":"partially-refunded",refund_reason:refundReason.trim(),
+          refunded_amount:round2((s.refunded_amount||0)+refundAmount),
+          credit_note_number:note?.invoice_number||s.credit_note_number||null}
+        :s));
+      alert(note
+        ?`✅ Credit note ${note.invoice_number} raised for ${fmtSAR(refundAmount)} against ${refundOriginalNumber} and queued for FATOORA.`
+        :`✅ Refund recorded. No ZATCA invoice was ever issued for this sale, so no credit note was needed.`);
+      closeRefund();
+    }catch(e){
+      alert("Could not refund this sale — the credit note failed to generate:\n\n"+(e?.message||e)+"\n\nThe sale is unchanged.");
+    }
+    setRefundBusy(false);
+  }
+
+  // Voiding is a credit note, not a status change. Phase 2 has no way to
+  // withdraw a document that has been numbered, signed and reported, so a sale
+  // marked voided locally while its invoice stands in FATOORA leaves the
+  // merchant owing VAT on a sale that never happened. The reason is collected
+  // because ZATCA requires one on the note (BR-KSA-17).
+  const [voidTarget,setVoidTarget]=useState(null);
+  const [voidReason,setVoidReason]=useState("");
+  const [voidBusy,setVoidBusy]=useState(false);
+
+  async function doVoid(s,reason){
+    setVoidBusy(true);
+    try{
+      const note=await issueCreditNoteFor(s,{reason});
+      setSales(prev=>prev.map(x=>x.id===s.id
+        ?{...x,status:"voided",void_reason:reason,credit_note_number:note?.invoice_number||null}
+        :x));
+      alert(note
+        ?`✅ Sale voided. Credit note ${note.invoice_number} raised against ${s.zatcaInvoiceNumber||s.displayNumber||s.id} and queued for FATOORA.`
+        :"✅ Sale voided. No ZATCA invoice was ever issued for it, so no credit note was needed.");
+    }catch(e){
+      // The void does not happen if the reversal cannot be raised: a sale shown
+      // as voided with its invoice still standing is the state this avoids.
+      alert("Could not void this sale — the credit note failed to generate:\n\n"+(e?.message||e)+"\n\nThe sale is unchanged.");
+    }
+    setVoidBusy(false);
+    setVoidTarget(null);
+    setVoidReason("");
+  }
   const dateFiltered=sales.filter(s=>s.date>=dateFrom&&s.date<=dateTo);
   const _filteredRaw=search.trim()?sales.filter(s=>s.id?.toLowerCase().includes(search.toLowerCase())||s.date?.includes(search)||s.type?.toLowerCase().includes(search.toLowerCase())||s.payMethod?.toLowerCase().includes(search.toLowerCase())):dateFiltered;
   // Newest sale on top → sort by reliable createdAt (fallback to date+time), descending.
@@ -8518,53 +8654,80 @@ function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,arch
       );
     })()}
 
-    {refundTarget&&<Modal title="Process Refund / Credit Note" onClose={()=>setRefundTarget(null)} width={460}>
-      <div style={{fontSize:13,color:C.textMid,marginBottom:12}}>Refunding <strong style={{color:C.primary}}>{refundTarget.id}</strong> — {fmtSAR(refundTarget.total)}</div>
+    {voidTarget&&<Modal title="Void Sale — Credit Note" onClose={()=>{if(!voidBusy){setVoidTarget(null);setVoidReason("");}}} width={460}>
+      <div style={{fontSize:13,color:C.textMid,marginBottom:12}}>Voiding <strong style={{color:C.primary}}>{voidTarget.displayNumber||voidTarget.id}</strong> — {fmtSAR(voidTarget.total)}</div>
       <div style={{background:"#fffbeb",border:"1px solid #fbbf24",borderRadius:8,padding:12,fontSize:12,color:"#92400e",marginBottom:16,lineHeight:1.6}}>
-        ⚠️ This will mark the invoice as refunded <strong>and generate a ZATCA credit note</strong> referencing the original invoice. The credit note will be queued for reporting to FATOORA.
+        ⚠️ Under ZATCA Phase 2 an invoice that has been issued cannot be withdrawn. Voiding this sale raises a <strong>credit note for the full amount</strong> referencing the original invoice, which is what reverses the VAT. The note is reported to FATOORA like any other document.
       </div>
       <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:16}}>
-        <div style={{fontSize:10,fontWeight:700,color:"#64748b",textTransform:"uppercase",letterSpacing:1}}>Original Invoice Number (auto-filled)</div>
-        <input value={refundTarget.id||""} readOnly
-          style={{width:"100%",padding:"9px 12px",border:"1px solid #cbd5e1",borderRadius:8,fontSize:13,fontFamily:"monospace",background:"#f8fafc",boxSizing:"border-box"}}/>
-        <div style={{fontSize:10,color:"#64748b",marginTop:2}}>This reference is required by ZATCA on the credit note XML (BillingReference).</div>
+        <div style={{fontSize:10,fontWeight:700,color:"#64748b",textTransform:"uppercase",letterSpacing:1}}>Reason for voiding <span style={{color:C.danger}}>*</span></div>
+        <input value={voidReason} onChange={e=>setVoidReason(e.target.value)} autoFocus
+          placeholder="e.g. Order cancelled before service"
+          style={{width:"100%",padding:"9px 12px",border:`1px solid ${voidReason.trim()?"#cbd5e1":C.danger}`,borderRadius:8,fontSize:13,fontFamily:"inherit",boxSizing:"border-box"}}/>
+        <div style={{fontSize:10,color:"#64748b",marginTop:2}}>ZATCA requires a credit note to state why it was issued (BR-KSA-17). It is printed on the note.</div>
       </div>
       <div style={{display:"flex",gap:10}}>
-        <Btn variant="ghost" onClick={()=>setRefundTarget(null)} style={{flex:1}}>Cancel</Btn>
-        <Btn variant="danger" onClick={async()=>{
-          setSales(prev=>prev.map(s=>s.id===refundTarget.id?{...s,status:"refunded"}:s));
-          // Generate ZATCA credit note with BillingReference
-          try{
-            const lic=LS.get("restopos_license_v2");
-            const comp=LS.get("restopos_company")||{};
-            const origInv=invoiceStorage.getOne(refundTarget.zatcaInvNumber||refundTarget.id);
-            await generateZATCAInvoice({
-              seller_name:lic?.businessName||"",
-              seller_vat:lic?.vatNumber||"",
-              seller_address:lic?.address||"Riyadh",
-              seller_cr:lic?.crNumber||"",
-              seller_city:comp?.city||"",
-              items:(origInv?.items||refundTarget.items||[]).map(i=>({name:i.name,price:i.price,qty:i.qty})),
-              is_credit_note:true,
-              original_invoice_number:refundTarget.id,
-              // BR-KSA-17: a credit note must state why it was issued.
-              credit_note_reason:refundTarget.refundReason||"Customer refund",
-              invoice_type:origInv?.invoice_type||"B2C",
-              // A credit note against a standard invoice is itself a standard
-              // document, so it needs the same buyer details as the original.
-              buyer_name:origInv?.buyer_name||"",
-              buyer_vat:origInv?.buyer_vat||"",
-              buyer_street:origInv?.buyer_street||"",
-              buyer_building:origInv?.buyer_building||"",
-              buyer_district:origInv?.buyer_district||"",
-              buyer_city:origInv?.buyer_city||"",
-              buyer_postal_code:origInv?.buyer_postal_code||"",
-              payMethod:refundTarget.payMethod||"Cash",
-            });
-            alert("✅ Credit note generated and queued for FATOORA reporting.");
-          }catch(e){console.warn("[CreditNote]",e);}
-          setRefundTarget(null);
-        }} style={{flex:1}}>✅ Confirm Refund + Credit Note</Btn>
+        <Btn variant="ghost" disabled={voidBusy} onClick={()=>{setVoidTarget(null);setVoidReason("");}} style={{flex:1}}>Cancel</Btn>
+        <Btn variant="danger" disabled={voidBusy||!voidReason.trim()} onClick={()=>doVoid(voidTarget,voidReason.trim())} style={{flex:1}}>
+          {voidBusy?"Raising credit note…":"✅ Void + Credit Note"}
+        </Btn>
+      </div>
+    </Modal>}
+
+    {refundTarget&&<Modal title="Process Refund / Credit Note" onClose={()=>{if(!refundBusy)closeRefund();}} width={520}>
+      <div style={{fontSize:13,color:C.textMid,marginBottom:12}}>
+        Refunding <strong style={{color:C.primary}}>{refundTarget.displayNumber||refundTarget.id}</strong> — {fmtSAR(refundTarget.total)}
+      </div>
+      <div style={{background:"#fffbeb",border:"1px solid #fbbf24",borderRadius:8,padding:12,fontSize:12,color:"#92400e",marginBottom:16,lineHeight:1.6}}>
+        ⚠️ This raises a <strong>ZATCA credit note</strong> referencing the original invoice and queues it for FATOORA. Credit only what is actually being refunded — the note is what reverses the VAT, so crediting more than was returned reclaims tax that is still owed.
+      </div>
+
+      <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:14}}>
+        <div style={{fontSize:10,fontWeight:700,color:"#64748b",textTransform:"uppercase",letterSpacing:1}}>Original Invoice Number</div>
+        <input value={refundOriginalNumber||"— none issued —"} readOnly
+          style={{width:"100%",padding:"9px 12px",border:"1px solid #cbd5e1",borderRadius:8,fontSize:13,fontFamily:"monospace",background:"#f8fafc",boxSizing:"border-box"}}/>
+        <div style={{fontSize:10,color:"#64748b",marginTop:2}}>The ZATCA invoice number, which is what the credit note must reference (BR-KSA-56) — not the internal order id.</div>
+      </div>
+
+      <div style={{fontSize:10,fontWeight:700,color:"#64748b",textTransform:"uppercase",letterSpacing:1,marginBottom:8}}>What is being refunded</div>
+      <div style={{border:`1px solid ${C.border}`,borderRadius:8,overflow:"hidden",marginBottom:8}}>
+        {refundLines.map((l,i)=>(
+          <div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 12px",borderBottom:i<refundLines.length-1?`1px solid ${C.border}`:"none",background:l.refundQty>0?"#fff":"#fafafa"}}>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:13,fontWeight:600,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{l.name}</div>
+              <div style={{fontSize:11,color:C.textLight}}>{fmtSAR(l.price)} each · {l.qty} sold</div>
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:6}}>
+              <button onClick={()=>setRefundQty(i,l.refundQty-1)} disabled={refundBusy||l.refundQty<=0}
+                style={{width:28,height:28,borderRadius:6,border:`1px solid ${C.border}`,background:"#fff",cursor:"pointer",fontSize:15,fontFamily:"inherit",color:C.text}}>−</button>
+              <div style={{minWidth:26,textAlign:"center",fontSize:13,fontWeight:700,fontFamily:"monospace",color:l.refundQty>0?C.danger:C.textLight}}>{l.refundQty}</div>
+              <button onClick={()=>setRefundQty(i,l.refundQty+1)} disabled={refundBusy||l.refundQty>=l.qty}
+                style={{width:28,height:28,borderRadius:6,border:`1px solid ${C.border}`,background:"#fff",cursor:"pointer",fontSize:15,fontFamily:"inherit",color:C.text}}>+</button>
+            </div>
+            <div style={{minWidth:72,textAlign:"right",fontSize:13,fontWeight:700,color:l.refundQty>0?C.danger:C.textLight}}>{fmtSAR(l.price*l.refundQty)}</div>
+          </div>
+        ))}
+      </div>
+      <div style={{display:"flex",gap:8,marginBottom:14}}>
+        <Btn size="sm" variant="ghost" disabled={refundBusy} onClick={()=>setRefundLines(ls=>ls.map(l=>({...l,refundQty:l.qty})))}>Refund everything</Btn>
+        <Btn size="sm" variant="ghost" disabled={refundBusy} onClick={()=>setRefundLines(ls=>ls.map(l=>({...l,refundQty:0})))}>Clear</Btn>
+        <div style={{flex:1}}/>
+        <div style={{fontSize:14,fontWeight:800,color:C.danger,alignSelf:"center"}}>Credit {fmtSAR(refundAmount)}</div>
+      </div>
+
+      <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:16}}>
+        <div style={{fontSize:10,fontWeight:700,color:"#64748b",textTransform:"uppercase",letterSpacing:1}}>Reason for the refund <span style={{color:C.danger}}>*</span></div>
+        <input value={refundReason} onChange={e=>setRefundReason(e.target.value)}
+          placeholder="e.g. Customer returned the order"
+          style={{width:"100%",padding:"9px 12px",border:`1px solid ${refundReason.trim()?"#cbd5e1":C.danger}`,borderRadius:8,fontSize:13,fontFamily:"inherit",boxSizing:"border-box"}}/>
+        <div style={{fontSize:10,color:"#64748b",marginTop:2}}>ZATCA requires a credit note to state why it was issued (BR-KSA-17).</div>
+      </div>
+
+      <div style={{display:"flex",gap:10}}>
+        <Btn variant="ghost" disabled={refundBusy} onClick={closeRefund} style={{flex:1}}>Cancel</Btn>
+        <Btn variant="danger" disabled={refundBusy||!refundReason.trim()||refundAmount<=0} onClick={doRefund} style={{flex:1}}>
+          {refundBusy?"Raising credit note…":"✅ Confirm Refund + Credit Note"}
+        </Btn>
       </div>
     </Modal>}
     <Card style={{marginBottom:16,padding:"12px 16px"}}>
@@ -8581,7 +8744,7 @@ function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,arch
         whatFollows="these figures" showComplete={false}/>
       <div style={{display:"flex",gap:12,alignItems:"flex-end",flexWrap:"wrap"}}><Inp label="From" value={dateFrom} onChange={setDateFrom} type="date"/><Inp label="To" value={dateTo} onChange={setDateTo} type="date"/><div style={{marginLeft:"auto"}}><div style={{fontSize:12,color:C.textMid}}>{filtered.length} orders · VAT: {fmtSAR(vat)}</div><div style={{fontSize:20,fontWeight:800,color:C.primary}}>{fmtSAR(total)}</div></div></div></Card>}
       {filtered.length===0?<Card><div style={{textAlign:"center",padding:"40px 0",color:C.textMid}}><div style={{fontSize:40,marginBottom:12}}>🧾</div><div style={{fontSize:15,fontWeight:700}}>No orders yet</div></div></Card>
-      :<Card><DataTable headers={["Invoice","Date","Time","Type","Method","Total","Status","Actions"]} rows={filtered.slice(0,100).map(s=>[<span style={{fontFamily:"monospace",fontSize:12,color:C.primary,fontWeight:700}}>{s.displayNumber||s.id}</span>,s.date,s.time,s.type,s.payMethod,<strong>{fmtSAR(s.total)}</strong>,<Badge color={s.status==="completed"?C.success:s.status==="voided"?C.danger:C.warning} bg={s.status==="completed"?C.successLight:s.status==="voided"?C.dangerLight:C.warningLight}>{s.status}</Badge>,<div style={{display:"flex",gap:4,flexWrap:"wrap"}}><Btn size="sm" variant="outline" onClick={()=>setKotPrompt(s)}>🖨️ Print</Btn>{s.status==="completed"&&<><Btn size="sm" variant="ghost" onClick={()=>{if(requiresApproval("sale.refund",license)){setPendingApproval({action:"sale.refund",onApproved:()=>setRefundTarget(s)});}else{setRefundTarget(s);}}}>Refund</Btn><Btn size="sm" variant="danger" onClick={()=>{if(requiresApproval("sale.void",license)){setPendingApproval({action:"sale.void",onApproved:()=>doVoid(s)});}else{if(confirm("Void?"))doVoid(s);}}}>Void</Btn></>}<Btn size="sm" variant="outline" onClick={()=>setViewInvoice(s)}>👁️ View</Btn></div>])} emptyMsg="No orders found"/></Card>}
+      :<Card><DataTable headers={["Invoice","Date","Time","Type","Method","Total","Status","Actions"]} rows={filtered.slice(0,100).map(s=>[<span style={{fontFamily:"monospace",fontSize:12,color:C.primary,fontWeight:700}}>{s.displayNumber||s.id}</span>,s.date,s.time,s.type,s.payMethod,<strong>{fmtSAR(s.total)}</strong>,<Badge color={s.status==="completed"?C.success:s.status==="voided"?C.danger:C.warning} bg={s.status==="completed"?C.successLight:s.status==="voided"?C.dangerLight:C.warningLight}>{s.status}</Badge>,<div style={{display:"flex",gap:4,flexWrap:"wrap"}}><Btn size="sm" variant="outline" onClick={()=>setKotPrompt(s)}>🖨️ Print</Btn>{(s.status==="completed"||s.status==="partially-refunded")&&<><Btn size="sm" variant="ghost" onClick={()=>{if(requiresApproval("sale.refund",license)){setPendingApproval({action:"sale.refund",onApproved:()=>setRefundTarget(s)});}else{setRefundTarget(s);}}}>Refund</Btn><Btn size="sm" variant="danger" onClick={()=>{if(requiresApproval("sale.void",license)){setPendingApproval({action:"sale.void",onApproved:()=>setVoidTarget(s)});}else{setVoidTarget(s);}}}>Void</Btn></>}<Btn size="sm" variant="outline" onClick={()=>setViewInvoice(s)}>👁️ View</Btn></div>])} emptyMsg="No orders found"/></Card>}
     </div>}
     {tab==="payments"&&<Card><div style={{fontSize:15,fontWeight:700,marginBottom:16}}>Payment Summary (Today)</div>{["Cash","Card","Both"].map(method=>{const ms=sales.filter(s=>s.date===TODAY&&s.payMethod===method);return<div key={method} style={{display:"flex",justifyContent:"space-between",padding:"12px 0",borderBottom:`1px solid ${C.border}`}}><span style={{fontSize:14,fontWeight:600}}>{method}</span><div style={{textAlign:"right"}}><div style={{fontSize:16,fontWeight:700,color:C.primary}}>{fmtSAR(ms.reduce((s,o)=>s+o.total,0))}</div><div style={{fontSize:11,color:C.textLight}}>{ms.length} transactions</div></div></div>;})} </Card>}
     {tab==="kot"&&<Card><div style={{fontSize:15,fontWeight:700,marginBottom:16}}>KOT Log (Today)</div>{sales.filter(s=>s.date===TODAY).length===0?<div style={{textAlign:"center",padding:"30px 0",color:C.textMid}}><div style={{fontSize:32,marginBottom:8}}>🍽</div><div>No KOTs today</div></div>:<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(210px,1fr))",gap:12}}>{sales.filter(s=>s.date===TODAY).slice().reverse().map(s=>(<div key={s.id} style={{border:"2px dashed #ccc",borderRadius:8,padding:14,fontFamily:"monospace",fontSize:12}}><div style={{fontWeight:700,marginBottom:6}}>{s.type}{s.table?` · T${s.table}`:""} · {s.time}</div>{(s.items||[]).slice(0,4).map((it,idx)=><div key={idx}>{it.qty}× {it.name}</div>)}<div style={{marginTop:6,fontSize:10,color:C.textLight}}>{s.id}</div></div>))}</div>}</Card>}
