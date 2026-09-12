@@ -558,6 +558,26 @@ function notifyZatca(detail){
 
 // ZATCA Phase 2 microservice (signs invoice + reports to FATOORA)
 const ZATCA_SERVICE_URL = "https://zatca-service-82816670819.me-central1.run.app";
+
+// Submission now happens with the customer standing at the till, so a service
+// that accepts the connection and then stalls cannot be allowed to hold the
+// queue open indefinitely. On a timeout the sale falls back to the same path
+// as an unreachable service: the document is queued and swept later.
+const ZATCA_SUBMIT_TIMEOUT_MS = 12000;
+async function zatcaFetch(url, options) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ZATCA_SUBMIT_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (err) {
+    if (err?.name === "AbortError") {
+      throw new Error(`The signing service did not respond within ${ZATCA_SUBMIT_TIMEOUT_MS / 1000}s.`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 // Reads from onboarding saved status — true when the service environment is production
 const IS_PRODUCTION_ENV = (()=>{ try{ return JSON.parse(localStorage.getItem("restopos_zatca_phase2_status")||"{}").environment==="production"; }catch{ return false; } })();
 
@@ -635,7 +655,7 @@ async function reportToFatoora(inv) {
 
   try {
     const payload = buildZatcaReportPayload(inv, licenseKey);
-    const res = await fetch(`${ZATCA_SERVICE_URL}/zatca/report`, {
+    const res = await zatcaFetch(`${ZATCA_SERVICE_URL}/zatca/report`, {
       method: "POST",
       headers: await zatcaAuthHeaders(),
       body: JSON.stringify(payload)
@@ -721,7 +741,7 @@ async function clearanceB2BInvoice(inv) {
       postal_zone: inv.buyer_postal_code || ""
     }
   };
-  const res = await fetch(`${ZATCA_SERVICE_URL}/zatca/clearance`, {
+  const res = await zatcaFetch(`${ZATCA_SERVICE_URL}/zatca/clearance`, {
     method: "POST",
     headers: await zatcaAuthHeaders(),
     body: JSON.stringify(payload)
@@ -5306,6 +5326,10 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
       }catch(e){console.warn("[CRM] Auto-save failed:",e);}
     }
     let zatcaInvForPrint=null;
+    // Set when a standard (B2B) invoice comes back uncleared. ZATCA clears a
+    // standard invoice before it may be issued, so an uncleared one must not be
+    // handed to the buyer and the receipt is withheld.
+    let zatcaWithholdInvoice=false;
     if(treatAsDraft){
       // Save to separate draft invoices store
       try{
@@ -5357,6 +5381,68 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
             LS.set("restopos_sales",_sl.map(s=>s.id===inv.id?{...s,zatcaInvoiceNumber:zatcaInv.invoice_number,voucher:zatcaInv.invoice_number,displayNumber:zatcaInv.invoice_number,qr_string:inv.qr_string}:s));
             setSales(prev=>prev.map(s=>s.id===inv.id?{...s,zatcaInvoiceNumber:zatcaInv.invoice_number,voucher:zatcaInv.invoice_number,displayNumber:zatcaInv.invoice_number,qr_string:inv.qr_string}:s));
           }catch(e){console.warn("[ReprintLink]",e.message);}
+        }
+
+        // ── Submit BEFORE the receipt is printed ────────────────────────
+        //
+        // Two ZATCA rules force this to happen here rather than on the
+        // background sweep that used to own it:
+        //
+        //   * A simplified invoice's QR must carry the invoice hash, the
+        //     cryptographic stamp and the stamping certificate's public key
+        //     (tags 6-8). Those exist only once the document is signed, which
+        //     happens server-side, so a receipt printed before submission can
+        //     only carry the five-tag Phase 1 QR. The customer's copy is the
+        //     one that has to be right, and reprints being correct later is no
+        //     help to someone who has already left.
+        //
+        //   * A standard invoice must be CLEARED before it is issued to the
+        //     buyer. Clearing it two minutes after they have the paper is not
+        //     clearance, and if ZATCA rejects it the buyer is holding a
+        //     document that was never lawfully issued.
+        //
+        // The sweep still exists and still matters — it is what catches a
+        // terminal that was offline at the till — but it is now the fallback
+        // rather than the normal path.
+        if(zatcaInv&&isPhase2Active()&&!TRIAL){
+          try{
+            const submitted=_isB2B
+              ?await clearanceB2BInvoice(zatcaInv)
+              :await reportToFatoora(zatcaInv);
+            // The signed QR replaces the Phase 1 placeholder on the copy about
+            // to be printed. The service signs even when it cannot reach ZATCA
+            // (a 202), so this is available whenever the service itself is.
+            zatcaInvForPrint={
+              ...zatcaInv,
+              qr_string:submitted.qr||zatcaInv.qr_string,
+              signed_qr_string:submitted.qr||null,
+              icv:submitted.icv??zatcaInv.icv,
+              signed_invoice_hash:submitted.invoiceHash||zatcaInv.invoice_hash_base64,
+              signed_xml:submitted.signedXml||null,
+              cleared_xml:submitted.clearedXml||null,
+            };
+            setLastZatcaInvoice(zatcaInvForPrint);
+            if(submitted.qr){
+              inv.qr_string=submitted.qr;
+              const _sl2=LS.get("restopos_sales")||[];
+              LS.set("restopos_sales",_sl2.map(x=>x.id===inv.id?{...x,qr_string:submitted.qr}:x));
+              setSales(prev=>prev.map(x=>x.id===inv.id?{...x,qr_string:submitted.qr}:x));
+            }
+          }catch(submitErr){
+            if(_isB2B){
+              // Withheld, not merely flagged. There is no lawful copy to give
+              // the buyer until ZATCA clears it, and it can be retried from
+              // Transactions once whatever ZATCA objected to is fixed.
+              zatcaWithholdInvoice=true;
+              setPrintBanner({msg:"⛔ NOT cleared by ZATCA — the invoice was not printed and must not be given to the buyer. "+(submitErr?.message||submitErr),type:"error"});
+            }else{
+              // A simplified invoice is valid on issue and reportable for 24
+              // hours, so the sale completes. The QR stays Phase 1 because
+              // nothing signed it, which the cashier is told plainly.
+              setPrintBanner({msg:"⚠️ Signing service unreachable — receipt printed with an unstamped QR. It will be reported automatically; reprint from Transactions once it has been.",type:"error"});
+            }
+            setTimeout(()=>setPrintBanner(null),10000);
+          }
         }
       }catch(e){
         console.error("[ZATCA] generation failed:",e);
@@ -5463,6 +5549,13 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
         catch(e2){setPrintBanner({msg:"⚠️ Draft saved — Print failed: "+e2.message,type:"error"});}
       }
       setTimeout(()=>setPrintBanner(null),4000);
+    }else if(zatcaWithholdInvoice){
+      // ZATCA did not clear this standard invoice, so there is no document
+      // that may lawfully be issued to the buyer. The sale is saved and the
+      // kitchen ticket has already gone; the invoice is retried from
+      // Transactions, and printed only once it comes back cleared.
+      setPrintBanner({msg:"⛔ "+inv.id+" — saved, invoice WITHHELD. ZATCA has not cleared it; do not give the buyer a copy. Retry from Transactions → ZATCA Invoices.",type:"error"});
+      setTimeout(()=>setPrintBanner(null),12000);
     }else{
       // Normal invoice print — QZ → ESC/POS → iframe (with ZATCA QR)
       const fmt=LS.get("restopos_invoice_format")||{};
