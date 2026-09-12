@@ -44,6 +44,7 @@ import { InventoryManagement } from "./screens/InventoryManagement.jsx";
 import { cloudGapOf, archiveSpanOf } from "./lib/cloudGap.js";
 import { CloudGapBar } from "./components/CloudGapBar.jsx";
 import { _escHTML, _escMultiline } from "./lib/html.js";
+import { buildZatcaLines, round2 } from "./lib/zatcaLines.js";
 import { buildReportThermalHTML } from "./lib/reportPrint.js";
 
 // ═══════════════════════════════════════════════════════════════════
@@ -591,17 +592,16 @@ function buildZatcaReportPayload(inv, licenseKey) {
         original_invoice_number: inv.original_invoice_number || "",
         reason: inv.credit_note_reason || "Refund issued to customer"
       } : {}),
-      line_items: (inv.items || []).map((it, idx) => ({
-        id: String(idx + 1),
-        name: it.name || `Item ${idx + 1}`,
-        quantity: it.qty,
-        // Menu prices are VAT-inclusive, so the net price is derived here. It is
-        // deliberately NOT rounded first: rounding each unit to two decimals and
-        // then multiplying by quantity drifts from the gross the customer
-        // actually paid, and ZATCA validates that the totals tie out.
-        tax_exclusive_price: it.price / 1.15,
-        VAT_percent: 0.15
-      }))
+      // Built from the stored invoice's own totals, so the document reports
+      // what the customer paid. A discount reaches ZATCA as a line-level
+      // allowance with its reason, not as a quietly reduced price.
+      line_items: (inv.zatca_line_items && inv.zatca_line_items.length)
+        ? inv.zatca_line_items
+        : buildZatcaLines(inv.items || [], {
+            discountGross: inv.discount || 0,
+            discountReason: inv.discount_reason || "Discount",
+            paidGross: Number.isFinite(inv.total) ? inv.total : null
+          }).lines
     }
   };
 }
@@ -793,19 +793,31 @@ async function exportZatcaArchive({from,to}={}){
   setTimeout(()=>URL.revokeObjectURL(url),4000);
 }
 
-async function generateZATCAInvoice({seller_name,seller_vat,seller_address,seller_cr="",seller_city="",items=[],is_credit_note=false,original_invoice_number="",credit_note_reason="",invoice_type="B2C",buyer_name="",buyer_vat="",buyer_street="",buyer_building="",buyer_district="",buyer_city="",buyer_postal_code="",payMethod="Cash",discount=0}) {
+async function generateZATCAInvoice({seller_name,seller_vat,seller_address,seller_cr="",seller_city="",items=[],is_credit_note=false,original_invoice_number="",credit_note_reason="",invoice_type="B2C",buyer_name="",buyer_vat="",buyer_street="",buyer_building="",buyer_district="",buyer_city="",buyer_postal_code="",payMethod="Cash",discount=0,discount_reason=""}) {
   const icv = invoiceStorage.getNextCounter();
   const invoice_number = `INV-${String(icv).padStart(6,"0")}`;
   const timestamp = new Date().toISOString();
   const uuid = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const total = parseFloat(items.reduce((s,i)=>s+i.price*i.qty,0).toFixed(2));
-  const vat_amount = parseFloat((total*(15/115)).toFixed(2));
-  const subtotal = parseFloat((total-vat_amount).toFixed(2));
+  // The discount is VAT-inclusive, as the cart shows it. Netting it out here
+  // rather than reporting the undiscounted total is what keeps the VAT charged
+  // equal to the VAT collected: the previous behaviour reported the full menu
+  // price of a discounted sale and overstated output tax on every one.
+  const _grossOfItems = round2(items.reduce((s,i)=>s+i.price*i.qty,0));
+  const _paidGross = round2(Math.max(0, _grossOfItems - (discount||0)));
+  const _zatca = buildZatcaLines(items, {
+    discountGross: discount || 0,
+    discountReason: discount_reason || "Discount",
+    paidGross: _paidGross
+  });
+  const zatca_line_items = _zatca.lines;
+  const total = _zatca.total;
+  const vat_amount = _zatca.vat_amount;
+  const subtotal = _zatca.subtotal;
   const prev_invoice_hash = invoiceStorage.getLastHash();
   // Buyer address is carried on the invoice because ZATCA requires it on every
   // standard (B2B) document — street, city and postal code are mandatory, and a
   // clearance request without them is rejected.
-  const partial = {invoice_number,uuid,timestamp,icv,seller_name,seller_vat,seller_address,seller_cr,seller_city,items,subtotal,vat_amount,total,prev_invoice_hash,is_credit_note,original_invoice_number,credit_note_reason,invoice_type,is_b2b:invoice_type==="B2B",buyer_name,buyer_vat,buyer_street,buyer_building,buyer_district,buyer_city,buyer_postal_code,payMethod,discount};
+  const partial = {invoice_number,uuid,timestamp,icv,seller_name,seller_vat,seller_address,seller_cr,seller_city,items,zatca_line_items,subtotal,vat_amount,total,prev_invoice_hash,is_credit_note,original_invoice_number,credit_note_reason,invoice_type,is_b2b:invoice_type==="B2B",buyer_name,buyer_vat,buyer_street,buyer_building,buyer_district,buyer_city,buyer_postal_code,payMethod,discount,discount_reason};
   // Hashing uses Web Crypto (needs HTTPS). If it ever fails, fall back to a
   // deterministic non-crypto hash so the invoice, QR and number STILL complete
   // and link — a missing hash must never block the QR/number from being stored.
@@ -5259,6 +5271,14 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
           seller_city:(LS.get("restopos_company")?.city)||license?.city||"",
           items:cart.map(c=>({name:c.name,price:c.price,qty:c.qty})),
           discount:totalDiscountAmt||0,
+          // ZATCA requires a reason on every allowance (BR-KSA-25), so the
+          // components that made up the discount are named rather than
+          // collapsed into the word "discount".
+          discount_reason:[
+            manualDiscountAmt>0?"Manual discount":null,
+            promoDiscountAmt>0?`Promotion${promo?.code?` ${promo.code}`:""}`:null,
+            (extraData.loyaltyRedeemed||0)>0?"Loyalty points redeemed":null
+          ].filter(Boolean).join(" + ")||"Discount",
           payMethod:method||"Cash",
           invoice_type:_isB2B?"B2B":"B2C",
           buyer_name:extraData.buyerName||"",
