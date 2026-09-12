@@ -45,6 +45,7 @@ import { cloudGapOf, archiveSpanOf } from "./lib/cloudGap.js";
 import { CloudGapBar } from "./components/CloudGapBar.jsx";
 import { _escHTML, _escMultiline } from "./lib/html.js";
 import { buildZatcaLines, round2 } from "./lib/zatcaLines.js";
+import { serialFor, serialSegmentFor, counterInSerial } from "./lib/serial.js";
 import { buildReportThermalHTML } from "./lib/reportPrint.js";
 
 // ═══════════════════════════════════════════════════════════════════
@@ -298,8 +299,18 @@ const ZATCA_GAP_BACKFILL_LIMIT = 300;
 // Invoices per batched archive call. The function caps it at 200.
 const ZATCA_BATCH_SIZE = 200;
 
+// Invoice numbers carry a per-terminal segment so that two tills on one
+// licence cannot issue the same one. See src/lib/serial.js for why.
+const deviceSerialSegment = () => serialSegmentFor(getDeviceId());
+
 const invoiceStorage = {
   getNextCounter() { const c = parseInt(localStorage.getItem(ZATCA_COUNTER_KEY)||"1000",10); localStorage.setItem(ZATCA_COUNTER_KEY,String(c+1)); return c+1; },
+  // The counter is this till's own sequence; the segment is what makes the
+  // number unique across the licence's other tills.
+  getNextSerial() {
+    const counter = this.getNextCounter();
+    return { counter, serial: serialFor(getDeviceId(), counter) };
+  },
   getLastHash() { return localStorage.getItem(ZATCA_LAST_HASH_KEY)||null; },
   save(inv) {
     const all=this.getAll(); if(all.find(i=>i.invoice_number===inv.invoice_number))return;
@@ -488,11 +499,27 @@ const invoiceStorage = {
       const {latestIcv,latestHash,recent} = res.data||{};
 
       // 1) Restore the counter + hash chain head, so a wiped or replaced device
-      //    picks the ICV sequence back up instead of restarting it.
+      //    picks its numbering back up instead of restarting it.
+      //
+      //    Scoped to serials this device could have issued. `latestIcv` is the
+      //    high-water mark across every till on the licence, and adopting it
+      //    here would drag one till's sequence forward every time another one
+      //    got ahead — the numbers would still be unique, because the device
+      //    segment makes them so, but each till's own sequence would jump
+      //    around instead of running in order.
+      const segment = deviceSerialSegment();
+      const ownHighest = (Array.isArray(recent) ? recent : []).reduce((highest, r) => {
+        const counter = counterInSerial(r.invoice_number, segment);
+        return counter != null && counter > highest ? counter : highest;
+      }, 0);
       const localCounter = parseInt(localStorage.getItem(ZATCA_COUNTER_KEY)||"1000",10);
-      if((latestIcv||0) > localCounter){
-        localStorage.setItem(ZATCA_COUNTER_KEY,String(latestIcv));
-        localStorage.setItem(ZATCA_LAST_HASH_KEY,latestHash||"");
+      if(ownHighest > localCounter){
+        localStorage.setItem(ZATCA_COUNTER_KEY,String(ownHighest));
+      }
+      // The chain head is the licence's, not this device's — the service owns
+      // the real PIH, and this copy only feeds the local hash fallback.
+      if((latestIcv||0) > localCounter && latestHash){
+        localStorage.setItem(ZATCA_LAST_HASH_KEY,latestHash);
       }
       // 2) Repopulate the local fast cache, merging with whatever survives
       //    locally (the server copy wins, since it may carry signed_xml or
@@ -814,8 +841,7 @@ async function exportZatcaArchive({from,to}={}){
 }
 
 async function generateZATCAInvoice({seller_name,seller_vat,seller_address,seller_cr="",seller_city="",items=[],is_credit_note=false,original_invoice_number="",credit_note_reason="",invoice_type="B2C",buyer_name="",buyer_vat="",buyer_street="",buyer_building="",buyer_district="",buyer_city="",buyer_postal_code="",payMethod="Cash",discount=0,discount_reason=""}) {
-  const icv = invoiceStorage.getNextCounter();
-  const invoice_number = `INV-${String(icv).padStart(6,"0")}`;
+  const { counter: icv, serial: invoice_number } = invoiceStorage.getNextSerial();
   const timestamp = new Date().toISOString();
   const uuid = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   // The discount is VAT-inclusive, as the cart shows it. Netting it out here
