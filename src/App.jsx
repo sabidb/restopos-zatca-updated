@@ -1805,16 +1805,12 @@ async function sendEmailJS(templateId,params){
   });
   if(!res.ok)throw new Error("Email send failed: "+res.status);
 }
-function generateCode(){return String(Math.floor(100000+Math.random()*900000));}
-
 function ForgotPassword({onBack,onReset}){
   const [step,setStep]=useState("email");
   const [email,setEmail]=useState("");
   const [emailError,setEmailError]=useState("");
   const [emailLoading,setEmailLoading]=useState(false);
   const [code,setCode]=useState("");
-  const [sentCode,setSentCode]=useState("");
-  const [codeExpiry,setCodeExpiry]=useState(null);
   const [codeError,setCodeError]=useState("");
   const [resendCooldown,setResendCooldown]=useState(0);
   const resendTimerRef=useRef(null);
