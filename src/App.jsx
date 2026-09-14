@@ -3,7 +3,6 @@ import { initializeApp } from "firebase/app";
 import { getFirestore, collection, query, where, getDocs, updateDoc, doc, addDoc, getDoc, onSnapshot, setDoc, deleteDoc, orderBy, limit, startAfter, arrayUnion, writeBatch, deleteField, connectFirestoreEmulator } from "firebase/firestore";
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken, connectAuthEmulator } from "firebase/auth";
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
-import { getFunctions, httpsCallable } from "firebase/functions";
 import { isTrial, isTrialBuild, trialMeta, trialLicense, trialDaysLeft, trialExpired,
   beginTrial, leaveTrial, endTrialAndErase, resetTrialData, promoteTrialWorkspace,
   setTrialBusinessType, syncTrialMeta, consumeTrialStartError,
@@ -89,16 +88,35 @@ if (import.meta.env.VITE_USE_EMULATORS) {
   connectAuthEmulator(auth, "http://127.0.0.1:9099", { disableWarnings: true });
   console.warn("[Firebase] using LOCAL EMULATORS — not the live project");
 }
-const functions = getFunctions(firebaseApp);
-const verifyLoginFn = httpsCallable(functions, "verifyLogin");
+// ── Backend REST API ─────────────────────────────────────────────────
+// All server-side calls (auth, archive, AI, printing) go through one URL.
+// In production this is the Cloud Run service; locally it can point at
+// http://localhost:8080 via VITE_BACKEND_URL.
+const BACKEND_URL = (import.meta.env.VITE_BACKEND_URL || "https://zatca-service-82816670819.me-central1.run.app").replace(/\/$/, "");
+
+const _HTTP_CODE_MAP = { 400: "functions/invalid-argument", 401: "functions/unauthenticated", 403: "functions/permission-denied", 404: "functions/not-found", 410: "functions/deadline-exceeded", 429: "functions/resource-exhausted" };
+async function callBackend(endpoint, data) {
+  const headers = await zatcaAuthHeaders();
+  const res = await fetch(`${BACKEND_URL}/${endpoint}`, { method: "POST", headers, body: JSON.stringify(data) });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) { const err = new Error(json.error || `Request failed (${res.status})`); err.code = _HTTP_CODE_MAP[res.status] || "functions/internal"; throw err; }
+  return { data: json };
+}
+
+const verifyLoginFn = (data) => callBackend("auth/login", data);
+const setClientCredentialsFn = (data) => callBackend("auth/set-credentials", data);
+const requestPasswordResetFn = (data) => callBackend("auth/request-reset", data);
+const resetPasswordWithOtpFn = (data) => callBackend("auth/reset-password", data);
+const aiChatFn = (data) => callBackend("ai/chat", data);
+const qzSignFn = (data) => callBackend("printer/qz-sign", data);
 // The ZATCA archive is a shared collection and is now closed to clients in the
 // rules — Firestore cannot scope a query by tenant, so anyone signed in could
 // read every shop's invoices. These three are the only way in, and they take
 // the seller VAT from the caller's own account rather than from the request.
-const zatcaArchiveFn = httpsCallable(functions, "zatcaArchive");
-const zatcaArchiveBatchFn = httpsCallable(functions, "zatcaArchiveBatch");
-const zatcaChainFn = httpsCallable(functions, "zatcaChain");
-const zatcaExportFn = httpsCallable(functions, "zatcaExport");
+const zatcaArchiveFn = (data) => callBackend("archive/invoice", data);
+const zatcaArchiveBatchFn = (data) => callBackend("archive/batch", data);
+const zatcaChainFn = (data) => callBackend("archive/chain", data);
+const zatcaExportFn = (data) => callBackend("archive/export", data);
 const currentLicenseKey = () => {
   try { return (JSON.parse(localStorage.getItem("restopos_license_v2") || "{}").licenseKey || "").trim().toUpperCase(); }
   catch (e) { return ""; }
@@ -322,7 +340,7 @@ const invoiceStorage = {
       this.drainPendingArchive();
     }catch(e){
       // A direct Firestore write used to ride the SDK's offline queue and land
-      // on its own when the connection came back. A callable has no such queue,
+      // on its own when the connection came back. A REST call has no such queue,
       // so losing this would quietly lose a tax record. Hold it and retry.
       console.warn("[ZATCA] archive deferred:",e.message);
       this.queuePendingArchive(inv,extra);
@@ -556,7 +574,7 @@ function notifyZatca(detail){
 }
 
 // ZATCA Phase 2 microservice (signs invoice + reports to FATOORA)
-const ZATCA_SERVICE_URL = "https://zatca-service-82816670819.me-central1.run.app";
+const ZATCA_SERVICE_URL = BACKEND_URL;
 // Reads from onboarding saved status — true when the service environment is production
 const IS_PRODUCTION_ENV = (()=>{ try{ return JSON.parse(localStorage.getItem("restopos_zatca_phase2_status")||"{}").environment==="production"; }catch{ return false; } })();
 
@@ -1201,14 +1219,6 @@ async function hashPassword(pw){
   return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,"0")).join("");
 }
 
-// Server-side credential setter — password is hashed with bcrypt in the Cloud
-// Function; the browser never writes passwordHash to Firestore directly.
-const setClientCredentialsFn = httpsCallable(functions, "setClientCredentials");
-// AI support proxy — keeps the Anthropic API key server-side.
-const aiChatFn = httpsCallable(functions, "aiChat");
-// Password-reset OTP — generated, emailed and verified server-side.
-const requestPasswordResetFn = httpsCallable(functions, "requestPasswordReset");
-const resetPasswordWithOtpFn = httpsCallable(functions, "resetPasswordWithOtp");
 
 // ── OFFLINE-UNLOCK VERIFIER ──────────────────────────────────────────────
 // This is NOT the account credential (that lives server-side as bcrypt). It's a
@@ -1572,7 +1582,7 @@ function ClientLogin({license,onSuccess,onForgotPassword,onBack,onTryTrial}){
           onSuccess();
         }
       }else{
-        // No local creds (new device) — verify via the verifyLogin Cloud Function.
+        // No local creds (new device) — verify via the backend.
         // Password hashing/comparison now happens server-side; the browser never
         // reads or compares the stored passwordHash directly.
         let diagnosed=false; // set true when we've shown a specific reason
@@ -11105,8 +11115,8 @@ function Help({license: helpLicense, lang="en", onLogout}){
     if(TRIAL){trialBlocked("The AI assistant","It runs on a paid API that we keep for licensed clients. Live chat and support tickets are open to you.");return;}
     if(!aiInput.trim()||aiLoading)return;const userMsg=aiInput.trim();setAiInput("");setAiMessages(prev=>[...prev,{role:"user",content:userMsg}]);setAiLoading(true);
     try{
-      // The Anthropic API key stays server-side. The aiChat Cloud Function holds
-      // the key and proxies the request — the browser never sees it.
+      // The Anthropic API key stays server-side — the backend proxies the
+      // request and the browser never sees the key.
       await ensureSignedIn();
       const res=await aiChatFn({messages:[...aiMessages,{role:"user",content:userMsg}].map(m=>({role:m.role,content:m.content}))});
       const reply=res?.data?.text||"Sorry, I couldn't process that.";setAiMessages(prev=>[...prev,{role:"assistant",content:reply}]);
@@ -13580,7 +13590,7 @@ function useOfflineSync(){
       if(v&&!prev){
         setJustCameOnline(true);setTimeout(()=>setJustCameOnline(false),5000);
         // Invoices rung up while offline could not reach the permanent archive:
-        // a callable has no equivalent of the Firestore SDK's offline queue, so
+        // a REST call has no equivalent of the Firestore SDK's offline queue, so
         // they were held locally. File them now.
         invoiceStorage.drainPendingArchive().catch(()=>{});
       }
@@ -15473,9 +15483,8 @@ const RESTOPOS_QZ_CERT = "-----BEGIN CERTIFICATE-----\n" +
 "Pt9/igmcDkHmCvQKm9ECRtsPEI+I3hi0LL720qsX/epNJT92niq2MC128AbD\n" +
 "-----END CERTIFICATE-----\n";
 // The QZ Tray private key has been removed from the client bundle. Signing of
-// QZ connection challenges now happens in the qzSign Cloud Function, which holds
-// the key server-side (QZ_PRIVATE_KEY env). The certificate below is public.
-const qzSignFn = httpsCallable(functions, "qzSign");
+// QZ connection challenges now happens server-side via the backend REST API,
+// which holds the key (QZ_PRIVATE_KEY env). The certificate below is public.
 
 // Connect to QZ Tray
 async function connectQZ() {
