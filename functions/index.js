@@ -468,6 +468,24 @@ const archiveDocId = (sellerVat, invoiceNumber) =>
   `${String(sellerVat).replace(/\//g, "_")}__${String(invoiceNumber).replace(/\//g, "_")}`.slice(0, 1400);
 
 /**
+ * Whether writing `incoming` over an already-archived `existing` invoice would
+ * mutate its financial content — which a five-year ZATCA archive must never
+ * allow. The invoice hash is computed over the totals, VAT and line data, so a
+ * differing hash means the money differs; total is a fallback for records that
+ * predate the hash. Legitimate rewrites keep both unchanged: the create → sign
+ * update only adds ZATCA response fields (signed hash, QR, cleared status), and
+ * a reconciliation re-file writes byte-identical data. Those return false here;
+ * only a genuine attempt to overwrite an invoice's amounts returns true.
+ */
+function archiveFinancialConflict(existing, incoming) {
+  const eh = existing.invoice_hash, ih = incoming.invoice_hash;
+  if (eh && ih && eh !== ih) return true;
+  const et = existing.total, it = incoming.total;
+  if (et != null && it != null && Number(et).toFixed(2) !== Number(it).toFixed(2)) return true;
+  return false;
+}
+
+/**
  * Establish that the caller owns this licence, and return the account. Two
  * kinds of caller are legitimate: a logged-in client, whose custom token has
  * uid == the licence key, and a device on the licence's authUids allowlist
@@ -513,11 +531,23 @@ export const zatcaArchive = onCall({ cors: true, region: "us-central1" }, async 
   // Queries here filter on seller_vat and order by icv or timestamp, none of
   // which touch the document id, so older documents keyed the old way are still
   // returned normally. Only the upsert key changes.
-  await db.collection("zatca_invoices").doc(archiveDocId(sellerVat, invoice.invoice_number)).set({
-    ...invoice, ...(extra && typeof extra === "object" ? extra : {}),
-    seller_vat: sellerVat,
-    archived_at: new Date().toISOString(),
-  }, { merge: true });
+  // Immutability guard: an archived invoice's financial content is frozen. The
+  // read and the write are in one transaction so a concurrent overwrite cannot
+  // slip between them. Merges that only add ZATCA response fields, and re-files
+  // of identical data, pass; a rewrite that changes the amounts is refused.
+  const ref = db.collection("zatca_invoices").doc(archiveDocId(sellerVat, invoice.invoice_number));
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (snap.exists && archiveFinancialConflict(snap.data(), invoice)) {
+      throw new HttpsError("failed-precondition",
+        "An invoice with this number is already archived with different financial data; refusing to overwrite it.");
+    }
+    tx.set(ref, {
+      ...invoice, ...(extra && typeof extra === "object" ? extra : {}),
+      seller_vat: sellerVat,
+      archived_at: new Date().toISOString(),
+    }, { merge: true });
+  });
   return { ok: true };
 });
 
@@ -543,16 +573,33 @@ export const zatcaArchiveBatch = onCall({ cors: true, region: "us-central1" }, a
   }
   if (invoices.length > 200) throw new HttpsError("invalid-argument", "At most 200 invoices per call.");
 
-  const batch = db.batch();
-  let written = 0;
+  // Candidates that pass the per-invoice VAT check, paired with their target ref.
   const rejected = [];
+  const candidates = [];
   for (const inv of invoices) {
     if (!inv || !inv.invoice_number) { rejected.push({ reason: "no invoice_number" }); continue; }
     if (String(inv.seller_vat || "").trim() !== sellerVat) {
       rejected.push({ invoice_number: inv.invoice_number, reason: "seller VAT does not belong to this account" });
       continue;
     }
-    batch.set(db.collection("zatca_invoices").doc(archiveDocId(sellerVat, inv.invoice_number)), {
+    candidates.push({ inv, ref: db.collection("zatca_invoices").doc(archiveDocId(sellerVat, inv.invoice_number)) });
+  }
+
+  // Immutability guard: read the existing docs in one round trip and drop any
+  // whose financial content would be overwritten with different values. A
+  // re-file of identical data or a signature/status merge is kept.
+  const existingSnaps = candidates.length ? await db.getAll(...candidates.map((c) => c.ref)) : [];
+  const existingById = new Map(existingSnaps.map((s) => [s.ref.path, s]));
+
+  const batch = db.batch();
+  let written = 0;
+  for (const { inv, ref } of candidates) {
+    const snap = existingById.get(ref.path);
+    if (snap && snap.exists && archiveFinancialConflict(snap.data(), inv)) {
+      rejected.push({ invoice_number: inv.invoice_number, reason: "already archived with different financial data" });
+      continue;
+    }
+    batch.set(ref, {
       ...inv, seller_vat: sellerVat, archived_at: new Date().toISOString(),
     }, { merge: true });
     written += 1;
