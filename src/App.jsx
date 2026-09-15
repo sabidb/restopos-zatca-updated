@@ -816,14 +816,26 @@ async function generateZATCAInvoice({seller_name,seller_vat,seller_address,selle
   const invoice_number = `INV-${String(icv).padStart(6,"0")}`;
   const timestamp = new Date().toISOString();
   const uuid = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const total = parseFloat(items.reduce((s,i)=>s+i.price*i.qty,0).toFixed(2));
+  // Discounts (manual, promo, loyalty) arrive as one VAT-inclusive lump sum
+  // computed on the whole order. ZATCA validates that the invoice totals tie
+  // out, and the signing service recomputes the reported total from the line
+  // items — so the discount is distributed proportionally across the lines
+  // here rather than left only on the header. That keeps the QR total, the
+  // local UBL and the government-reported total all equal to what the customer
+  // actually paid. With no discount the factor is 1 and prices are untouched,
+  // so an un-discounted 35.00 order still comes out to exactly 35.00.
+  const grossInclusive = items.reduce((s,i)=>s+i.price*i.qty,0);
+  const discountAmt = Math.max(0, Math.min(grossInclusive, parseFloat(discount)||0));
+  const discountFactor = grossInclusive>0 ? (grossInclusive-discountAmt)/grossInclusive : 1;
+  if(discountFactor!==1) items = items.map(i=>({...i,price:i.price*discountFactor}));
+  const total = parseFloat((grossInclusive-discountAmt).toFixed(2));
   const vat_amount = parseFloat((total*(15/115)).toFixed(2));
   const subtotal = parseFloat((total-vat_amount).toFixed(2));
   const prev_invoice_hash = invoiceStorage.getLastHash();
   // Buyer address is carried on the invoice because ZATCA requires it on every
   // standard (B2B) document — street, city and postal code are mandatory, and a
   // clearance request without them is rejected.
-  const partial = {invoice_number,uuid,timestamp,icv,seller_name,seller_vat,seller_address,seller_cr,seller_city,items,subtotal,vat_amount,total,prev_invoice_hash,is_credit_note,original_invoice_number,credit_note_reason,invoice_type,is_b2b:invoice_type==="B2B",buyer_name,buyer_vat,buyer_street,buyer_building,buyer_district,buyer_city,buyer_postal_code,payMethod,discount};
+  const partial = {invoice_number,uuid,timestamp,icv,seller_name,seller_vat,seller_address,seller_cr,seller_city,items,subtotal,vat_amount,total,prev_invoice_hash,is_credit_note,original_invoice_number,credit_note_reason,invoice_type,is_b2b:invoice_type==="B2B",buyer_name,buyer_vat,buyer_street,buyer_building,buyer_district,buyer_city,buyer_postal_code,payMethod,discount,original_gross:parseFloat(grossInclusive.toFixed(2))};
   // Hashing uses Web Crypto (needs HTTPS). If it ever fails, fall back to a
   // deterministic non-crypto hash so the invoice, QR and number STILL complete
   // and link — a missing hash must never block the QR/number from being stored.
@@ -845,6 +857,45 @@ async function generateZATCAInvoice({seller_name,seller_vat,seller_address,selle
   if(isPhase2Active())fatooraQueue.enqueue(invoice);
   try{window.dispatchEvent(new Event("restopos-invoice"));}catch(e){}
   return invoice;
+}
+
+// A ZATCA invoice, once reported or cleared, cannot be deleted or silently
+// "voided" — the only lawful reversal is a credit note that references it
+// (BR-KSA-17). Both a refund and a void of an already-issued invoice must
+// therefore emit one. The original invoice's stored line items already carry
+// any distributed discount (see generateZATCAInvoice), so the credit note
+// reverses exactly what was charged; no discount is re-applied.
+//
+// Returns true when a credit note was generated, false when the sale never had
+// a ZATCA invoice to reverse (e.g. a draft or a pre-ZATCA sale), so the caller
+// can still mark it voided locally without touching the tax record.
+async function issueZatcaCreditNoteForSale(sale, reason) {
+  const zatcaNo = sale?.zatcaInvoiceNumber || sale?.voucher || sale?.displayNumber || null;
+  const origInv = zatcaNo ? invoiceStorage.getOne(zatcaNo) : null;
+  if (!zatcaNo && !origInv) return false;
+  const lic = LS.get("restopos_license_v2");
+  const comp = LS.get("restopos_company") || {};
+  await generateZATCAInvoice({
+    seller_name: lic?.businessName || "",
+    seller_vat: lic?.vatNumber || "",
+    seller_address: lic?.address || "Riyadh",
+    seller_cr: lic?.crNumber || "",
+    seller_city: comp?.city || "",
+    items: (origInv?.items || sale?.items || []).map(i => ({ name: i.name, price: i.price, qty: i.qty })),
+    is_credit_note: true,
+    original_invoice_number: zatcaNo || sale?.id,
+    credit_note_reason: reason || "Sale reversed",
+    invoice_type: origInv?.invoice_type || "B2C",
+    buyer_name: origInv?.buyer_name || "",
+    buyer_vat: origInv?.buyer_vat || "",
+    buyer_street: origInv?.buyer_street || "",
+    buyer_building: origInv?.buyer_building || "",
+    buyer_district: origInv?.buyer_district || "",
+    buyer_city: origInv?.buyer_city || "",
+    buyer_postal_code: origInv?.buyer_postal_code || "",
+    payMethod: sale?.payMethod || "Cash",
+  });
+  return true;
 }
 
 const zatcaUtils = {
@@ -8456,7 +8507,21 @@ function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,arch
   // Manager-approval gate for void/refund. requiresApproval() is false unless
   // the active business type opts in, so existing types keep today's flow.
   const [pendingApproval,setPendingApproval]=useState(null); // {action,onApproved}
-  const doVoid=(s)=>setSales(prev=>prev.map(x=>x.id===s.id?{...x,status:"voided"}:x));
+  // Voiding a sale that was already reported/cleared with ZATCA cannot just flip
+  // a local flag — the filed tax invoice stays valid until a credit note
+  // reverses it. So a void issues a credit note (like a refund) whenever the
+  // sale carries a ZATCA invoice number, then marks it voided. A sale that was
+  // never filed (draft / pre-ZATCA) is simply marked voided.
+  const doVoid=async(s)=>{
+    setSales(prev=>prev.map(x=>x.id===s.id?{...x,status:"voided"}:x));
+    try{
+      const reversed=await issueZatcaCreditNoteForSale(s,"Sale voided");
+      if(reversed)alert("Sale voided — a ZATCA credit note was generated to reverse the reported invoice, and queued for FATOORA.");
+    }catch(e){
+      console.warn("[Void] credit note failed:",e?.message);
+      alert("⚠️ Sale marked voided, but the ZATCA credit note could not be generated. The reported invoice is NOT yet reversed — retry from the ZATCA queue.");
+    }
+  };
   const dateFiltered=sales.filter(s=>s.date>=dateFrom&&s.date<=dateTo);
   const _filteredRaw=search.trim()?sales.filter(s=>s.id?.toLowerCase().includes(search.toLowerCase())||s.date?.includes(search)||s.type?.toLowerCase().includes(search.toLowerCase())||s.payMethod?.toLowerCase().includes(search.toLowerCase())):dateFiltered;
   // Newest sale on top → sort by reliable createdAt (fallback to date+time), descending.
@@ -8519,36 +8584,16 @@ function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,arch
         <Btn variant="ghost" onClick={()=>setRefundTarget(null)} style={{flex:1}}>Cancel</Btn>
         <Btn variant="danger" onClick={async()=>{
           setSales(prev=>prev.map(s=>s.id===refundTarget.id?{...s,status:"refunded"}:s));
-          // Generate ZATCA credit note with BillingReference
+          // Generate a ZATCA credit note referencing the ORIGINAL ZATCA invoice
+          // (BR-KSA-17). The shared helper looks the original up by its ZATCA
+          // invoice number so the credit note reverses the exact amounts filed,
+          // including any distributed discount.
           try{
-            const lic=LS.get("restopos_license_v2");
-            const comp=LS.get("restopos_company")||{};
-            const origInv=invoiceStorage.getOne(refundTarget.zatcaInvNumber||refundTarget.id);
-            await generateZATCAInvoice({
-              seller_name:lic?.businessName||"",
-              seller_vat:lic?.vatNumber||"",
-              seller_address:lic?.address||"Riyadh",
-              seller_cr:lic?.crNumber||"",
-              seller_city:comp?.city||"",
-              items:(origInv?.items||refundTarget.items||[]).map(i=>({name:i.name,price:i.price,qty:i.qty})),
-              is_credit_note:true,
-              original_invoice_number:refundTarget.id,
-              // BR-KSA-17: a credit note must state why it was issued.
-              credit_note_reason:refundTarget.refundReason||"Customer refund",
-              invoice_type:origInv?.invoice_type||"B2C",
-              // A credit note against a standard invoice is itself a standard
-              // document, so it needs the same buyer details as the original.
-              buyer_name:origInv?.buyer_name||"",
-              buyer_vat:origInv?.buyer_vat||"",
-              buyer_street:origInv?.buyer_street||"",
-              buyer_building:origInv?.buyer_building||"",
-              buyer_district:origInv?.buyer_district||"",
-              buyer_city:origInv?.buyer_city||"",
-              buyer_postal_code:origInv?.buyer_postal_code||"",
-              payMethod:refundTarget.payMethod||"Cash",
-            });
-            alert("✅ Credit note generated and queued for FATOORA reporting.");
-          }catch(e){console.warn("[CreditNote]",e);}
+            const reversed=await issueZatcaCreditNoteForSale(refundTarget,refundTarget.refundReason||"Customer refund");
+            alert(reversed
+              ? "✅ Credit note generated and queued for FATOORA reporting."
+              : "Refund recorded. No ZATCA invoice was found for this sale, so no credit note was filed.");
+          }catch(e){console.warn("[CreditNote]",e);alert("⚠️ Refund recorded, but the ZATCA credit note could not be generated — retry from the ZATCA queue.");}
           setRefundTarget(null);
         }} style={{flex:1}}>✅ Confirm Refund + Credit Note</Btn>
       </div>
