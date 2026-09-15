@@ -247,14 +247,14 @@ function generateUBLXML(invoice) {
   const isB2B = invoice.invoice_type === "B2B" || invoice.is_b2b === true;
   const profileID = isB2B ? "clearance:1.0" : "reporting:1.0";
   const invoiceTypeCodeName = isB2B ? "0100000" : "0200000";
-  const invoiceCode = invoice.is_credit_note ? "381" : "388";
+  const invoiceCode = invoice.is_debit_note ? "383" : invoice.is_credit_note ? "381" : "388";
 
   // Fix #2: PaymentMeans code from payMethod
   const pmMap = { "Cash": "10", "Card": "48", "Both": "48", "Bank": "42", "Transfer": "42" };
   const pmCode = pmMap[invoice.payMethod] || "10";
 
   // Fix #4: BillingReference block for credit notes
-  const billingRef = (invoice.is_credit_note && invoice.original_invoice_number)
+  const billingRef = ((invoice.is_credit_note || invoice.is_debit_note) && invoice.original_invoice_number)
     ? `<cac:BillingReference><cac:InvoiceDocumentReference><cbc:ID>${escapeXML(invoice.original_invoice_number)}</cbc:ID></cac:InvoiceDocumentReference></cac:BillingReference>`
     : "";
 
@@ -597,17 +597,20 @@ function paymentMeansCode(payMethod) {
 function buildZatcaReportPayload(inv, licenseKey) {
   const timestamp = inv.timestamp || new Date().toISOString();
   const isCreditNote = inv.is_credit_note === true;
+  const isDebitNote = inv.is_debit_note === true;
   return {
     licenseKey,
     invoice: {
-      document_type: isCreditNote ? "credit_note" : "invoice",
+      document_type: isDebitNote ? "debit_note" : isCreditNote ? "credit_note" : "invoice",
       serial_number: inv.invoice_number,
       issue_date: timestamp.slice(0, 10),
       issue_time: timestamp.slice(11, 19),
       payment_means_code: paymentMeansCode(inv.payMethod),
-      ...(isCreditNote ? {
+      // Both credit and debit notes must reference the original invoice and
+      // state a reason (BR-KSA-17/56).
+      ...(isCreditNote || isDebitNote ? {
         original_invoice_number: inv.original_invoice_number || "",
-        reason: inv.credit_note_reason || "Refund issued to customer"
+        reason: (isDebitNote ? inv.debit_note_reason : inv.credit_note_reason) || (isDebitNote ? "Additional charge" : "Refund issued to customer")
       } : {}),
       line_items: (inv.items || []).map((it, idx) => ({
         id: String(idx + 1),
@@ -811,7 +814,7 @@ async function exportZatcaArchive({from,to}={}){
   setTimeout(()=>URL.revokeObjectURL(url),4000);
 }
 
-async function generateZATCAInvoice({seller_name,seller_vat,seller_address,seller_cr="",seller_city="",items=[],is_credit_note=false,original_invoice_number="",credit_note_reason="",invoice_type="B2C",buyer_name="",buyer_vat="",buyer_street="",buyer_building="",buyer_district="",buyer_city="",buyer_postal_code="",payMethod="Cash",discount=0}) {
+async function generateZATCAInvoice({seller_name,seller_vat,seller_address,seller_cr="",seller_city="",items=[],is_credit_note=false,is_debit_note=false,original_invoice_number="",credit_note_reason="",debit_note_reason="",invoice_type="B2C",buyer_name="",buyer_vat="",buyer_street="",buyer_building="",buyer_district="",buyer_city="",buyer_postal_code="",payMethod="Cash",discount=0}) {
   const icv = invoiceStorage.getNextCounter();
   const invoice_number = `INV-${String(icv).padStart(6,"0")}`;
   const timestamp = new Date().toISOString();
@@ -835,7 +838,7 @@ async function generateZATCAInvoice({seller_name,seller_vat,seller_address,selle
   // Buyer address is carried on the invoice because ZATCA requires it on every
   // standard (B2B) document — street, city and postal code are mandatory, and a
   // clearance request without them is rejected.
-  const partial = {invoice_number,uuid,timestamp,icv,seller_name,seller_vat,seller_address,seller_cr,seller_city,items,subtotal,vat_amount,total,prev_invoice_hash,is_credit_note,original_invoice_number,credit_note_reason,invoice_type,is_b2b:invoice_type==="B2B",buyer_name,buyer_vat,buyer_street,buyer_building,buyer_district,buyer_city,buyer_postal_code,payMethod,discount,original_gross:parseFloat(grossInclusive.toFixed(2))};
+  const partial = {invoice_number,uuid,timestamp,icv,seller_name,seller_vat,seller_address,seller_cr,seller_city,items,subtotal,vat_amount,total,prev_invoice_hash,is_credit_note,is_debit_note,original_invoice_number,credit_note_reason,debit_note_reason,invoice_type,is_b2b:invoice_type==="B2B",buyer_name,buyer_vat,buyer_street,buyer_building,buyer_district,buyer_city,buyer_postal_code,payMethod,discount,original_gross:parseFloat(grossInclusive.toFixed(2))};
   // Hashing uses Web Crypto (needs HTTPS). If it ever fails, fall back to a
   // deterministic non-crypto hash so the invoice, QR and number STILL complete
   // and link — a missing hash must never block the QR/number from being stored.
@@ -3556,6 +3559,25 @@ function LicenseVerification({businessData,onSuccess,onBack,onLogin,onTryTrial})
 // ═══════════════════════════════════════════════════════════════════
 function RoleLogin({license,onLogin,lang="en",onClientLogin}){
   const [selectedRole,setSelectedRole]=useState(null);const [pin,setPin]=useState("");const [error,setError]=useState("");
+  // A role still on its shipped factory PIN must set a private one before it can
+  // be used. forceRole holds the role mid-change; newPin/confirmPin collect it.
+  const [forceRole,setForceRole]=useState(null);const [newPin,setNewPin]=useState("");const [confirmPin,setConfirmPin]=useState("");
+  const isDefaultPin=(role,p)=>DEFAULT_PINS[role]===p;
+  function persistNewPin(role,value){
+    const current={...(LS.get("restopos_pins")||{})};
+    current[role]=value;
+    LS.set("restopos_pins",current);
+    try{const lk=LS.get("restopos_license_v2")?.licenseKey;if(lk&&typeof debouncedSync==="function")debouncedSync(lk,"restopos_pins",current);}catch(e){}
+  }
+  function submitNewPin(){
+    if(!/^\d{4}$/.test(newPin)){setError("PIN must be 4 digits.");return;}
+    if(newPin!==confirmPin){setError("PINs do not match.");return;}
+    if(Object.values(DEFAULT_PINS).includes(newPin)){setError("Choose a PIN that isn't a factory default.");return;}
+    persistNewPin(forceRole,newPin);
+    const role=forceRole;
+    setForceRole(null);setNewPin("");setConfirmPin("");setPin("");setError("");
+    onLogin({role,name:role});
+  }
   // Saved PINs win; defaults fill any gap (e.g. a Supervisor PIN on a type
   // that lists Supervisor but whose saved pins predate it). Existing types
   // never show Supervisor, so the extra default is inert for them.
@@ -3564,10 +3586,16 @@ function RoleLogin({license,onLogin,lang="en",onClientLogin}){
   // types this is exactly Admin/Manager/Cashier (same icons/descriptions as
   // before); a type that opts Supervisor in gets it here automatically.
   const roles=rolesForProfile(bizProfile(license)).slice().reverse();
-  function handleLoginWithPin(p){if(p===pins[selectedRole]){onLogin({role:selectedRole,name:selectedRole});}else{setError("Incorrect PIN");setPin("");}}
+  function handleLoginWithPin(p){
+    if(p!==pins[selectedRole]){setError("Incorrect PIN");setPin("");return;}
+    // Correct PIN — but if it is still the shipped default, force a change now
+    // instead of letting the account keep a publicly-known PIN.
+    if(isDefaultPin(selectedRole,p)){setForceRole(selectedRole);setNewPin("");setConfirmPin("");setError("");return;}
+    onLogin({role:selectedRole,name:selectedRole});
+  }
   // Keyboard support for PIN
   useEffect(()=>{
-    if(!selectedRole)return;
+    if(!selectedRole||forceRole)return;
     function onKey(e){
       if(e.key>="0"&&e.key<="9"){setPin(p=>p.length<4?p+e.key:p);}
       else if(e.key==="Backspace"){setPin(p=>p.slice(0,-1));}
@@ -3575,7 +3603,7 @@ function RoleLogin({license,onLogin,lang="en",onClientLogin}){
     }
     window.addEventListener("keydown",onKey);
     return()=>window.removeEventListener("keydown",onKey);
-  },[selectedRole,pins]);
+  },[selectedRole,pins,forceRole]);
   return(
     <div style={{minHeight:"100vh",background:"linear-gradient(135deg, #0a1628 0%, #1A3A5C 50%, #0a2818 100%)",display:"flex",alignItems:"center",justifyContent:"center",padding:20,fontFamily:"'Plus Jakarta Sans', sans-serif"}}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');*{box-sizing:border-box;margin:0;padding:0}`}</style>
@@ -3614,6 +3642,24 @@ function RoleLogin({license,onLogin,lang="en",onClientLogin}){
                   <span style={{color:"rgba(99,102,241,0.6)"}}>→</span>
                 </button>
               )}
+            </>
+          ):forceRole?(
+            <>
+              <div style={{textAlign:"center",marginBottom:16}}>
+                <div style={{fontSize:30,marginBottom:6}}>🔐</div>
+                <div style={{fontSize:16,fontWeight:800,color:"#fff"}}>Set a new PIN</div>
+                <div style={{fontSize:12,color:"rgba(255,255,255,0.6)",marginTop:4,lineHeight:1.5}}>{forceRole} is still using the factory default PIN. Choose a private 4-digit PIN before continuing.</div>
+              </div>
+              <input type="password" inputMode="numeric" maxLength={4} value={newPin} onChange={e=>setNewPin(e.target.value.replace(/\D/g,"").slice(0,4))} placeholder="New 4-digit PIN"
+                style={{width:"100%",marginBottom:10,padding:"12px 14px",background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:10,fontSize:15,color:"#fff",textAlign:"center",letterSpacing:6,fontFamily:"inherit",boxSizing:"border-box"}}/>
+              <input type="password" inputMode="numeric" maxLength={4} value={confirmPin} onChange={e=>setConfirmPin(e.target.value.replace(/\D/g,"").slice(0,4))} placeholder="Confirm new PIN"
+                style={{width:"100%",marginBottom:12,padding:"12px 14px",background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:10,fontSize:15,color:"#fff",textAlign:"center",letterSpacing:6,fontFamily:"inherit",boxSizing:"border-box"}}/>
+              {error&&<div style={{background:"rgba(217,64,64,0.2)",border:"1px solid rgba(217,64,64,0.4)",borderRadius:8,padding:"8px 12px",fontSize:12,color:"#ff8080",marginBottom:10,textAlign:"center"}}>{error}</div>}
+              <button onClick={submitNewPin} disabled={newPin.length!==4||confirmPin.length!==4}
+                style={{width:"100%",background:(newPin.length===4&&confirmPin.length===4)?"linear-gradient(135deg,#1A6B4A,#134D36)":"rgba(255,255,255,0.1)",color:"#fff",border:"none",borderRadius:12,padding:14,fontSize:15,fontWeight:800,cursor:(newPin.length===4&&confirmPin.length===4)?"pointer":"not-allowed",fontFamily:"inherit"}}>
+                Save PIN & continue
+              </button>
+              <button onClick={()=>{setForceRole(null);setNewPin("");setConfirmPin("");setPin("");setError("");}} style={{width:"100%",marginTop:8,background:"none",border:"none",color:"rgba(255,255,255,0.5)",cursor:"pointer",fontSize:12,fontFamily:"inherit"}}>Cancel</button>
             </>
           ):(
             <>
@@ -8504,6 +8550,7 @@ function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,arch
   const _t=s=>t(s,lang);
   const [tab,setTab]=useState("sales");const [dateFrom,setDateFrom]=useState(TODAY);const [dateTo,setDateTo]=useState(TODAY);const [search,setSearch]=useState("");const [refundTarget,setRefundTarget]=useState(null);
   const [kotPrompt,setKotPrompt]=useState(null);const [viewInvoice,setViewInvoice]=useState(null);
+  const [debitTarget,setDebitTarget]=useState(null);const [debitReason,setDebitReason]=useState("");const [debitAmount,setDebitAmount]=useState("");const [debitBusy,setDebitBusy]=useState(false);
   // Manager-approval gate for void/refund. requiresApproval() is false unless
   // the active business type opts in, so existing types keep today's flow.
   const [pendingApproval,setPendingApproval]=useState(null); // {action,onApproved}
@@ -8598,6 +8645,61 @@ function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,arch
         }} style={{flex:1}}>✅ Confirm Refund + Credit Note</Btn>
       </div>
     </Modal>}
+    {debitTarget&&<Modal title="Issue Debit Note" onClose={()=>{setDebitTarget(null);setDebitReason("");setDebitAmount("");}} width={460}>
+      <div style={{fontSize:13,color:C.textMid,marginBottom:12}}>Additional charge against <strong style={{color:C.primary}}>{debitTarget.displayNumber||debitTarget.id}</strong></div>
+      <div style={{background:"#eff6ff",border:"1px solid #93c5fd",borderRadius:8,padding:12,fontSize:12,color:"#1e3a8a",marginBottom:16,lineHeight:1.6}}>
+        A debit note (383) raises the amount owed on an invoice already issued — e.g. an undercharge. It creates a new ZATCA document referencing the original and is queued for reporting.
+      </div>
+      <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:16}}>
+        <div>
+          <div style={{fontSize:10,fontWeight:700,color:"#64748b",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>Additional amount (SAR, VAT-inclusive)</div>
+          <input value={debitAmount} onChange={e=>setDebitAmount(e.target.value.replace(/[^\d.]/g,""))} inputMode="decimal" placeholder="0.00"
+            style={{width:"100%",padding:"9px 12px",border:"1px solid #cbd5e1",borderRadius:8,fontSize:13,boxSizing:"border-box"}}/>
+        </div>
+        <div>
+          <div style={{fontSize:10,fontWeight:700,color:"#64748b",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>Reason (required by ZATCA)</div>
+          <input value={debitReason} onChange={e=>setDebitReason(e.target.value)} placeholder="e.g. Undercharged item"
+            style={{width:"100%",padding:"9px 12px",border:"1px solid #cbd5e1",borderRadius:8,fontSize:13,boxSizing:"border-box"}}/>
+        </div>
+      </div>
+      <div style={{display:"flex",gap:10}}>
+        <Btn variant="ghost" onClick={()=>{setDebitTarget(null);setDebitReason("");setDebitAmount("");}} style={{flex:1}}>Cancel</Btn>
+        <Btn variant="primary" disabled={debitBusy} onClick={async()=>{
+          const amt=parseFloat(debitAmount);
+          if(!(amt>0)){alert("Enter an amount greater than zero.");return;}
+          if(!debitReason.trim()){alert("A reason is required on a debit note.");return;}
+          setDebitBusy(true);
+          try{
+            const lic=LS.get("restopos_license_v2");
+            const comp=LS.get("restopos_company")||{};
+            const zatcaNo=debitTarget.zatcaInvoiceNumber||debitTarget.voucher||debitTarget.displayNumber||debitTarget.id;
+            const origInv=zatcaNo?invoiceStorage.getOne(zatcaNo):null;
+            await generateZATCAInvoice({
+              seller_name:lic?.businessName||"",
+              seller_vat:lic?.vatNumber||"",
+              seller_address:lic?.address||"Riyadh",
+              seller_cr:lic?.crNumber||"",
+              seller_city:comp?.city||"",
+              items:[{name:debitReason.trim(),price:amt,qty:1}],
+              is_debit_note:true,
+              original_invoice_number:zatcaNo,
+              debit_note_reason:debitReason.trim(),
+              invoice_type:origInv?.invoice_type||"B2C",
+              buyer_name:origInv?.buyer_name||"",
+              buyer_vat:origInv?.buyer_vat||"",
+              buyer_street:origInv?.buyer_street||"",
+              buyer_building:origInv?.buyer_building||"",
+              buyer_district:origInv?.buyer_district||"",
+              buyer_city:origInv?.buyer_city||"",
+              buyer_postal_code:origInv?.buyer_postal_code||"",
+              payMethod:debitTarget.payMethod||"Cash",
+            });
+            alert("✅ Debit note generated and queued for FATOORA reporting.");
+          }catch(e){console.warn("[DebitNote]",e);alert("⚠️ Could not generate the debit note — retry from the ZATCA queue.");}
+          setDebitBusy(false);setDebitTarget(null);setDebitReason("");setDebitAmount("");
+        }} style={{flex:1}}>Issue Debit Note</Btn>
+      </div>
+    </Modal>}
     <Card style={{marginBottom:16,padding:"12px 16px"}}>
       <div style={{display:"flex",alignItems:"center",gap:10}}>
         <span style={{fontSize:18}}>🔍</span>
@@ -8612,7 +8714,7 @@ function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,arch
         whatFollows="these figures" showComplete={false}/>
       <div style={{display:"flex",gap:12,alignItems:"flex-end",flexWrap:"wrap"}}><Inp label="From" value={dateFrom} onChange={setDateFrom} type="date"/><Inp label="To" value={dateTo} onChange={setDateTo} type="date"/><div style={{marginLeft:"auto"}}><div style={{fontSize:12,color:C.textMid}}>{filtered.length} orders · VAT: {fmtSAR(vat)}</div><div style={{fontSize:20,fontWeight:800,color:C.primary}}>{fmtSAR(total)}</div></div></div></Card>}
       {filtered.length===0?<Card><div style={{textAlign:"center",padding:"40px 0",color:C.textMid}}><div style={{fontSize:40,marginBottom:12}}>🧾</div><div style={{fontSize:15,fontWeight:700}}>No orders yet</div></div></Card>
-      :<Card><DataTable headers={["Invoice","Date","Time","Type","Method","Total","Status","Actions"]} rows={filtered.slice(0,100).map(s=>[<span style={{fontFamily:"monospace",fontSize:12,color:C.primary,fontWeight:700}}>{s.displayNumber||s.id}</span>,s.date,s.time,s.type,s.payMethod,<strong>{fmtSAR(s.total)}</strong>,<Badge color={s.status==="completed"?C.success:s.status==="voided"?C.danger:C.warning} bg={s.status==="completed"?C.successLight:s.status==="voided"?C.dangerLight:C.warningLight}>{s.status}</Badge>,<div style={{display:"flex",gap:4,flexWrap:"wrap"}}><Btn size="sm" variant="outline" onClick={()=>setKotPrompt(s)}>🖨️ Print</Btn>{s.status==="completed"&&<><Btn size="sm" variant="ghost" onClick={()=>{if(requiresApproval("sale.refund",license)){setPendingApproval({action:"sale.refund",onApproved:()=>setRefundTarget(s)});}else{setRefundTarget(s);}}}>Refund</Btn><Btn size="sm" variant="danger" onClick={()=>{if(requiresApproval("sale.void",license)){setPendingApproval({action:"sale.void",onApproved:()=>doVoid(s)});}else{if(confirm("Void?"))doVoid(s);}}}>Void</Btn></>}<Btn size="sm" variant="outline" onClick={()=>setViewInvoice(s)}>👁️ View</Btn></div>])} emptyMsg="No orders found"/></Card>}
+      :<Card><DataTable headers={["Invoice","Date","Time","Type","Method","Total","Status","Actions"]} rows={filtered.slice(0,100).map(s=>[<span style={{fontFamily:"monospace",fontSize:12,color:C.primary,fontWeight:700}}>{s.displayNumber||s.id}</span>,s.date,s.time,s.type,s.payMethod,<strong>{fmtSAR(s.total)}</strong>,<Badge color={s.status==="completed"?C.success:s.status==="voided"?C.danger:C.warning} bg={s.status==="completed"?C.successLight:s.status==="voided"?C.dangerLight:C.warningLight}>{s.status}</Badge>,<div style={{display:"flex",gap:4,flexWrap:"wrap"}}><Btn size="sm" variant="outline" onClick={()=>setKotPrompt(s)}>🖨️ Print</Btn>{s.status==="completed"&&<><Btn size="sm" variant="ghost" onClick={()=>{if(requiresApproval("sale.refund",license)){setPendingApproval({action:"sale.refund",onApproved:()=>setRefundTarget(s)});}else{setRefundTarget(s);}}}>Refund</Btn><Btn size="sm" variant="danger" onClick={()=>{if(requiresApproval("sale.void",license)){setPendingApproval({action:"sale.void",onApproved:()=>doVoid(s)});}else{if(confirm("Void?"))doVoid(s);}}}>Void</Btn><Btn size="sm" variant="ghost" onClick={()=>{setDebitTarget(s);setDebitReason("");setDebitAmount("");}}>Debit Note</Btn></>}<Btn size="sm" variant="outline" onClick={()=>setViewInvoice(s)}>👁️ View</Btn></div>])} emptyMsg="No orders found"/></Card>}
     </div>}
     {tab==="payments"&&<Card><div style={{fontSize:15,fontWeight:700,marginBottom:16}}>Payment Summary (Today)</div>{["Cash","Card","Both"].map(method=>{const ms=sales.filter(s=>s.date===TODAY&&s.payMethod===method);return<div key={method} style={{display:"flex",justifyContent:"space-between",padding:"12px 0",borderBottom:`1px solid ${C.border}`}}><span style={{fontSize:14,fontWeight:600}}>{method}</span><div style={{textAlign:"right"}}><div style={{fontSize:16,fontWeight:700,color:C.primary}}>{fmtSAR(ms.reduce((s,o)=>s+o.total,0))}</div><div style={{fontSize:11,color:C.textLight}}>{ms.length} transactions</div></div></div>;})} </Card>}
     {tab==="kot"&&<Card><div style={{fontSize:15,fontWeight:700,marginBottom:16}}>KOT Log (Today)</div>{sales.filter(s=>s.date===TODAY).length===0?<div style={{textAlign:"center",padding:"30px 0",color:C.textMid}}><div style={{fontSize:32,marginBottom:8}}>🍽</div><div>No KOTs today</div></div>:<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(210px,1fr))",gap:12}}>{sales.filter(s=>s.date===TODAY).slice().reverse().map(s=>(<div key={s.id} style={{border:"2px dashed #ccc",borderRadius:8,padding:14,fontFamily:"monospace",fontSize:12}}><div style={{fontWeight:700,marginBottom:6}}>{s.type}{s.table?` · T${s.table}`:""} · {s.time}</div>{(s.items||[]).slice(0,4).map((it,idx)=><div key={idx}>{it.qty}× {it.name}</div>)}<div style={{marginTop:6,fontSize:10,color:C.textLight}}>{s.id}</div></div>))}</div>}</Card>}
@@ -10907,7 +11009,7 @@ function archiveCsvRow(inv){
   const esc=v=>`"${String(v??"").replace(/"/g,'""')}"`;
   return [
     inv.invoice_number,inv.icv,inv.uuid,(inv.timestamp||"").slice(0,10),(inv.timestamp||"").slice(11,19),
-    inv.is_credit_note?"Credit Note":(inv.invoice_type||(inv.is_b2b?"B2B":"B2C")),
+    inv.is_debit_note?"Debit Note":inv.is_credit_note?"Credit Note":(inv.invoice_type||(inv.is_b2b?"B2B":"B2C")),
     inv.seller_name,inv.seller_vat,inv.buyer_name||"",inv.buyer_vat||"",
     (inv.subtotal??"").toString(),(inv.vat_amount??"").toString(),(inv.total??"").toString(),
     inv.payMethod||"",inv.zatca_reported?"Yes":"No",inv.zatca_cleared?"Yes":"No",inv.invoice_hash||""
