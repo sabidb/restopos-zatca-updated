@@ -307,6 +307,16 @@ service cloud.firestore {
       allow read, update, delete: if isAdmin();
     }
 
+    // ── error logs (devices create; admin reads/deletes) ─────────────────
+    match /error_logs/{entry} {
+      allow create: if isSignedIn()
+        && request.resource.data.keys().hasAll(["licenseKey","message","ts","severity","createdAt"])
+        && request.resource.data.licenseKey is string
+        && request.resource.data.message is string
+        && request.resource.data.severity in ["tab","app"];
+      allow read, delete: if isAdmin();
+    }
+
     // Default: deny everything not explicitly allowed above.
     match /{document=**} {
       allow read, write: if false;

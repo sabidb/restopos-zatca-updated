@@ -4,12 +4,25 @@
 // ═══════════════════════════════════════════════════════════════════
 import { Component } from "react";
 
+function reportErrorToFirestore(entry){
+  try{
+    const lk=JSON.parse(localStorage.getItem("restopos_license_v2")||"{}").licenseKey;
+    if(!lk)return;
+    import("firebase/firestore").then(({addDoc,collection,getFirestore})=>{
+      const db=getFirestore();
+      addDoc(collection(db,"error_logs"),{...entry,licenseKey:lk,device:navigator.userAgent?.slice(0,200)||"",createdAt:new Date()}).catch(()=>{});
+    }).catch(()=>{});
+  }catch(e){}
+}
+
 // Lightweight per-section boundary — keeps one broken tab from white-screening the app.
 export class TabBoundary extends Component {
   constructor(props){super(props);this.state={hasError:false,msg:""};}
   static getDerivedStateFromError(error){return{hasError:true,msg:error?.message||"Error"};}
   componentDidCatch(error,info){
-    try{const logs=JSON.parse(localStorage.getItem("restopos_error_logs")||"[]");logs.unshift({ts:new Date().toISOString(),message:error?.message||"Unknown",where:this.props.name||"tab"});localStorage.setItem("restopos_error_logs",JSON.stringify(logs.slice(0,50)));}catch(e){}
+    const entry={ts:new Date().toISOString(),message:error?.message||"Unknown",where:this.props.name||"tab"};
+    try{const logs=JSON.parse(localStorage.getItem("restopos_error_logs")||"[]");logs.unshift(entry);localStorage.setItem("restopos_error_logs",JSON.stringify(logs.slice(0,50)));}catch(e){}
+    reportErrorToFirestore({...entry,stack:error?.stack?.slice(0,500)||"",component:info?.componentStack?.slice(0,200)||"",severity:"tab"});
   }
   render(){
     if(this.state.hasError){
@@ -31,9 +44,9 @@ export class ErrorBoundary extends Component {
   constructor(props){super(props);this.state={hasError:false,error:null};}
   static getDerivedStateFromError(error){return{hasError:true,error};}
   componentDidCatch(error,info){
-    const logs=JSON.parse(localStorage.getItem("restopos_error_logs")||"[]");
-    logs.unshift({ts:new Date().toISOString(),message:error?.message||"Unknown",stack:error?.stack?.slice(0,400)||"",component:info?.componentStack?.slice(0,200)||""});
-    localStorage.setItem("restopos_error_logs",JSON.stringify(logs.slice(0,50)));
+    const entry={ts:new Date().toISOString(),message:error?.message||"Unknown",stack:error?.stack?.slice(0,500)||"",component:info?.componentStack?.slice(0,200)||""};
+    try{const logs=JSON.parse(localStorage.getItem("restopos_error_logs")||"[]");logs.unshift(entry);localStorage.setItem("restopos_error_logs",JSON.stringify(logs.slice(0,50)));}catch(e){}
+    reportErrorToFirestore({...entry,severity:"app"});
   }
   render(){
     if(this.state.hasError){
