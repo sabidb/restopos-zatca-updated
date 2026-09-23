@@ -176,15 +176,31 @@ async function zatcaAuthHeaders() {
 }
 async function registerDeviceUid(licenseKey, vatNumber) {
   if (!licenseKey) return;
+  let user, key;
+  try { user = await ensureSignedIn(); key = licenseKey.trim().toUpperCase(); }
+  catch (e) { console.warn("[Auth] device sign-in failed:", e.message); return; }
+  // Self-adding to the license's authUids allowlist is permitted ONLY during
+  // first-time setup (see firestore.rules setupDeviceGrant). On an already
+  // set-up account this write is expected to be denied — the device gains
+  // access through admin approval + its login token instead — so a
+  // permission-denied here is normal and swallowed quietly. Every other kind
+  // of error is still surfaced.
   try {
-    const user = await ensureSignedIn();
-    const key = licenseKey.trim().toUpperCase();
     await setDoc(doc(db, "pending_activations", key), { authUids: arrayUnion(user.uid) }, { merge: true });
-    if (vatNumber) {
+    console.log("[Auth] device self-registered during setup:", user.uid, "for license", key);
+  } catch (e) {
+    if (e?.code !== "permission-denied") console.warn("[Auth] device registration failed:", e.message);
+  }
+  // The VAT→license index is written independently so the step above being
+  // denied never blocks it. It is allowed whenever this device owns the
+  // license (login token, or already on the allowlist).
+  if (vatNumber) {
+    try {
       await setDoc(doc(db, "vat_index", vatNumber), { authUids: arrayUnion(user.uid), licenseKey: key }, { merge: true });
+    } catch (e) {
+      if (e?.code !== "permission-denied") console.warn("[Auth] vat_index update failed:", e.message);
     }
-    console.log("[Auth] device registered:", user.uid, "for license", key);
-  } catch (e) { console.warn("[Auth] device registration failed:", e.message); }
+  }
 }
 if (typeof window !== "undefined") { window.__restoposDebug.registerDeviceUid = registerDeviceUid; }
 
@@ -1574,8 +1590,42 @@ function ClientLogin({license,onSuccess,onForgotPassword,onBack,onTryTrial}){
     }
   }
 
-  // Polls Firestore while the user waits; auto-logs-in the moment the
-  // admin moves this device into approvedDevices.
+  // Once the admin approves this device, actually COMPLETE the login: re-run the
+  // server verify to pick up the issued custom token, persist the license (a new
+  // device has none saved yet) and store the device-local offline verifier, then
+  // signal success. Calling onSuccess() without this left the app "logged in"
+  // with no token, no saved license and no offline creds — sync/restore then
+  // failed and a reload bounced back to the license screen.
+  // Returns true only when the session is fully established.
+  async function finishApprovedLogin(){
+    const savedLic=LS.get("restopos_license_v2");
+    const licKey=savedLic?.licenseKey||licenseKeyInput.trim().toUpperCase();
+    const enteredUser=username.trim().toLowerCase();
+    if(!licKey||!enteredUser||!password)return false; // nothing to finish with
+    try{
+      try{await ensureSignedIn();}catch(e){/* offline */}
+      const res=await withTimeout(verifyLoginFn({licenseKey:licKey,username:enteredUser,password,
+        deviceId:getDeviceId(),deviceLabel:getDeviceLabel()}),8000,"login verify");
+      const result=res.data;
+      if(result?.deviceStatus==="pending")return false; // still waiting; keep polling
+      if(result?.token){
+        try{await signInWithCustomToken(auth,result.token);}
+        catch(authErr){console.warn("[Login] token sign-in after approval failed (non-fatal):",authErr.message);}
+      }
+      const local=await makeLocalCreds(enteredUser,password,{approved:true,active:true});
+      LS.set("restopos_client_creds",{...local});
+      if(!savedLic?.licenseKey){
+        LS.set("restopos_license_v2",{licenseKey:licKey,businessName:result.businessName||"",crNumber:result.crNumber||"",vatNumber:result.vatNumber||"",email:result.email||"",city:result.city||"",address:result.address||"",phone:result.phone||"",businessType:result.businessType||"restaurant"});
+      }
+      clearFailedAttempts();
+      try{await withTimeout(updateDoc(doc(db,"pending_activations",licKey),{forceLogout:false}),8000,"reset");}catch(e){/* non-critical */}
+      return true;
+    }catch(e){console.warn("[Login] finish after approval failed:",e.message);return false;}
+  }
+
+  // Polls Firestore while the user waits; auto-logs-in the moment the admin
+  // moves this device into approvedDevices — but only after finishApprovedLogin
+  // has established a real session (token + license + offline creds).
   useEffect(()=>{
     if(!waitingApproval)return;
     const deviceId=getDeviceId();
@@ -1590,7 +1640,9 @@ function ClientLogin({license,onSuccess,onForgotPassword,onBack,onTryTrial}){
           const data=snap.data();
           const approved=Array.isArray(data.approvedDevices)?data.approvedDevices:[];
           if(approved.some(d=>(typeof d==="string"?d:d.id)===deviceId)){
-            if(!stop){stop=true;setWaitingApproval(false);onSuccess();}
+            if(stop)return;
+            const ok=await finishApprovedLogin();
+            if(ok&&!stop){stop=true;setWaitingApproval(false);onSuccess();}
           }
         }
       }catch(e){/* keep polling */}
@@ -1648,6 +1700,10 @@ function ClientLogin({license,onSuccess,onForgotPassword,onBack,onTryTrial}){
             setLoading(false);diagnosed=true;return;
           }
           const enteredUser=username.trim().toLowerCase();
+          // Make sure this device has a Firebase identity before we ask the
+          // server to gate it — verifyLogin records req.auth.uid on the pending
+          // entry so the admin's approval can grant THIS device data access.
+          try{await ensureSignedIn();}catch(e){/* offline; server falls back */}
           let result;
           try{
             const res=await withTimeout(verifyLoginFn({licenseKey:licKey,username:enteredUser,password,
@@ -1684,8 +1740,11 @@ function ClientLogin({license,onSuccess,onForgotPassword,onBack,onTryTrial}){
           }catch(authErr){
             console.warn("[Login] signInWithCustomToken failed (non-fatal):",authErr.message);
           }
-          // Store a device-local offline verifier (never the server hash).
-          const local=await makeLocalCreds(enteredUser,password,{approved:result.credentialsApproved||false,active:true});
+          // Store a device-local offline verifier (never the server hash). We
+          // only reach this line once the server has issued a token, which means
+          // the account is approved AND this device is approved — so the device
+          // is cleared for offline auto-login on subsequent launches.
+          const local=await makeLocalCreds(enteredUser,password,{approved:true,active:true});
           LS.set("restopos_client_creds",{...local});
           if(!savedLic?.licenseKey){
             LS.set("restopos_license_v2",{licenseKey:licKey,businessName:result.businessName||"",crNumber:result.crNumber||"",vatNumber:result.vatNumber||"",email:result.email||"",city:result.city||"",address:result.address||"",phone:result.phone||"",businessType:result.businessType||"restaurant"});
