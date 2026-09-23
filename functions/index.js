@@ -90,31 +90,26 @@ function callerIp(req) {
 // It is now settled server-side, on the Admin SDK, as part of verifying the
 // password, and approvedDevices is admin-only in the rules.
 //
-// The FIRST device is approved automatically. Requiring an approval before
-// anyone can use the account they just paid for meant a client registering at
-// two in the morning could not open their till until the owner woke up — for
-// no security benefit, because a licence with no approved devices has nothing
-// to protect yet. Every device after that waits.
+// EVERY device — including the very first — waits for an explicit admin
+// approval in the panel's Devices tab. Nothing is approved automatically here.
+// The device's Firebase uid is recorded on the pending entry so that when the
+// admin approves it, the panel can add that uid to the licence's authUids
+// allowlist (the moment the device actually gains data access).
 const devId = (d) => (typeof d === "string" ? d : d && d.id);
 
-async function settleDevice(ref, data, key, deviceId, deviceLabel) {
+async function settleDevice(ref, data, key, deviceId, deviceLabel, uid) {
   const approved = Array.isArray(data.approvedDevices) ? data.approvedDevices : [];
-  if (!deviceId) return { status: "approved" }; // older client build; don't lock it out
+  if (!deviceId) return { status: "approved" }; // older client build with no device id; can't gate it
   if (approved.some((d) => devId(d) === deviceId)) return { status: "approved" };
 
   const now = new Date().toISOString();
-  if (approved.length === 0) {
-    await ref.update({
-      approvedDevices: [{ id: deviceId, label: deviceLabel || "First device", approvedAt: now, firstDevice: true }],
-      lastDeviceApprovedAt: now,
-    });
-    return { status: "approved", first: true };
-  }
-
   const pending = Array.isArray(data.pendingDevices) ? data.pendingDevices : [];
-  if (!pending.some((d) => devId(d) === deviceId)) {
+  const existing = pending.find((d) => devId(d) === deviceId);
+  if (!existing) {
+    const entry = { id: deviceId, label: deviceLabel || "Unknown device", requestedAt: now };
+    if (uid) entry.uid = uid; // so admin approval can grant this device data access
     await ref.update({
-      pendingDevices: [...pending, { id: deviceId, label: deviceLabel || "Unknown device", requestedAt: now }],
+      pendingDevices: [...pending, entry],
       lastDeviceRequestAt: now,
     });
     // A durable line in the admin panel's Activity tab, so a request is still
@@ -127,6 +122,12 @@ async function settleDevice(ref, data, key, deviceId, deviceLabel) {
       deviceId,
       timestamp: now,
     }).catch(() => {});
+  } else if (uid && !existing.uid) {
+    // The device requested from an older build that never sent its uid; backfill
+    // it so approval can still grant access without a second request.
+    await ref.update({
+      pendingDevices: pending.map((d) => (devId(d) === deviceId ? { ...(typeof d === "string" ? { id: d } : d), uid } : d)),
+    });
   }
   return { status: "pending" };
 }
@@ -219,7 +220,7 @@ export const verifyLogin = onCall({ cors: true, region: "us-central1" }, async (
   // Password is right and the account is live. Now: is this device allowed?
   // An unapproved device gets NO token — issuing one and relying on the browser
   // to show a waiting screen would hand it real read access to the account.
-  const device = await settleDevice(ref, data, key, String(deviceId || "").slice(0, 100), String(deviceLabel || "").slice(0, 60));
+  const device = await settleDevice(ref, data, key, String(deviceId || "").slice(0, 100), String(deviceLabel || "").slice(0, 60), req.auth?.uid || null);
   if (device.status === "pending") {
     return { deviceStatus: "pending", businessName: data.businessName || "" };
   }
