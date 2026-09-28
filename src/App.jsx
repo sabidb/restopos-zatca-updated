@@ -42,6 +42,7 @@ import { Expenses } from "./screens/Expenses.jsx";
 import { InventoryManagement } from "./screens/InventoryManagement.jsx";
 import { cloudGapOf, archiveSpanOf } from "./lib/cloudGap.js";
 import { CloudGapBar } from "./components/CloudGapBar.jsx";
+import ZatcaVerificationPanel from "./components/ZatcaVerificationPanel.jsx";
 import { _escHTML, _escMultiline } from "./lib/html.js";
 import { buildReportThermalHTML } from "./lib/reportPrint.js";
 
@@ -12459,6 +12460,15 @@ function ZATCASetup({license,sales=[]}){
 
   return(
     <div style={{maxWidth:640}}>
+      {/* ── VERIFICATION / CONNECTION STATUS ── */}
+      {!TRIAL && license?.licenseKey && (
+        <ZatcaVerificationPanel
+          licenseKey={license.licenseKey}
+          serviceUrl={ZATCA_SERVICE_URL}
+          getAuthHeaders={zatcaAuthHeaders}
+          localReporting={zatcaUtils.getQueueStatus()}
+        />
+      )}
       {/* ── PHASE 2 ELIGIBILITY CHECK ── */}
       <Card style={{marginBottom:16}}>
         <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12}}>
