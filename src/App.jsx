@@ -16007,7 +16007,9 @@ function ZatcaStatusChip({viewport}){
     look={label:`ZATCA \u26a0 ${state.failed}`,fg:"#fed7aa",bg:"rgba(224,123,0,0.3)",bd:"rgba(224,123,0,0.55)",
       title:`${state.failed} invoice(s) failed to report. They are signed and valid; reporting will be retried.`};
   }else if(state.pending>0){
-    look={label:`ZATCA \u23f3 ${state.pending}`,fg:"#fde68a",bg:"rgba(240,165,0,0.28)",bd:"rgba(240,165,0,0.5)",
+    // Count omitted here on purpose \u2014 the "\u23f3 N pending report" badge next to
+    // the invoice number carries the number, so the chip just shows health.
+    look={label:`ZATCA \u23f3`,fg:"#fde68a",bg:"rgba(240,165,0,0.28)",bd:"rgba(240,165,0,0.5)",
       title:`${state.pending} invoice(s) waiting to be reported to ZATCA.`};
   }else{
     look={label:"ZATCA \u2713",fg:"#7FFAB5",bg:"rgba(26,107,74,0.35)",bd:"rgba(26,107,74,0.55)",
