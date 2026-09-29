@@ -33,7 +33,7 @@ export const BUSINESS_TYPES={
   restaurant:{
     id:"restaurant", label:"Restaurant", labelAr:"مطعم", icon:"🍽️",
     posLayout:"grid", nav:"topbar",
-    features:{ tables:true, dineIn:true, kot:true, kitchen:true, kds:true, recipes:true, weighing:false, barcodeFirst:false },
+    features:{ tables:true, dineIn:true, kot:true, kitchen:true, kds:true, recipes:true, weighing:false, barcodeFirst:false, manualBilling:true },
     orderTypes:[["takeaway","🥡","Takeaway"],["dine-in","🍽","Dine-in"],["delivery","🛵","Delivery"]],
     hideAdvancedTabs:[],
     navLabels:{},
@@ -41,7 +41,7 @@ export const BUSINESS_TYPES={
   supermarket:{
     id:"supermarket", label:"Supermarket", labelAr:"سوبرماركت", icon:"🛒",
     posLayout:"scan", nav:"sidebar",
-    features:{ tables:false, dineIn:false, kot:false, kitchen:false, kds:false, recipes:false, weighing:true, barcodeFirst:true },
+    features:{ tables:false, dineIn:false, kot:false, kitchen:false, kds:false, recipes:false, weighing:true, barcodeFirst:true, manualBilling:true },
     orderTypes:[["takeaway","🛒","Sale"],["delivery","🛵","Delivery"]],
     hideAdvancedTabs:["kitchen","kds","recipes"],
     navLabels:{ create:"Products" },
@@ -52,11 +52,26 @@ export const BUSINESS_TYPES={
   hypermarket:{
     id:"hypermarket", label:"Hypermarket", labelAr:"هايبر ماركت", icon:"🏬",
     posLayout:"scan", nav:"sidebar",
-    features:{ tables:false, dineIn:false, kot:false, kitchen:false, kds:false, recipes:false, weighing:true, barcodeFirst:true, approvals:true, loyalty:true },
+    features:{ tables:false, dineIn:false, kot:false, kitchen:false, kds:false, recipes:false, weighing:true, barcodeFirst:true, approvals:true, loyalty:true, manualBilling:true },
     orderTypes:[["takeaway","🛒","Sale"],["delivery","🛵","Delivery"]],
     hideAdvancedTabs:["kitchen","kds","recipes"],
     navLabels:{ create:"Products" },
     roles:["Admin","Manager","Supervisor","Cashier"],
+  },
+  // Custom App Integration — an "online-ordering" tenant whose orders, prices,
+  // discounts and payments are all created and CAPTURED in an external app.
+  // RestoPOS is the invoicing/ZATCA engine only, so over-the-counter manual
+  // billing is switched OFF (features.manualBilling:false disables the POS "Pay"
+  // action); invoices are created from the integration API against the captured
+  // transaction instead. Everything else — ZATCA signing/reporting, archive,
+  // reports — is the shared core and behaves exactly as for any other type.
+  integration:{
+    id:"integration", label:"Custom App Integration", labelAr:"تكامل تطبيق خارجي", icon:"🔌",
+    posLayout:"grid", nav:"sidebar",
+    features:{ tables:false, dineIn:false, kot:false, kitchen:false, kds:false, recipes:false, weighing:false, barcodeFirst:false, manualBilling:false, onlineOrdering:true },
+    orderTypes:[["delivery","🛵","Delivery"],["takeaway","🥡","Pickup"]],
+    hideAdvancedTabs:["kitchen","kds","recipes"],
+    navLabels:{},
   },
 };
 export const DEFAULT_BUSINESS_TYPE="restaurant";
