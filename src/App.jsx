@@ -4062,6 +4062,7 @@ function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1
           <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
             <div style={{color:"#fff",fontSize:15,fontWeight:800}}>💳 Charge & Payment</div>
             <div style={{padding:"3px 10px",background:"rgba(255,255,255,0.15)",borderRadius:20,fontSize:11,color:"rgba(255,255,255,0.9)",fontWeight:700}}>🧾 INV-{vno}</div>
+            <PendingReportBadge/>
             <div style={{padding:"3px 10px",background:"rgba(255,255,255,0.12)",borderRadius:20,fontSize:11,color:"rgba(255,255,255,0.8)",fontWeight:700}}>🎫 Token {isDraft?getDailyToken():getDailyToken()+1}</div>
             <div style={{padding:"3px 10px",background:"rgba(255,255,255,0.08)",borderRadius:20,fontSize:11,color:"rgba(255,255,255,0.5)"}}>{new Date().toLocaleTimeString("en-SA",{hour:"2-digit",minute:"2-digit"})}</div>
           </div>
@@ -5451,7 +5452,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
       }catch(e){
         console.error("[ZATCA] generation failed:",e);
         setLastZatcaInvoice(null);
-        setPrintBanner({msg:"⚠️ ZATCA invoice generation failed: "+(e?.message||e)+" — invoice saved without ZATCA number/QR.",type:"error"});
+        setPrintBanner({type:"error",msg:"ZATCA invoice generation failed",detail:"The sale is saved without a ZATCA number/QR. "+(e?.message||e)});
         setTimeout(()=>setPrintBanner(null),8000);
       }
     }
@@ -5508,7 +5509,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
 
     if(!printAndSave){
       // Save only — done
-      setPrintBanner({msg:"💾 "+inv.id+" — Invoice Saved",type:"save"});
+      setPrintBanner({type:"save",msg:"Invoice "+inv.id+" saved",detail:"Saved without printing."});
       setTimeout(()=>setPrintBanner(null),3000);
     }else if(isKotOnly){
       // KOT Only — print KOT to kitchen, no customer bill at all
@@ -5531,8 +5532,8 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
             kotDone=true;
           }catch(e){console.warn("[KOT-Only iframe]",e);}
         }
-        setPrintBanner({msg:"🍽️ "+inv.id+" — KOT Printed (no customer bill)",type:"success"});
-      }catch(e){setPrintBanner({msg:"⚠️ KOT Only saved — KOT print failed: "+e.message,type:"error"});}
+        setPrintBanner({type:"success",msg:"Invoice "+inv.id+" saved — kitchen ticket printed",detail:"No customer bill (kitchen ticket only)."});
+      }catch(e){setPrintBanner({type:"error",msg:"Invoice "+inv.id+" saved — kitchen ticket print failed",detail:e.message});}
       setTimeout(()=>setPrintBanner(null),4000);
     }else if(isDraft){
       // Draft: try QZ first → fallback to browser print
@@ -5543,14 +5544,14 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
         if(!isQZConnected())await connectQZ();
         if(isQZConnected()&&_draftPrinter){
           await printWithQZ(draftHTML,_draftPrinter,_draftFmt.paperWidth||"80mm");
-          setPrintBanner({msg:"📋 "+inv.id+" — Draft Printed via QZ",type:"success"});
+          setPrintBanner({type:"success",msg:"Draft "+inv.id+" printed",detail:"Draft bill (no ZATCA number/QR)."});
         }else{
           printDraftReceipt(inv,license);
-          setPrintBanner({msg:"📋 "+inv.id+" — Draft Saved & Printed",type:"success"});
+          setPrintBanner({type:"success",msg:"Draft "+inv.id+" saved & printed",detail:"Draft bill (no ZATCA number/QR)."});
         }
       }catch(e){
-        try{printDraftReceipt(inv,license);setPrintBanner({msg:"📋 "+inv.id+" — Draft Printed",type:"success"});}
-        catch(e2){setPrintBanner({msg:"⚠️ Draft saved — Print failed: "+e2.message,type:"error"});}
+        try{printDraftReceipt(inv,license);setPrintBanner({type:"success",msg:"Draft "+inv.id+" printed",detail:"Draft bill (no ZATCA number/QR)."});}
+        catch(e2){setPrintBanner({type:"error",msg:"Draft "+inv.id+" saved — printing failed",detail:e2.message});}
       }
       setTimeout(()=>setPrintBanner(null),4000);
     }else{
@@ -5585,9 +5586,9 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
           alert("⚠️ A4 print failed: "+e.message+"\n\n(The invoice has been saved — you can reprint it from Transactions.)");
         }
         if(printed){
-          setPrintBanner({msg:"✅ "+inv.id+" — Saved & Printed (A4)"+(inv.customer?(" · 👤 "+inv.customer):" · ⚠️ no customer captured"),type:"success"});
+          setPrintBanner({type:"success",msg:"Invoice "+inv.id+" saved & printed",detail:inv.customer?("Customer: "+inv.customer+(inv.customerPhone?" · "+inv.customerPhone:"")):"No customer details on this sale"});
         }else{
-          setPrintBanner({msg:"💾 "+inv.id+" — Saved. A4 print failed (see message).",type:"error"});
+          setPrintBanner({type:"error",msg:"Invoice "+inv.id+" saved — printing failed",detail:"The invoice is saved. Reprint it from Transactions (check the printer or allow pop-ups)."});
         }
         setTimeout(()=>setPrintBanner(null),5000);
         return; // A4 mode handled — do NOT fall through to thermal/QZ.
@@ -5643,10 +5644,10 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
       }
 
       if(printed){
-        setPrintBanner({msg:"✅ "+inv.id+" — Saved & Printed ("+printMethod+")"+(inv.customer?(" · 👤 "+inv.customer+(inv.customerPhone?" · "+inv.customerPhone:"")):" · ⚠️ no customer captured"),type:"success"});
+        setPrintBanner({type:"success",msg:"Invoice "+inv.id+" saved & printed",detail:inv.customer?("Customer: "+inv.customer+(inv.customerPhone?" · "+inv.customerPhone:"")):"No customer details on this sale"});
       }else{
         // Even if all print methods failed, invoice IS saved
-        setPrintBanner({msg:"💾 "+inv.id+" — Saved. Print failed — allow pop-ups or install QZ Tray",type:"error"});
+        setPrintBanner({type:"error",msg:"Invoice "+inv.id+" saved — printing failed",detail:"The invoice is saved. Reprint it from Transactions, or check that your printer is connected."});
       }
       setTimeout(()=>setPrintBanner(null),5000);
     }
@@ -5989,25 +5990,29 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
         );
       })()}
       {/* Print/Save success banner */}
-      {printBanner&&(
-        <div style={{
+      {printBanner&&(()=>{
+        const accent=printBanner.type==="success"?"#1A6B4A":printBanner.type==="error"?"#C0392B":"#2176AE";
+        const chip=printBanner.type==="success"?"rgba(26,107,74,0.12)":printBanner.type==="error"?"rgba(192,57,43,0.12)":"rgba(33,118,174,0.12)";
+        const glyph=printBanner.type==="success"?"✓":printBanner.type==="error"?"!":"🖶";
+        return (
+        <div role="status" aria-live="polite" style={{
           position:"fixed",top:24,left:"50%",transform:"translateX(-50%)",
-          zIndex:99999,padding:"14px 28px",borderRadius:14,
-          fontSize:15,fontWeight:800,
-          background:printBanner.type==="success"?"#1A6B4A":
-                     printBanner.type==="error"?"#C0392B":"#2176AE",
-          color:"#fff",
-          boxShadow:"0 8px 40px rgba(0,0,0,0.5)",
-          animation:"bannerIn 0.25s ease",
-          whiteSpace:"nowrap",display:"flex",alignItems:"center",
-          gap:10,maxWidth:"92vw",direction:"ltr"}}>
-          <span style={{fontSize:20}}>
-            {printBanner.type==="success"?"✅":
-             printBanner.type==="error"?"⚠️":"💾"}
-          </span>
-          <span>{printBanner.msg}</span>
+          zIndex:99999,minWidth:300,maxWidth:"min(440px,92vw)",
+          display:"flex",alignItems:"flex-start",gap:12,
+          padding:"14px 16px",borderRadius:14,background:"#fff",
+          border:"1px solid #E6EBF1",borderLeft:`5px solid ${accent}`,
+          boxShadow:"0 12px 48px rgba(15,35,64,0.20)",
+          animation:"bannerIn 0.25s ease",direction:"ltr",fontFamily:"inherit"}}>
+          <div style={{width:34,height:34,flexShrink:0,borderRadius:"50%",background:chip,color:accent,
+            display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,fontWeight:900}}>{glyph}</div>
+          <div style={{minWidth:0,flex:1}}>
+            <div style={{fontSize:14,fontWeight:800,color:"#0F2340",lineHeight:1.3}}>{printBanner.msg}</div>
+            {printBanner.detail&&<div style={{fontSize:12,color:"#5A6B82",marginTop:2,lineHeight:1.4,wordBreak:"break-word"}}>{printBanner.detail}</div>}
+          </div>
+          <button onClick={()=>setPrintBanner(null)} aria-label="Dismiss" style={{flexShrink:0,marginTop:-2,background:"none",border:"none",color:"#9AA7B8",fontSize:20,lineHeight:1,cursor:"pointer",padding:2}}>×</button>
         </div>
-      )}
+        );
+      })()}
       <style>{`
         @keyframes bannerIn{
           from{opacity:0;transform:translateX(-50%) translateY(-16px);}
@@ -15932,6 +15937,41 @@ if(TRIAL){
 // The urgent state is deliberately distinct: ZATCA requires a simplified
 // invoice to reach them within 24 hours, so an item approaching that deadline
 // is a different problem from one that failed a minute ago.
+// Small live badge shown right next to the invoice number: how many signed
+// invoices are still waiting to be reported to ZATCA (FATOORA). Reads the same
+// queue the auto-sync drains, and refreshes on a timer and whenever an invoice
+// is generated ("restopos-invoice") or a report resolves (ZATCA_NOTIFY_EVENT),
+// so the count drops on its own as reporting completes. Renders nothing when
+// there is nothing pending (all reported) or when Phase 2 is off.
+function PendingReportBadge({compact}){
+  const [n,setN]=useState(0);
+  useEffect(()=>{
+    function refresh(){
+      if(!isPhase2Active()){setN(0);return;}
+      const q=fatooraQueue.getQueue();
+      // "pending report" = anything signed but not yet confirmed reported
+      // (status "pending" plus "failed" retries that are still being retried).
+      setN(q.filter(x=>x.status!=="reported").length);
+    }
+    refresh();
+    const id=setInterval(refresh,15000);
+    window.addEventListener("restopos-invoice",refresh);
+    window.addEventListener(ZATCA_NOTIFY_EVENT,refresh);
+    return()=>{ clearInterval(id);
+      window.removeEventListener("restopos-invoice",refresh);
+      window.removeEventListener(ZATCA_NOTIFY_EVENT,refresh); };
+  },[]);
+  if(n<=0)return null;
+  return (
+    <span title={`${n} invoice(s) signed and given to the customer but not yet reported to FATOORA. They report automatically (on reconnect and every 2 minutes); open Transactions → ZATCA Invoices to send them now.`}
+      style={{fontSize:compact?9:11,background:"rgba(240,165,0,0.95)",color:"#3a2500",
+        padding:compact?"2px 7px":"3px 10px",borderRadius:20,fontWeight:800,whiteSpace:"nowrap",
+        border:"1px solid rgba(240,165,0,0.6)"}}>
+      ⏳ {n} pending report
+    </span>
+  );
+}
+
 function ZatcaStatusChip({viewport}){
   const [state,setState]=useState({phase2:false,pending:0,failed:0,urgent:0});
 
@@ -15967,7 +16007,9 @@ function ZatcaStatusChip({viewport}){
     look={label:`ZATCA \u26a0 ${state.failed}`,fg:"#fed7aa",bg:"rgba(224,123,0,0.3)",bd:"rgba(224,123,0,0.55)",
       title:`${state.failed} invoice(s) failed to report. They are signed and valid; reporting will be retried.`};
   }else if(state.pending>0){
-    look={label:`ZATCA \u23f3 ${state.pending}`,fg:"#fde68a",bg:"rgba(240,165,0,0.28)",bd:"rgba(240,165,0,0.5)",
+    // Count omitted here on purpose \u2014 the "\u23f3 N pending report" badge next to
+    // the invoice number carries the number, so the chip just shows health.
+    look={label:`ZATCA \u23f3`,fg:"#fde68a",bg:"rgba(240,165,0,0.28)",bd:"rgba(240,165,0,0.5)",
       title:`${state.pending} invoice(s) waiting to be reported to ZATCA.`};
   }else{
     look={label:"ZATCA \u2713",fg:"#7FFAB5",bg:"rgba(26,107,74,0.35)",bd:"rgba(26,107,74,0.55)",
@@ -16884,6 +16926,7 @@ export default function App(){
           {justCameOnline&&<span style={{fontSize:9,background:"rgba(16,185,129,0.3)",color:"#6ee7b7",padding:"3px 8px",borderRadius:4,fontWeight:800,border:"1px solid rgba(16,185,129,0.5)",whiteSpace:"nowrap"}}>🟢 Back Online</span>}
           <span title="Today's token — resets on Close Day" style={{fontSize:9,background:"rgba(240,165,0,0.25)",color:"#FFD27F",padding:"2px 7px",borderRadius:4,fontWeight:800,border:"1px solid rgba(240,165,0,0.45)",whiteSpace:"nowrap"}}>🎫 Token {dailyToken}</span>
           <span title="Last ZATCA invoice number — only real invoices count, not drafts" style={{fontSize:9,background:"rgba(26,107,74,0.35)",color:"#6ee7b7",padding:"2px 7px",borderRadius:4,fontWeight:800,border:"1px solid rgba(26,107,74,0.5)",whiteSpace:"nowrap"}}>🧾 INV-{String(currentICV).padStart(6,"0")}</span>
+          <PendingReportBadge compact/>
           {/* Strict Live indicator — always visible when online (offline shown separately with queue count) */}
           {isOnline&&<span style={{fontSize:8,background:"rgba(46,204,113,0.25)",color:"#7FFAB5",padding:"2px 6px",borderRadius:4,fontWeight:800,border:"1px solid rgba(46,204,113,0.5)",whiteSpace:"nowrap"}}>● LIVE</span>}
 
