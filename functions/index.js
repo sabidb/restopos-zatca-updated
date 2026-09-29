@@ -670,5 +670,5 @@ export const zatcaExport = onCall({ cors: true, region: "us-central1" }, async (
 // ── Universal integration API (additive; see functions/integration/) ─────────
 // New, self-contained functions for the external online-order integration
 // engine. Defined in their own module so nothing above is affected.
-export { createIntegration, listIntegrations, revokeIntegration, integrationOrders } from "./integration/api.js";
+export { createIntegration, listIntegrations, revokeIntegration, integrationOrders, listExternalOrders, getExternalOrder } from "./integration/api.js";
 export { invoiceExternalOrder } from "./integration/runner.js";

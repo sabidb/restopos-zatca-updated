@@ -138,6 +138,52 @@ export const revokeIntegration = onCall({ cors: true, region: REGION }, async (r
   return { ok: true };
 });
 
+// ── listExternalOrders (dashboard, owner or admin) ───────────────────────────
+// Returns a tenant's online orders as summaries (no raw payload / PII). Status
+// is filtered in memory so one composite index (licenseKey, receivedAt) serves
+// it. Admin may pass any licenseKey (requireLicense allows admin through).
+export const listExternalOrders = onCall({ cors: true, region: REGION }, async (req) => {
+  const { licenseKey, status, limit } = req.data || {};
+  const { key } = await requireLicense(req.auth, licenseKey);
+  const n = Math.min(Number(limit) || 100, 300);
+  const snap = await db().collection("external_orders").where("licenseKey", "==", key).orderBy("receivedAt", "desc").limit(n).get();
+  let orders = snap.docs.map((d) => {
+    const o = d.data();
+    const no = o.normalizedOrder || {};
+    return {
+      restoposOrderId: o.restoposOrderId, externalOrderId: o.externalOrderId, integrationId: o.integrationId || null,
+      processingStatus: o.processingStatus, invoiceStatus: o.invoiceStatus || "NOT_CREATED",
+      paymentStatus: no.payment?.status || null,
+      reconciliation: o.reconciliation?.status || null,
+      currency: no.currency || null,
+      grandTotal: no.pricing?.grand_total ?? null,
+      capturedAmount: no.captured_amount ?? null,
+      invoiceNumber: o.invoice?.serial_number || null,
+      receivedAt: o.receivedAt, invoicedAt: o.invoicedAt || null,
+    };
+  });
+  if (status) orders = orders.filter((o) => o.processingStatus === status || o.invoiceStatus === status);
+  return { orders };
+});
+
+// ── getExternalOrder (full transaction trace, owner or admin) — spec §31 ──────
+export const getExternalOrder = onCall({ cors: true, region: REGION }, async (req) => {
+  const { licenseKey, restoposOrderId, externalOrderId } = req.data || {};
+  const { key } = await requireLicense(req.auth, licenseKey);
+  let docSnap;
+  if (restoposOrderId) {
+    const q = await db().collection("external_orders").where("restoposOrderId", "==", String(restoposOrderId)).limit(1).get();
+    docSnap = q.docs[0];
+  } else if (externalOrderId) {
+    const q = await db().collection("external_orders").where("licenseKey", "==", key).where("externalOrderId", "==", String(externalOrderId)).limit(1).get();
+    docSnap = q.docs[0];
+  }
+  if (!docSnap) throw new HttpsError("not-found", "Order not found.");
+  const o = docSnap.data();
+  if (o.licenseKey !== key) throw new HttpsError("permission-denied", "Order does not belong to this license.");
+  return { order: o }; // full trace: originalPayload, normalizedOrder, reconciliation, invoice, states
+});
+
 // ── HTTP helpers ─────────────────────────────────────────────────────────────
 function sendJson(res, code, body) { res.status(code).set("Content-Type", "application/json").send(JSON.stringify(body)); }
 
