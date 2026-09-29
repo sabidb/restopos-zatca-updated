@@ -91,8 +91,13 @@ export const createIntegration = onCall({ cors: true, region: REGION }, async (r
     status: "active",
     apiKeyPrefix: prefix,
     apiKeyHash: await bcrypt.hash(plaintext, BCRYPT_ROUNDS),
-    webhookSecretHash: await bcrypt.hash(webhookSecret, BCRYPT_ROUNDS),
+    // The webhook secret is a shared HMAC key (like Stripe's whsec_…): we need
+    // it in recoverable form to SIGN outbound deliveries. It lives only in this
+    // admin-only, default-deny collection and is never returned by list.
+    webhookSecret,
     webhookUrl: "",
+    // External prices are treated as VAT-inclusive by default (POS convention).
+    pricesTaxInclusive: true,
     branchMappings: mappings,
     createdAt: now,
     createdBy: req.auth.uid,
