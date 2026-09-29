@@ -5451,7 +5451,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
       }catch(e){
         console.error("[ZATCA] generation failed:",e);
         setLastZatcaInvoice(null);
-        setPrintBanner({msg:"⚠️ ZATCA invoice generation failed: "+(e?.message||e)+" — invoice saved without ZATCA number/QR.",type:"error"});
+        setPrintBanner({type:"error",msg:"ZATCA invoice generation failed",detail:"The sale is saved without a ZATCA number/QR. "+(e?.message||e)});
         setTimeout(()=>setPrintBanner(null),8000);
       }
     }
@@ -5508,7 +5508,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
 
     if(!printAndSave){
       // Save only — done
-      setPrintBanner({msg:"💾 "+inv.id+" — Invoice Saved",type:"save"});
+      setPrintBanner({type:"save",msg:"Invoice "+inv.id+" saved",detail:"Saved without printing."});
       setTimeout(()=>setPrintBanner(null),3000);
     }else if(isKotOnly){
       // KOT Only — print KOT to kitchen, no customer bill at all
@@ -5531,8 +5531,8 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
             kotDone=true;
           }catch(e){console.warn("[KOT-Only iframe]",e);}
         }
-        setPrintBanner({msg:"🍽️ "+inv.id+" — KOT Printed (no customer bill)",type:"success"});
-      }catch(e){setPrintBanner({msg:"⚠️ KOT Only saved — KOT print failed: "+e.message,type:"error"});}
+        setPrintBanner({type:"success",msg:"Invoice "+inv.id+" saved — kitchen ticket printed",detail:"No customer bill (kitchen ticket only)."});
+      }catch(e){setPrintBanner({type:"error",msg:"Invoice "+inv.id+" saved — kitchen ticket print failed",detail:e.message});}
       setTimeout(()=>setPrintBanner(null),4000);
     }else if(isDraft){
       // Draft: try QZ first → fallback to browser print
@@ -5543,14 +5543,14 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
         if(!isQZConnected())await connectQZ();
         if(isQZConnected()&&_draftPrinter){
           await printWithQZ(draftHTML,_draftPrinter,_draftFmt.paperWidth||"80mm");
-          setPrintBanner({msg:"📋 "+inv.id+" — Draft Printed via QZ",type:"success"});
+          setPrintBanner({type:"success",msg:"Draft "+inv.id+" printed",detail:"Draft bill (no ZATCA number/QR)."});
         }else{
           printDraftReceipt(inv,license);
-          setPrintBanner({msg:"📋 "+inv.id+" — Draft Saved & Printed",type:"success"});
+          setPrintBanner({type:"success",msg:"Draft "+inv.id+" saved & printed",detail:"Draft bill (no ZATCA number/QR)."});
         }
       }catch(e){
-        try{printDraftReceipt(inv,license);setPrintBanner({msg:"📋 "+inv.id+" — Draft Printed",type:"success"});}
-        catch(e2){setPrintBanner({msg:"⚠️ Draft saved — Print failed: "+e2.message,type:"error"});}
+        try{printDraftReceipt(inv,license);setPrintBanner({type:"success",msg:"Draft "+inv.id+" printed",detail:"Draft bill (no ZATCA number/QR)."});}
+        catch(e2){setPrintBanner({type:"error",msg:"Draft "+inv.id+" saved — printing failed",detail:e2.message});}
       }
       setTimeout(()=>setPrintBanner(null),4000);
     }else{
@@ -5585,9 +5585,9 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
           alert("⚠️ A4 print failed: "+e.message+"\n\n(The invoice has been saved — you can reprint it from Transactions.)");
         }
         if(printed){
-          setPrintBanner({msg:"✅ "+inv.id+" — Saved & Printed (A4)"+(inv.customer?(" · 👤 "+inv.customer):" · ⚠️ no customer captured"),type:"success"});
+          setPrintBanner({type:"success",msg:"Invoice "+inv.id+" saved & printed",detail:inv.customer?("Customer: "+inv.customer+(inv.customerPhone?" · "+inv.customerPhone:"")):"No customer details on this sale"});
         }else{
-          setPrintBanner({msg:"💾 "+inv.id+" — Saved. A4 print failed (see message).",type:"error"});
+          setPrintBanner({type:"error",msg:"Invoice "+inv.id+" saved — printing failed",detail:"The invoice is saved. Reprint it from Transactions (check the printer or allow pop-ups)."});
         }
         setTimeout(()=>setPrintBanner(null),5000);
         return; // A4 mode handled — do NOT fall through to thermal/QZ.
@@ -5643,10 +5643,10 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
       }
 
       if(printed){
-        setPrintBanner({msg:"✅ "+inv.id+" — Saved & Printed ("+printMethod+")"+(inv.customer?(" · 👤 "+inv.customer+(inv.customerPhone?" · "+inv.customerPhone:"")):" · ⚠️ no customer captured"),type:"success"});
+        setPrintBanner({type:"success",msg:"Invoice "+inv.id+" saved & printed",detail:inv.customer?("Customer: "+inv.customer+(inv.customerPhone?" · "+inv.customerPhone:"")):"No customer details on this sale"});
       }else{
         // Even if all print methods failed, invoice IS saved
-        setPrintBanner({msg:"💾 "+inv.id+" — Saved. Print failed — allow pop-ups or install QZ Tray",type:"error"});
+        setPrintBanner({type:"error",msg:"Invoice "+inv.id+" saved — printing failed",detail:"The invoice is saved. Reprint it from Transactions, or check that your printer is connected."});
       }
       setTimeout(()=>setPrintBanner(null),5000);
     }
@@ -5989,25 +5989,29 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
         );
       })()}
       {/* Print/Save success banner */}
-      {printBanner&&(
-        <div style={{
+      {printBanner&&(()=>{
+        const accent=printBanner.type==="success"?"#1A6B4A":printBanner.type==="error"?"#C0392B":"#2176AE";
+        const chip=printBanner.type==="success"?"rgba(26,107,74,0.12)":printBanner.type==="error"?"rgba(192,57,43,0.12)":"rgba(33,118,174,0.12)";
+        const glyph=printBanner.type==="success"?"✓":printBanner.type==="error"?"!":"🖶";
+        return (
+        <div role="status" aria-live="polite" style={{
           position:"fixed",top:24,left:"50%",transform:"translateX(-50%)",
-          zIndex:99999,padding:"14px 28px",borderRadius:14,
-          fontSize:15,fontWeight:800,
-          background:printBanner.type==="success"?"#1A6B4A":
-                     printBanner.type==="error"?"#C0392B":"#2176AE",
-          color:"#fff",
-          boxShadow:"0 8px 40px rgba(0,0,0,0.5)",
-          animation:"bannerIn 0.25s ease",
-          whiteSpace:"nowrap",display:"flex",alignItems:"center",
-          gap:10,maxWidth:"92vw",direction:"ltr"}}>
-          <span style={{fontSize:20}}>
-            {printBanner.type==="success"?"✅":
-             printBanner.type==="error"?"⚠️":"💾"}
-          </span>
-          <span>{printBanner.msg}</span>
+          zIndex:99999,minWidth:300,maxWidth:"min(440px,92vw)",
+          display:"flex",alignItems:"flex-start",gap:12,
+          padding:"14px 16px",borderRadius:14,background:"#fff",
+          border:"1px solid #E6EBF1",borderLeft:`5px solid ${accent}`,
+          boxShadow:"0 12px 48px rgba(15,35,64,0.20)",
+          animation:"bannerIn 0.25s ease",direction:"ltr",fontFamily:"inherit"}}>
+          <div style={{width:34,height:34,flexShrink:0,borderRadius:"50%",background:chip,color:accent,
+            display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,fontWeight:900}}>{glyph}</div>
+          <div style={{minWidth:0,flex:1}}>
+            <div style={{fontSize:14,fontWeight:800,color:"#0F2340",lineHeight:1.3}}>{printBanner.msg}</div>
+            {printBanner.detail&&<div style={{fontSize:12,color:"#5A6B82",marginTop:2,lineHeight:1.4,wordBreak:"break-word"}}>{printBanner.detail}</div>}
+          </div>
+          <button onClick={()=>setPrintBanner(null)} aria-label="Dismiss" style={{flexShrink:0,marginTop:-2,background:"none",border:"none",color:"#9AA7B8",fontSize:20,lineHeight:1,cursor:"pointer",padding:2}}>×</button>
         </div>
-      )}
+        );
+      })()}
       <style>{`
         @keyframes bannerIn{
           from{opacity:0;transform:translateX(-50%) translateY(-16px);}
