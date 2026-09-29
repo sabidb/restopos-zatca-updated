@@ -4062,6 +4062,7 @@ function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1
           <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
             <div style={{color:"#fff",fontSize:15,fontWeight:800}}>💳 Charge & Payment</div>
             <div style={{padding:"3px 10px",background:"rgba(255,255,255,0.15)",borderRadius:20,fontSize:11,color:"rgba(255,255,255,0.9)",fontWeight:700}}>🧾 INV-{vno}</div>
+            <PendingReportBadge/>
             <div style={{padding:"3px 10px",background:"rgba(255,255,255,0.12)",borderRadius:20,fontSize:11,color:"rgba(255,255,255,0.8)",fontWeight:700}}>🎫 Token {isDraft?getDailyToken():getDailyToken()+1}</div>
             <div style={{padding:"3px 10px",background:"rgba(255,255,255,0.08)",borderRadius:20,fontSize:11,color:"rgba(255,255,255,0.5)"}}>{new Date().toLocaleTimeString("en-SA",{hour:"2-digit",minute:"2-digit"})}</div>
           </div>
@@ -15936,6 +15937,41 @@ if(TRIAL){
 // The urgent state is deliberately distinct: ZATCA requires a simplified
 // invoice to reach them within 24 hours, so an item approaching that deadline
 // is a different problem from one that failed a minute ago.
+// Small live badge shown right next to the invoice number: how many signed
+// invoices are still waiting to be reported to ZATCA (FATOORA). Reads the same
+// queue the auto-sync drains, and refreshes on a timer and whenever an invoice
+// is generated ("restopos-invoice") or a report resolves (ZATCA_NOTIFY_EVENT),
+// so the count drops on its own as reporting completes. Renders nothing when
+// there is nothing pending (all reported) or when Phase 2 is off.
+function PendingReportBadge({compact}){
+  const [n,setN]=useState(0);
+  useEffect(()=>{
+    function refresh(){
+      if(!isPhase2Active()){setN(0);return;}
+      const q=fatooraQueue.getQueue();
+      // "pending report" = anything signed but not yet confirmed reported
+      // (status "pending" plus "failed" retries that are still being retried).
+      setN(q.filter(x=>x.status!=="reported").length);
+    }
+    refresh();
+    const id=setInterval(refresh,15000);
+    window.addEventListener("restopos-invoice",refresh);
+    window.addEventListener(ZATCA_NOTIFY_EVENT,refresh);
+    return()=>{ clearInterval(id);
+      window.removeEventListener("restopos-invoice",refresh);
+      window.removeEventListener(ZATCA_NOTIFY_EVENT,refresh); };
+  },[]);
+  if(n<=0)return null;
+  return (
+    <span title={`${n} invoice(s) signed and given to the customer but not yet reported to FATOORA. They report automatically (on reconnect and every 2 minutes); open Transactions → ZATCA Invoices to send them now.`}
+      style={{fontSize:compact?9:11,background:"rgba(240,165,0,0.95)",color:"#3a2500",
+        padding:compact?"2px 7px":"3px 10px",borderRadius:20,fontWeight:800,whiteSpace:"nowrap",
+        border:"1px solid rgba(240,165,0,0.6)"}}>
+      ⏳ {n} pending report
+    </span>
+  );
+}
+
 function ZatcaStatusChip({viewport}){
   const [state,setState]=useState({phase2:false,pending:0,failed:0,urgent:0});
 
@@ -16888,6 +16924,7 @@ export default function App(){
           {justCameOnline&&<span style={{fontSize:9,background:"rgba(16,185,129,0.3)",color:"#6ee7b7",padding:"3px 8px",borderRadius:4,fontWeight:800,border:"1px solid rgba(16,185,129,0.5)",whiteSpace:"nowrap"}}>🟢 Back Online</span>}
           <span title="Today's token — resets on Close Day" style={{fontSize:9,background:"rgba(240,165,0,0.25)",color:"#FFD27F",padding:"2px 7px",borderRadius:4,fontWeight:800,border:"1px solid rgba(240,165,0,0.45)",whiteSpace:"nowrap"}}>🎫 Token {dailyToken}</span>
           <span title="Last ZATCA invoice number — only real invoices count, not drafts" style={{fontSize:9,background:"rgba(26,107,74,0.35)",color:"#6ee7b7",padding:"2px 7px",borderRadius:4,fontWeight:800,border:"1px solid rgba(26,107,74,0.5)",whiteSpace:"nowrap"}}>🧾 INV-{String(currentICV).padStart(6,"0")}</span>
+          <PendingReportBadge compact/>
           {/* Strict Live indicator — always visible when online (offline shown separately with queue count) */}
           {isOnline&&<span style={{fontSize:8,background:"rgba(46,204,113,0.25)",color:"#7FFAB5",padding:"2px 6px",borderRadius:4,fontWeight:800,border:"1px solid rgba(46,204,113,0.5)",whiteSpace:"nowrap"}}>● LIVE</span>}
 
