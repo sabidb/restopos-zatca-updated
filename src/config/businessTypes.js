@@ -84,5 +84,16 @@ export function getBusinessType(license){
 export function bizProfile(license){ return BUSINESS_TYPES[getBusinessType(license)]||BUSINESS_TYPES[DEFAULT_BUSINESS_TYPE]; }
 // One capability flag, e.g. bizFeature("tables") / bizFeature("kot").
 export function bizFeature(name,license){ return !!bizProfile(license).features[name]; }
+// Effective "can the till take a manual (over-the-counter) payment?".
+// An admin per-client override on the license wins over the business-type
+// default: license.manualBillingDisabled === true  → OFF, === false → ON.
+// Anything else (unset) falls back to the business type's manualBilling flag.
+export function manualBillingEnabled(license){
+  const lic = license || (typeof LS!=="undefined" ? LS.get("restopos_license_v2") : null);
+  const override = lic && lic.manualBillingDisabled;
+  if(override===true) return false;
+  if(override===false) return true;
+  return bizFeature("manualBilling", lic);
+}
 // Kept for compatibility across the app; now derived from the registry.
 export function isSupermarket(license){ return getBusinessType(license)==="supermarket"; }
