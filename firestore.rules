@@ -100,7 +100,12 @@ service cloud.firestore {
         // writable on purpose: the merchant holds the certificates and enters
         // their own VAT number, CR number and National Address. Only the
         // verdict is reserved.
-        'zatcaApproved'
+        'zatcaApproved',
+        // Whether the in-app POS "Pay" (manual/over-the-counter billing) is
+        // switched off for this client. A commercial control the admin panel
+        // manages per client — the subject must not be able to re-enable its
+        // own billing, so it is reserved to the admin exactly like the plan.
+        'manualBillingDisabled'
       ]);
     }
 

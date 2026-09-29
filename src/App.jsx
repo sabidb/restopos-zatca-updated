@@ -20,7 +20,7 @@ import { TODAY } from "./lib/date.js";
 import { logActivity } from "./lib/activity.js";
 import { initSync, debouncedSync, syncKeyToFirestore } from "./lib/sync.js";
 import { getLang, setLangStore, t, dir } from "./i18n/index.js";
-import { BUSINESS_TYPES, DEFAULT_BUSINESS_TYPE, getBusinessType, bizProfile, bizFeature, isSupermarket } from "./config/businessTypes.js";
+import { BUSINESS_TYPES, DEFAULT_BUSINESS_TYPE, getBusinessType, bizProfile, bizFeature, manualBillingEnabled, isSupermarket } from "./config/businessTypes.js";
 import { rolesForProfile, DEFAULT_PINS } from "./config/roles.js";
 import { requiresApproval } from "./lib/permissions.js";
 import { ApprovalGate } from "./components/ApprovalGate.jsx";
@@ -2990,7 +2990,7 @@ function TrialSignup({onClose}){
 
             <label style={labelStyle}>What are you running?</label>
             <div style={{display:"flex",gap:10}}>
-              {[["restaurant","🍽️","Restaurant","Tables, dine-in, kitchen tickets"],["supermarket","🛒","Supermarket","Barcode checkout, weighed items"],["hypermarket","🏬","Hypermarket","Supervisor approvals, loyalty rewards"]].map(([v,icon,label,desc])=>(
+              {[["restaurant","🍽️","Restaurant","Tables, dine-in, kitchen tickets"],["supermarket","🛒","Supermarket","Barcode checkout, weighed items"],["hypermarket","🏬","Hypermarket","Supervisor approvals, loyalty rewards"],["integration","🔌","App Integration","Online orders billed by your app"]].map(([v,icon,label,desc])=>(
                 <button key={v} onClick={()=>set("businessType",v)} type="button"
                   style={{flex:1,padding:"12px",borderRadius:10,border:`2px solid ${form.businessType===v?"#1A6B4A":"rgba(255,255,255,0.15)"}`,background:form.businessType===v?"rgba(26,107,74,0.25)":"rgba(255,255,255,0.05)",color:form.businessType===v?"#7FFAB5":"rgba(255,255,255,0.6)",fontFamily:"inherit",cursor:"pointer",textAlign:"left"}}>
                   <div style={{fontSize:20,marginBottom:4}}>{icon}</div>
@@ -3416,7 +3416,7 @@ function BusinessRegistration({onNext,onLogin,onTryTrial,initial}){
               <div style={{padding:"14px 16px",background:"rgba(26,107,74,0.12)",border:"1px solid rgba(26,107,74,0.35)",borderRadius:12}}>
                 <div style={{fontSize:13,fontWeight:700,color:"#7FFAB5",marginBottom:10}}>{tr("🏬 What type of business is this?")}</div>
                 <div style={{display:"flex",gap:10}}>
-                  {[["restaurant","🍽️","Restaurant","Tables, dine-in, kitchen tickets"],["supermarket","🛒","Supermarket","Barcode checkout, weighed items"],["hypermarket","🏬","Hypermarket","Supervisor approvals, loyalty rewards"]].map(([v,icon,label,desc])=>(
+                  {[["restaurant","🍽️","Restaurant","Tables, dine-in, kitchen tickets"],["supermarket","🛒","Supermarket","Barcode checkout, weighed items"],["hypermarket","🏬","Hypermarket","Supervisor approvals, loyalty rewards"],["integration","🔌","App Integration","Online orders billed by your app"]].map(([v,icon,label,desc])=>(
                     <button key={v} onClick={()=>set("businessType",v)} type="button"
                       style={{flex:1,padding:"12px 12px",borderRadius:10,border:`2px solid ${form.businessType===v?"#1A6B4A":"rgba(255,255,255,0.15)"}`,background:form.businessType===v?"rgba(26,107,74,0.25)":"rgba(255,255,255,0.05)",color:form.businessType===v?"#7FFAB5":"rgba(255,255,255,0.6)",fontFamily:"inherit",cursor:"pointer",textAlign:"start"}}>
                       <div style={{fontSize:20,marginBottom:4}}>{icon}</div>
@@ -5817,7 +5817,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
         <button onClick={()=>{const printed=(sales||[]).filter(s=>s.status!=="voided");if(!printed.length){alert("No previous bills yet");return;}setPrevAllDays(false);setPrevIndex(0);setShowPrevBill(true);}}
           title="Previous bill" style={{padding:"14px 16px",background:C.primaryLight,border:`1.5px solid ${C.primary}44`,color:C.primary,borderRadius:11,fontFamily:"inherit",fontSize:13,fontWeight:800,cursor:"pointer",whiteSpace:"nowrap"}}>🕐 Prev</button>
         {cart.length>0&&<button onClick={()=>{setCart([]);setSelectedRow(null);focusScanner();}} title="Clear cart" style={{padding:"14px 16px",background:"#fff",border:`1.5px solid ${C.danger}44`,color:C.danger,borderRadius:11,fontFamily:"inherit",fontSize:13,fontWeight:800,cursor:"pointer"}}>🗑</button>}
-        <button onClick={()=>{if(cart.length)setShowPayment(true);}} disabled={cart.length===0} style={{flex:1,padding:"14px 0",background:cart.length===0?"#e0e0e0":"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:11,fontFamily:"inherit",fontSize:16,fontWeight:900,cursor:cart.length===0?"not-allowed":"pointer"}}>💳 Pay {cart.length>0?fmtSAR(total):""}</button>
+        <button onClick={()=>{if(cart.length&&manualBillingEnabled())setShowPayment(true);}} disabled={cart.length===0||!manualBillingEnabled()} title={!manualBillingEnabled()?"Manual billing is off for this account — orders are billed by your connected app":undefined} style={{flex:1,padding:"14px 0",background:(cart.length===0||!manualBillingEnabled())?"#e0e0e0":"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:11,fontFamily:"inherit",fontSize:16,fontWeight:900,cursor:(cart.length===0||!manualBillingEnabled())?"not-allowed":"pointer"}}>{manualBillingEnabled()?<>💳 Pay {cart.length>0?fmtSAR(total):""}</>:"🔌 Billed by app"}</button>
       </div>
     </div>
   );
@@ -6340,7 +6340,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
                 setPrevAllDays(false);setPrevIndex(0);setShowPrevBill(true);
               }}
               title="Previous bill" style={{padding:"12px 14px",background:"rgba(26,107,74,0.1)",border:"1.5px solid rgba(26,107,74,0.3)",color:"#1A6B4A",borderRadius:10,fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>🕐 Prev</button>
-            <button onClick={()=>setShowPayment(true)} disabled={cart.length===0} style={{flex:2,padding:"12px 0",background:cart.length===0?"#e0e0e0":"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:10,fontFamily:"inherit",fontSize:14,fontWeight:800,cursor:cart.length===0?"not-allowed":"pointer"}}>💳 Pay {cart.length>0?fmtSAR(total):""}</button>
+            <button onClick={()=>{if(manualBillingEnabled())setShowPayment(true);}} disabled={cart.length===0||!manualBillingEnabled()} title={!manualBillingEnabled()?"Manual billing is off for this account — orders are billed by your connected app":undefined} style={{flex:2,padding:"12px 0",background:(cart.length===0||!manualBillingEnabled())?"#e0e0e0":"linear-gradient(135deg,#1A6B4A,#134D36)",color:"#fff",border:"none",borderRadius:10,fontFamily:"inherit",fontSize:14,fontWeight:800,cursor:(cart.length===0||!manualBillingEnabled())?"not-allowed":"pointer"}}>{manualBillingEnabled()?<>💳 Pay {cart.length>0?fmtSAR(total):""}</>:"🔌 Billed by app"}</button>
           </div>
           <button onClick={()=>{setCart([]);setSelectedRow(null);}} style={{width:"100%",marginTop:8,padding:"8px 0",background:"transparent",color:C.danger,border:`1px solid ${C.danger}30`,borderRadius:8,fontFamily:"inherit",fontSize:12,fontWeight:600,cursor:"pointer"}}>🗑 Clear Cart</button>
         </div>
@@ -16459,7 +16459,7 @@ export default function App(){
         const prevPlanRaw=LS.get("restopos_license_v2")?.subscriptionPlan; // undefined on very first sync
         const nextPlan=data.subscriptionPlan||"basic";
         const prevLicSnap=LS.get("restopos_license_v2");
-        const updatedLic={...prevLicSnap,subscriptionPlan:nextPlan,ownerName:data.ownerName||"",phone:data.phone||savedLic.phone||"",businessType:data.businessType||prevLicSnap?.businessType||"restaurant",activatedAt:data.activatedAt||prevLicSnap?.activatedAt||null,submittedAt:data.submittedAt||prevLicSnap?.submittedAt||null,premiumTrialStart:data.premiumTrialStart||null,premiumTrialUntil:data.premiumTrialUntil||null,premiumTrialUsed:!!data.premiumTrialUsed};
+        const updatedLic={...prevLicSnap,subscriptionPlan:nextPlan,ownerName:data.ownerName||"",phone:data.phone||savedLic.phone||"",businessType:data.businessType||prevLicSnap?.businessType||"restaurant",manualBillingDisabled:(typeof data.manualBillingDisabled==="boolean"?data.manualBillingDisabled:(prevLicSnap?.manualBillingDisabled??null)),activatedAt:data.activatedAt||prevLicSnap?.activatedAt||null,submittedAt:data.submittedAt||prevLicSnap?.submittedAt||null,premiumTrialStart:data.premiumTrialStart||null,premiumTrialUntil:data.premiumTrialUntil||null,premiumTrialUsed:!!data.premiumTrialUsed};
         LS.set("restopos_license_v2",updatedLic);
         setLicense(updatedLic);
         // A new Premium trial just landed → gift celebration (once per trial).
