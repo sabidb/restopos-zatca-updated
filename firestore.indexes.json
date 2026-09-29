@@ -24,19 +24,6 @@
   "indexes": [
     {
       "//": [
-        "listExternalOrders: one tenant's online orders, newest first, for the",
-        "Online Integrations dashboard. Status is filtered in memory so a single",
-        "composite index serves the query."
-      ],
-      "collectionGroup": "external_orders",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "licenseKey", "order": "ASCENDING" },
-        { "fieldPath": "receivedAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "//": [
         "zatcaChain: this tenant's chain head and recent invoices.",
         "MISSING in production as of 2026-07-28 — this deploy creates it. Until",
         "then the chain lookup fails with FAILED_PRECONDITION and a till that",
