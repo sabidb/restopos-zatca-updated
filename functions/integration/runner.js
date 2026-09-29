@@ -73,7 +73,9 @@ async function nextSerial(licenseKey) {
 }
 
 // Best-effort outbound webhook with a recorded delivery. Never throws.
-async function deliverWebhook(integration, order, event, extra) {
+// `doFetch` is injectable so tests can stub the network without touching the
+// production default.
+async function deliverWebhook(integration, order, event, extra, doFetch = fetch) {
   const url = integration && integration.webhookUrl;
   const body = buildWebhookEvent(event, order, extra);
   const bodyStr = JSON.stringify(body);
@@ -85,7 +87,7 @@ async function deliverWebhook(integration, order, event, extra) {
     if (!url) { rec.status = "skipped"; rec.detail = "No webhook URL configured."; }
     else {
       const sig = signWebhook(integration.webhookSecret || "", bodyStr);
-      const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json", "X-Restopos-Signature": sig.header, "X-Restopos-Event": event }, body: bodyStr });
+      const res = await doFetch(url, { method: "POST", headers: { "Content-Type": "application/json", "X-Restopos-Signature": sig.header, "X-Restopos-Event": event }, body: bodyStr });
       rec.status = res.ok ? "delivered" : "failed";
       rec.httpStatus = res.status;
     }
@@ -100,6 +102,11 @@ async function deliverWebhook(integration, order, event, extra) {
  * second concurrent/retried call cannot double-invoice.
  */
 export async function runInvoiceForOrder(orderRef, integration, opts = {}) {
+  // Network dependencies are injectable so integration tests can exercise the
+  // real Firestore transactions/state while stubbing the external ZATCA + auth
+  // calls. Production passes nothing and uses the real implementations.
+  const doFetch = opts.fetchImpl || fetch;
+  const getAuthHeader = opts.authHeaderImpl || ownerAuthHeader;
   const snap = await orderRef.get();
   if (!snap.exists) throw new HttpsError("not-found", "Order not found.");
   const order = snap.data();
@@ -138,15 +145,15 @@ export async function runInvoiceForOrder(orderRef, integration, opts = {}) {
   const totals = checkInvoiceTotals(canonical, built.computed);
   if (!totals.ok && !opts.overrideMismatch) {
     await orderRef.update({ invoiceStatus: "FAILED", invoiceError: totals.notes.join(" "), invoiceFailedAt: new Date().toISOString() });
-    await deliverWebhook(integration, order, WEBHOOK_EVENTS.INVOICE_FAILED, { error: totals.notes.join(" ") });
+    await deliverWebhook(integration, order, WEBHOOK_EVENTS.INVOICE_FAILED, { error: totals.notes.join(" ") }, doFetch);
     throw new HttpsError("failed-precondition", "Built invoice total does not match the order: " + totals.notes.join(" "));
   }
 
   // Call the existing zatca-service as the license owner.
   let data, res;
   try {
-    const authHeader = await ownerAuthHeader(order.licenseKey);
-    res = await fetch(`${ZATCA_SERVICE_URL}/zatca/${built.endpoint}`, {
+    const authHeader = await getAuthHeader(order.licenseKey);
+    res = await doFetch(`${ZATCA_SERVICE_URL}/zatca/${built.endpoint}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: authHeader },
       body: JSON.stringify(built.request),
@@ -154,7 +161,7 @@ export async function runInvoiceForOrder(orderRef, integration, opts = {}) {
     data = await res.json().catch(() => ({}));
   } catch (e) {
     await orderRef.update({ invoiceStatus: "FAILED", invoiceError: String(e.message || e), invoiceFailedAt: new Date().toISOString() });
-    await deliverWebhook(integration, order, WEBHOOK_EVENTS.INVOICE_FAILED, { error: String(e.message || e) });
+    await deliverWebhook(integration, order, WEBHOOK_EVENTS.INVOICE_FAILED, { error: String(e.message || e) }, doFetch);
     throw new HttpsError("unavailable", "Could not reach the ZATCA service: " + (e.message || e));
   }
 
@@ -164,7 +171,7 @@ export async function runInvoiceForOrder(orderRef, integration, opts = {}) {
     const detail = Array.isArray(data.details) ? data.details.map((d) => `${d.field}: ${d.message}`).join("; ")
       : (data.error || `ZATCA service returned ${res.status}`);
     await orderRef.update({ invoiceStatus: "FAILED", invoiceError: detail, invoiceFailedAt: new Date().toISOString() });
-    await deliverWebhook(integration, order, WEBHOOK_EVENTS.INVOICE_FAILED, { error: detail });
+    await deliverWebhook(integration, order, WEBHOOK_EVENTS.INVOICE_FAILED, { error: detail }, doFetch);
     throw new HttpsError("internal", "ZATCA invoicing failed: " + detail);
   }
 
@@ -193,7 +200,7 @@ export async function runInvoiceForOrder(orderRef, integration, opts = {}) {
   await orderRef.update(invoiceRecord);
   await deliverWebhook(integration, { ...order, ...invoiceRecord }, built.endpoint === "clearance" ? WEBHOOK_EVENTS.INVOICE_CLEARED : WEBHOOK_EVENTS.INVOICE_REPORTED, {
     invoice_number: serialNumber, icv: data.icv ?? null,
-  });
+  }, doFetch);
 
   return { ok: true, invoiceStatus: finalStatus, serialNumber, endpoint: built.endpoint, computed: built.computed, warnings: built.warnings };
 }
