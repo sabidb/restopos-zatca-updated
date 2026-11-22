@@ -16,6 +16,7 @@ import { TERMS_VERSION, TERMS_TITLE, TERMS_DATE, TERMS_PDF_PATH, TERMS_PREAMBLE,
 import { C } from "./lib/theme.js";
 import { LS } from "./lib/storage.js";
 import { fmtSAR, fmtDate, fmtDateTime } from "./lib/format.js";
+import { vatFromInclusive, netFromInclusive, vatFromInclusiveRaw } from "./lib/tax.js";
 import { TODAY } from "./lib/date.js";
 import { logActivity } from "./lib/activity.js";
 import { initSync, debouncedSync, syncKeyToFirestore } from "./lib/sync.js";
@@ -291,8 +292,8 @@ function generateUBLXML(invoice) {
 
   const lineItems = (items || []).map((item, idx) => {
     const lineTotal = (item.price * item.qty);
-    const lineVAT = parseFloat((lineTotal * (15 / 115)).toFixed(2));
-    const lineExclVAT = parseFloat((lineTotal - lineVAT).toFixed(2));
+    const lineVAT = vatFromInclusive(lineTotal);
+    const lineExclVAT = netFromInclusive(lineTotal);
     return `<cac:InvoiceLine><cbc:ID>${idx+1}</cbc:ID><cbc:InvoicedQuantity unitCode="PCE">${item.qty}</cbc:InvoicedQuantity><cbc:LineExtensionAmount currencyID="SAR">${lineExclVAT.toFixed(2)}</cbc:LineExtensionAmount><cac:TaxTotal><cbc:TaxAmount currencyID="SAR">${lineVAT.toFixed(2)}</cbc:TaxAmount></cac:TaxTotal><cac:Item><cbc:Name>${escapeXML(item.name)}</cbc:Name><cac:ClassifiedTaxCategory><cbc:ID>S</cbc:ID><cbc:Percent>15</cbc:Percent><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:ClassifiedTaxCategory></cac:Item><cac:Price><cbc:PriceAmount currencyID="SAR">${item.price.toFixed(2)}</cbc:PriceAmount></cac:Price></cac:InvoiceLine>`;
   }).join("");
 
@@ -849,8 +850,8 @@ async function generateZATCAInvoice({seller_name,seller_vat,seller_address,selle
   const discountFactor = grossInclusive>0 ? (grossInclusive-discountAmt)/grossInclusive : 1;
   if(discountFactor!==1) items = items.map(i=>({...i,price:i.price*discountFactor}));
   const total = parseFloat((grossInclusive-discountAmt).toFixed(2));
-  const vat_amount = parseFloat((total*(15/115)).toFixed(2));
-  const subtotal = parseFloat((total-vat_amount).toFixed(2));
+  const vat_amount = vatFromInclusive(total);
+  const subtotal = netFromInclusive(total);
   const prev_invoice_hash = invoiceStorage.getLastHash();
   // Buyer address is carried on the invoice because ZATCA requires it on every
   // standard (B2B) document — street, city and postal code are mandatory, and a
@@ -3930,8 +3931,8 @@ function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1
   // the discount (which is computed on the subtotal, unchanged), then derive VAT
   // from the resulting inclusive amount with 15/115 so everything stays consistent.
   const finalTotal=parseFloat((Math.max(0,_origTotal-totalDiscountAmt)).toFixed(2));
-  const finalVat=parseFloat((finalTotal*(15/115)).toFixed(2));
-  const discountedSubtotal=parseFloat((finalTotal-finalVat).toFixed(2));
+  const finalVat=vatFromInclusive(finalTotal);
+  const discountedSubtotal=netFromInclusive(finalTotal);
 
   // Cash defaults to the EXACT amount automatically; user can still type a different amount.
   useEffect(()=>{
@@ -5258,7 +5259,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     if(!priceCheck) addToCart(item);
   }
   useEffect(()=>{ if(superMode) setTimeout(()=>barcodeRef.current?.focus(),200); },[superMode]);
-  const total=cart.reduce((s,i)=>s+i.price*i.qty,0);const vat=parseFloat((total*(15/115)).toFixed(2));const subtotal=parseFloat((total-vat).toFixed(2));
+  const total=cart.reduce((s,i)=>s+i.price*i.qty,0);const vat=vatFromInclusive(total);const subtotal=netFromInclusive(total);
   function addToCart(item){
     // Weighed item (price is per-kg): open the weight modal. qty carries the
     // weight in kg, so line total (price*qty) stays correct; each weigh is a line.
@@ -9005,7 +9006,7 @@ function Reports({sales,allSales,items,setSales,lang="en",license,archiveIndex={
       catMap[cat].qty+=(it.qty||0);
       catMap[cat].revenue+=lineTotal;
       // VAT portion of an inclusive price: total × 15/115
-      catMap[cat].tax+=lineTotal*15/115;
+      catMap[cat].tax+=vatFromInclusiveRaw(lineTotal);
     }));
     const catList=Object.values(catMap).sort((a,b)=>b.revenue-a.revenue);
     const expenses=(LS.get("restopos_expenses")||[]).filter(e=>e.date===dateStr);
@@ -12314,7 +12315,7 @@ function ZATCASetup({license,sales=[]}){
     const yr = (s.date||"").slice(0,4);
     if(!yr) return;
     const total = s.total||0;
-    const vat = s.vat||(total*15/115);
+    const vat = s.vat||vatFromInclusiveRaw(total);
     const taxable = total - vat; // VAT-exclusive taxable revenue
     posRevenueByYear[yr] = (posRevenueByYear[yr]||0) + taxable;
   });
@@ -13071,7 +13072,7 @@ const zr2=v=>zatcaRound(v,2);
 function extractVATInclusive(total,rate=0.15){if(rate===0)return{net:zr2(total),vat:0,total:zr2(total)};const net=zr2(total/(1+rate));return{net,vat:zr2(total-net),total:zr2(total)};}
 const ZATCA_PEN={not_issuing:{fixed:5000,pct:0,label:"Not issuing e-invoice (per invoice)"},not_storing:{fixed:5000,pct:0,label:"Not storing e-invoice electronically"},bad_qr:{fixed:10000,pct:0,label:"Non-compliant or missing QR code"},modifying:{fixed:10000,pct:0,label:"Deleting or modifying an e-invoice"},late_reg:{fixed:10000,pct:0,label:"Failure to register for VAT on time"},late_return:{fixed:0,pct:0.05,label:"Late VAT return (5% of unpaid tax)"},incorrect_return:{fixed:0,pct:0.50,label:"Incorrect VAT return (50% of tax difference)"}};
 function calcPen(type,tax=0){const r=ZATCA_PEN[type];if(!r)return 0;return zr2(Math.min(r.fixed+(tax*r.pct),50000));}
-function aggVAT(sales=[],year=""){const f=year?sales.filter(s=>(s.date||"").startsWith(year)):sales;let out=0,gross=0,net=0;const byMo={};f.forEach(s=>{const t=s.total||0;const v=s.vat||(t*15/115);const n=t-v;out+=v;gross+=t;net+=n;const mo=(s.date||"").slice(0,7);if(!byMo[mo])byMo[mo]={gross:0,vat:0,net:0,count:0};byMo[mo].gross+=t;byMo[mo].vat+=v;byMo[mo].net+=n;byMo[mo].count++;});return{out:zr2(out),gross:zr2(gross),net:zr2(net),byMo,count:f.length};}
+function aggVAT(sales=[],year=""){const f=year?sales.filter(s=>(s.date||"").startsWith(year)):sales;let out=0,gross=0,net=0;const byMo={};f.forEach(s=>{const t=s.total||0;const v=s.vat||vatFromInclusiveRaw(t);const n=t-v;out+=v;gross+=t;net+=n;const mo=(s.date||"").slice(0,7);if(!byMo[mo])byMo[mo]={gross:0,vat:0,net:0,count:0};byMo[mo].gross+=t;byMo[mo].vat+=v;byMo[mo].net+=n;byMo[mo].count++;});return{out:zr2(out),gross:zr2(gross),net:zr2(net),byMo,count:f.length};}
 const VCATS=[{code:"S",label:"Standard Rated",labelAr:"خاضع للضريبة",rate:"15%",color:"#1A6B4A",bg:"#E8F5F0",desc:"All restaurant food & beverage sales in KSA. Default rate since 1 Jul 2020.",rec:true,ex:"Meals, drinks, delivery, catering, service charges"},{code:"Z",label:"Zero Rated",labelAr:"معدل الصفر",rate:"0%",color:"#1565C0",bg:"#E3F2FD",desc:"Exports outside GCC, international transport, qualifying medicines. Input VAT still recoverable.",rec:true,ex:"Exported goods, international shipping"},{code:"E",label:"Exempt",labelAr:"معفاة",rate:"0%",color:"#7B1FA2",bg:"#F3E5F5",desc:"Residential rental, certain financial services, life insurance. Input VAT NOT recoverable.",rec:false,ex:"Residential rent, life insurance"},{code:"O",label:"Out of Scope",labelAr:"خارج النطاق",rate:"N/A",color:"#616161",bg:"#F5F5F5",desc:"Wages, dividends, government statutory fees. Not subject to VAT at all.",rec:false,ex:"Employee salaries, government fees"}];
 
 function ZATCAVATGuide({sales=[]}){
@@ -13257,7 +13258,7 @@ function InvoiceEnhancements({sales,items,license,company}){
     const subtotal=quoteItems.reduce((s,it)=>s+it.price*it.qty,0);
     const discount=parseFloat(quoteForm.discount)||0;
     const afterDisc=Math.max(0,subtotal-discount);
-    const vat=parseFloat((afterDisc*(15/115)).toFixed(2));
+    const vat=vatFromInclusive(afterDisc);
     const q={...quoteForm,id:editQuote?editQuote.id:Date.now(),createdAt:editQuote?.createdAt||now,updatedAt:now,items:quoteItems,subtotal,discount,vat,total:afterDisc,quoteNumber:editQuote?.quoteNumber||(quoteForm.type==="proforma"?`PRO-${String(Date.now()).slice(-6)}`:`QUO-${String(Date.now()).slice(-6)}`)};
     saveQuotations(editQuote?quotations.map(x=>x.id===editQuote.id?q:x):[q,...quotations]);
     setShowQuoteModal(false);
