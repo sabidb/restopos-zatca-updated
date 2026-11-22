@@ -16,6 +16,10 @@ import { TERMS_VERSION, TERMS_TITLE, TERMS_DATE, TERMS_PDF_PATH, TERMS_PREAMBLE,
 import { C } from "./lib/theme.js";
 import { LS } from "./lib/storage.js";
 import { fmtSAR, fmtDate, fmtDateTime } from "./lib/format.js";
+import { vatFromInclusive, netFromInclusive, vatFromInclusiveRaw } from "./lib/tax.js";
+import { findByBarcode, findAllByBarcode, productBarcodes, parseBarcodeInput } from "./lib/barcode.js";
+import { parseCSV } from "./lib/csv.js";
+import { classifyImport, mergeUpdate } from "./lib/importPlan.js";
 import { TODAY } from "./lib/date.js";
 import { logActivity } from "./lib/activity.js";
 import { initSync, debouncedSync, syncKeyToFirestore } from "./lib/sync.js";
@@ -291,8 +295,8 @@ function generateUBLXML(invoice) {
 
   const lineItems = (items || []).map((item, idx) => {
     const lineTotal = (item.price * item.qty);
-    const lineVAT = parseFloat((lineTotal * (15 / 115)).toFixed(2));
-    const lineExclVAT = parseFloat((lineTotal - lineVAT).toFixed(2));
+    const lineVAT = vatFromInclusive(lineTotal);
+    const lineExclVAT = netFromInclusive(lineTotal);
     return `<cac:InvoiceLine><cbc:ID>${idx+1}</cbc:ID><cbc:InvoicedQuantity unitCode="PCE">${item.qty}</cbc:InvoicedQuantity><cbc:LineExtensionAmount currencyID="SAR">${lineExclVAT.toFixed(2)}</cbc:LineExtensionAmount><cac:TaxTotal><cbc:TaxAmount currencyID="SAR">${lineVAT.toFixed(2)}</cbc:TaxAmount></cac:TaxTotal><cac:Item><cbc:Name>${escapeXML(item.name)}</cbc:Name><cac:ClassifiedTaxCategory><cbc:ID>S</cbc:ID><cbc:Percent>15</cbc:Percent><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:ClassifiedTaxCategory></cac:Item><cac:Price><cbc:PriceAmount currencyID="SAR">${item.price.toFixed(2)}</cbc:PriceAmount></cac:Price></cac:InvoiceLine>`;
   }).join("");
 
@@ -849,8 +853,8 @@ async function generateZATCAInvoice({seller_name,seller_vat,seller_address,selle
   const discountFactor = grossInclusive>0 ? (grossInclusive-discountAmt)/grossInclusive : 1;
   if(discountFactor!==1) items = items.map(i=>({...i,price:i.price*discountFactor}));
   const total = parseFloat((grossInclusive-discountAmt).toFixed(2));
-  const vat_amount = parseFloat((total*(15/115)).toFixed(2));
-  const subtotal = parseFloat((total-vat_amount).toFixed(2));
+  const vat_amount = vatFromInclusive(total);
+  const subtotal = netFromInclusive(total);
   const prev_invoice_hash = invoiceStorage.getLastHash();
   // Buyer address is carried on the invoice because ZATCA requires it on every
   // standard (B2B) document — street, city and postal code are mandatory, and a
@@ -3930,8 +3934,8 @@ function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1
   // the discount (which is computed on the subtotal, unchanged), then derive VAT
   // from the resulting inclusive amount with 15/115 so everything stays consistent.
   const finalTotal=parseFloat((Math.max(0,_origTotal-totalDiscountAmt)).toFixed(2));
-  const finalVat=parseFloat((finalTotal*(15/115)).toFixed(2));
-  const discountedSubtotal=parseFloat((finalTotal-finalVat).toFixed(2));
+  const finalVat=vatFromInclusive(finalTotal);
+  const discountedSubtotal=netFromInclusive(finalTotal);
 
   // Cash defaults to the EXACT amount automatically; user can still type a different amount.
   useEffect(()=>{
@@ -5258,7 +5262,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     if(!priceCheck) addToCart(item);
   }
   useEffect(()=>{ if(superMode) setTimeout(()=>barcodeRef.current?.focus(),200); },[superMode]);
-  const total=cart.reduce((s,i)=>s+i.price*i.qty,0);const vat=parseFloat((total*(15/115)).toFixed(2));const subtotal=parseFloat((total-vat).toFixed(2));
+  const total=cart.reduce((s,i)=>s+i.price*i.qty,0);const vat=vatFromInclusive(total);const subtotal=netFromInclusive(total);
   function addToCart(item){
     // Weighed item (price is per-kg): open the weight modal. qty carries the
     // weight in kg, so line total (price*qty) stays correct; each weigh is a line.
@@ -5277,10 +5281,25 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   function showN(msg){setNotif(msg);setTimeout(()=>setNotif(null),1500);}
   function handleBarcodeSearch(code){
     const c=code.trim();
-    // Match by barcode first, then fall back to a name match — barcode-friendly
-    // everywhere. On a hit, surface the full item card; on a miss, show the code.
-    const item=items.find(i=>String(i.barcode||"")===c) || items.find(i=>i.name?.toLowerCase()===c.toLowerCase());
     setBarcodeInput("");
+    // Match by barcode first, then fall back to an active name match — barcode-
+    // friendly everywhere. On a hit, surface the full item card; on a miss, show
+    // the code. Inactive products are never added; an ambiguous (shared) barcode
+    // warns instead of silently guessing.
+    const bMatches=findAllByBarcode(items,c);
+    const bActive=bMatches.filter(i=>i.active!==false);
+    let item=null;
+    if(bActive.length>=1){
+      item=bActive[0];
+      if(bActive.length>1) showN(`⚠️ ${bActive.length} products share this barcode — using “${item.name}”. Fix in Products.`);
+    } else if(bMatches.length>0){
+      // only inactive product(s) carry this barcode — do not sell it
+      showN(`⛔ “${bMatches[0].name}” is inactive — not added.`);
+      if(!priceCheck) focusScanner();
+      return;
+    } else {
+      item=items.find(i=>i.name?.toLowerCase()===c.toLowerCase() && i.active!==false);
+    }
     if(item){ setScanMiss(""); setScannedItem(item); }
     else if(priceCheck){ showN("❌ No product for “"+c+"”"); focusScanner(); }
     else { setNewProd({barcode:c,name:"",price:"",category:posCats[0]||"General",weighed:false}); } // unknown → offer create
@@ -6409,7 +6428,7 @@ function GlobalScanPopup({items,active}){
   },[active,items]);
   function show(codeRaw){
     const code=codeRaw.trim();
-    const item=items.find(i=>String(i.barcode||"")===code)||items.find(i=>i.name?.toLowerCase()===code.toLowerCase());
+    const item=findByBarcode(items,code)||items.find(i=>i.name?.toLowerCase()===code.toLowerCase());
     setHit(item?{item,t:Date.now()}:{miss:code,t:Date.now()});
     if(timer.current)clearTimeout(timer.current);
     timer.current=setTimeout(()=>setHit(null),3000);
@@ -8318,7 +8337,7 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
   const [categories,setCategories]=useState(()=>LS.get("restopos_categories")||SEED_CATEGORIES);const [newCat,setNewCat]=useState("");
   function saveCategories(newList){setCategories(newList);LS.set("restopos_categories",newList);const _lic_cat=LS.get("restopos_license_v2")?.licenseKey;if(_lic_cat)debouncedSync(_lic_cat,"restopos_categories",newList);}
   function addCategory(){const trimmed=newCat.trim();if(!trimmed)return alert("Category name cannot be empty");if(categories.includes(trimmed))return alert("Category already exists");saveCategories([...categories,trimmed]);setNewCat("");}
-  const [showImport,setShowImport]=useState(false);const [importRows,setImportRows]=useState([]);const [importError,setImportError]=useState("");const [importDone,setImportDone]=useState(false);
+  const [showImport,setShowImport]=useState(false);const [importRows,setImportRows]=useState([]);const [importError,setImportError]=useState("");const [importDone,setImportDone]=useState(false);const [importUpdateExisting,setImportUpdateExisting]=useState(false);
   const blankItem={name:"",nameAr:"",category:categories[0],price:"",cost:"",stock:"",active:true,barcode:"",weighed:false};const [itemForm,setItemForm]=useState(blankItem);
   const allowWeighing=bizFeature("weighing"); // show the per-kg option only for types that weigh goods
   const blankPromo={code:"",type:"%",value:"",minOrder:0,active:true};const [promoForm,setPromoForm]=useState(blankPromo);const barcodeRef=useRef();
@@ -8330,7 +8349,7 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
   const [itemCatFilter,setItemCatFilter]=useState("All");
   const filteredItems=items.filter(it=>{
     const q=itemSearch.trim().toLowerCase();
-    const matchQ=!q||it.name?.toLowerCase().includes(q)||it.nameAr?.includes(itemSearch.trim())||String(it.barcode||"").includes(q);
+    const matchQ=!q||it.name?.toLowerCase().includes(q)||it.nameAr?.includes(itemSearch.trim())||productBarcodes(it).some(b=>b.includes(q));
     const matchCat=itemCatFilter==="All"||it.category===itemCatFilter;
     return matchQ&&matchCat;
   });
@@ -8349,14 +8368,16 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
     setTranslating(false);
   }
   function saveItem(){if(!itemForm.name||!itemForm.price)return alert("Name and price required");const item={...itemForm,price:parseFloat(itemForm.price),cost:parseFloat(itemForm.cost||0),stock:parseInt(itemForm.stock||0),id:editItem?editItem.id:Date.now()};setItems(prev=>editItem?prev.map(i=>i.id===editItem.id?item:i):[...prev,item]);setShowItemModal(false);}
-  function openBarcodeModal(it){setBarcodeItem(it);setBarcodeInput(it.barcode||"");setShowBarcodeModal(true);setTimeout(()=>barcodeRef.current?.focus(),100);}
-  function saveBarcode(){setItems(prev=>prev.map(i=>i.id===barcodeItem.id?{...i,barcode:barcodeInput.trim()}:i));setShowBarcodeModal(false);alert("Barcode saved!");}
+  function openBarcodeModal(it){setBarcodeItem(it);setBarcodeInput(productBarcodes(it).join(", "));setShowBarcodeModal(true);setTimeout(()=>barcodeRef.current?.focus(),100);}
+  function saveBarcode(){const {primary,extra}=parseBarcodeInput(barcodeInput);setItems(prev=>prev.map(i=>i.id===barcodeItem.id?{...i,barcode:primary,barcodes:extra}:i));setShowBarcodeModal(false);alert("Barcode saved!");}
   function openPromoModal(p=null){setEditPromo(p);setPromoForm(p?{...p}:{...blankPromo});setShowPromoModal(true);}
   function savePromo(){if(!promoForm.code||!promoForm.value)return alert("Code and value required");const promo={...promoForm,value:parseFloat(promoForm.value),minOrder:parseFloat(promoForm.minOrder||0),id:editPromo?editPromo.id:Date.now()};setPromos(prev=>editPromo?prev.map(p=>p.id===editPromo.id?promo:p):[...prev,promo]);setShowPromoModal(false);}
 
   function downloadTemplate(){
-    const csv="name,nameAr,category,price,cost,stock,barcode\nChicken Burger,برجر دجاج,Burgers,28,12,50,\nFrench Fries,بطاطس,Sides,10,3,100,\n";
-    const blob=new Blob([csv],{type:"text/csv"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="menu-import-template.csv";a.click();
+    // Stock is intentionally NOT a column — opening stock is set separately.
+    // Values containing a comma must be wrapped in double quotes (see the first row).
+    const csv='name,nameAr,category,price,cost,barcode\n"Rice, Basmati 5kg",أرز بسمتي,Grocery,45,30,6281000000001\nFrench Fries,بطاطس,Sides,10,3,\n';
+    const blob=new Blob(['﻿'+csv],{type:"text/csv;charset=utf-8"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="products-import-template.csv";a.click();
   }
   function handleImportFile(e){
     setImportError("");setImportRows([]);setImportDone(false);
@@ -8369,12 +8390,8 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
         if(file.name.endsWith(".json")){
           const parsed=JSON.parse(text);rows=Array.isArray(parsed)?parsed:[];
         } else {
-          const lines=text.trim().split("\n");
-          const headers=lines[0].split(",").map(h=>h.trim().toLowerCase());
-          rows=lines.slice(1).filter(l=>l.trim()).map(line=>{
-            const vals=line.split(",").map(v=>v.trim());
-            const obj={};headers.forEach((h,i)=>obj[h]=vals[i]||"");return obj;
-          });
+          // RFC-4180 CSV: quoted commas, "" escapes, CRLF and BOM all handled.
+          rows=parseCSV(text).rows;
         }
         const valid=rows.filter(r=>r.name&&r.price&&!isNaN(parseFloat(r.price)));
         if(valid.length===0){setImportError("No valid rows found. Make sure your file has 'name' and 'price' columns.");return;}
@@ -8385,8 +8402,16 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
     e.target.value="";
   }
   function confirmImport(){
-    const newItems=importRows.map(r=>({id:Date.now()+Math.random(),name:r.name||"",nameAr:r.namear||r.nameAr||"",category:r.category||categories[0],price:parseFloat(r.price)||0,cost:parseFloat(r.cost||0),stock:parseInt(r.stock||0),active:true,barcode:r.barcode||""}));
-    setItems(prev=>[...prev,...newItems]);setImportDone(true);setTimeout(()=>{setShowImport(false);setImportRows([]);setImportDone(false);},1500);
+    // Plan the import against the current catalogue so a re-run can't create
+    // duplicates: matched products are updated (only if the user opted in) or
+    // skipped, in-file duplicates are dropped, and new products are created.
+    // Catalogue import never sets stock — opening stock is a separate, authorised
+    // workflow — so new products start at 0.
+    const plan=classifyImport(importRows,items,{updateExisting:importUpdateExisting});
+    const newItems=plan.create.map(({row:r})=>({id:Date.now()+Math.random(),name:r.name||"",nameAr:r.namear||r.nameAr||"",category:r.category||categories[0],price:parseFloat(r.price)||0,cost:parseFloat(r.cost||0),stock:0,active:true,barcode:r.barcode||""}));
+    const updatedById=new Map(plan.update.map(({existing,row})=>[existing.id,mergeUpdate(existing,row)]));
+    setItems(prev=>[...prev.map(it=>updatedById.get(it.id)||it),...newItems]);
+    setImportDone(true);setTimeout(()=>{setShowImport(false);setImportRows([]);setImportDone(false);},1800);
   }
 
   return(<div>
@@ -8415,8 +8440,8 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
       <div style={{display:"flex",gap:10,marginTop:16}}><Btn variant="ghost" onClick={()=>setShowItemModal(false)} style={{flex:1}}>Cancel</Btn><Btn onClick={saveItem} style={{flex:1}}>Save Item</Btn></div>
     </Modal>}
     {showBarcodeModal&&barcodeItem&&<Modal title={`🔲 Add Barcode — ${barcodeItem.name}`} onClose={()=>setShowBarcodeModal(false)} width={420}>
-      <div style={{fontSize:13,color:C.textMid,marginBottom:16}}>Scan the barcode with your scanner or type it manually. Press Enter or click Save.</div>
-      <input ref={barcodeRef} value={barcodeInput} onChange={e=>setBarcodeInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")saveBarcode();}} placeholder="Scan barcode here…" style={{width:"100%",padding:"14px 16px",border:`2px solid ${C.zatca}`,borderRadius:10,fontSize:18,fontFamily:"monospace",fontWeight:700,textAlign:"center",color:C.text,background:C.zatcaLight}} autoFocus/>
+      <div style={{fontSize:13,color:C.textMid,marginBottom:16}}>Scan one or more barcodes one after another (each scan is added), or type codes separated by commas. The first code is the primary barcode. Click <strong>Save Barcode</strong> when done.</div>
+      <input ref={barcodeRef} value={barcodeInput} onChange={e=>setBarcodeInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();setBarcodeInput(v=>v.trim()?v.replace(/[\s,;]+$/,"")+", ":v);}}} placeholder="Scan barcode here…" style={{width:"100%",padding:"14px 16px",border:`2px solid ${C.zatca}`,borderRadius:10,fontSize:18,fontFamily:"monospace",fontWeight:700,textAlign:"center",color:C.text,background:C.zatcaLight}} autoFocus/>
       <div style={{display:"flex",gap:10,marginTop:16}}><Btn variant="ghost" onClick={()=>setShowBarcodeModal(false)} style={{flex:1}}>Cancel</Btn><Btn variant="zatca" onClick={saveBarcode} style={{flex:1}}>Save Barcode</Btn></div>
     </Modal>}
     {showPromoModal&&<Modal title={editPromo?"Edit Promo":"New Promo"} onClose={()=>setShowPromoModal(false)} width={420}>
@@ -8429,8 +8454,9 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
       </div>
       <div style={{display:"flex",gap:10,marginTop:16}}><Btn variant="ghost" onClick={()=>setShowPromoModal(false)} style={{flex:1}}>Cancel</Btn><Btn onClick={savePromo} style={{flex:1}}>Save</Btn></div>
     </Modal>}
-    {showImport&&<Modal title="📥 Import Menu Items" onClose={()=>{setShowImport(false);setImportRows([]);setImportError("");setImportDone(false);}} width={640}>
-      <div style={{fontSize:13,color:C.textMid,marginBottom:16}}>Upload a CSV or JSON file to bulk-import menu items. Download the template to see the correct format.</div>
+    {showImport&&<Modal title="📥 Import Products" onClose={()=>{setShowImport(false);setImportRows([]);setImportError("");setImportDone(false);setImportUpdateExisting(false);}} width={640}>
+      <div style={{fontSize:13,color:C.textMid,marginBottom:8}}>Upload a CSV or JSON file to bulk-import products. Download the template to see the correct format. Wrap any value containing a comma in "double quotes".</div>
+      <div style={{fontSize:12,color:C.textMid,marginBottom:16,padding:"8px 12px",background:C.infoLight,border:`1px solid ${C.info}44`,borderRadius:8}}>ℹ️ This imports the product catalogue only. <strong>Opening stock is not set here</strong> — new products start at 0; set quantities separately so your catalogue and inventory stay correct.</div>
       <div style={{display:"flex",gap:10,marginBottom:20,alignItems:"center"}}>
         <label style={{display:"inline-flex",alignItems:"center",gap:8,padding:"9px 16px",background:C.primaryLight,border:`1.5px solid ${C.primary}`,borderRadius:8,cursor:"pointer",fontSize:13,fontWeight:600,color:C.primary}}>
           📂 Choose File (CSV or JSON)<input type="file" accept=".csv,.json" onChange={handleImportFile} style={{display:"none"}}/>
@@ -8440,10 +8466,22 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
       {importError&&<div style={{padding:"10px 14px",background:C.dangerLight,border:`1px solid ${C.danger}`,borderRadius:8,fontSize:13,color:C.danger,marginBottom:16}}>{importError}</div>}
       {importRows.length>0&&!importDone&&(
         <>
-          <div style={{fontSize:13,fontWeight:700,marginBottom:10,color:C.success}}>✓ {importRows.length} items ready to import — preview below:</div>
+          {(()=>{const plan=classifyImport(importRows,items,{updateExisting:importUpdateExisting});return(
+          <div style={{marginBottom:12}}>
+            <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:10}}>
+              <Badge color={C.success} bg={C.successLight}>{plan.summary.create} new</Badge>
+              {importUpdateExisting&&plan.summary.update>0&&<Badge color={C.info} bg={C.infoLight}>{plan.summary.update} update</Badge>}
+              {!importUpdateExisting&&plan.summary.existingSkipped>0&&<Badge color={C.textMid} bg={C.bg}>{plan.summary.existingSkipped} already exist · skipped</Badge>}
+              {plan.summary.duplicateInFile>0&&<Badge color={C.warning} bg={C.warningLight}>{plan.summary.duplicateInFile} duplicate rows · skipped</Badge>}
+            </div>
+            <label style={{display:"flex",alignItems:"flex-start",gap:8,fontSize:12,color:C.textMid,cursor:"pointer",lineHeight:1.4}}>
+              <input type="checkbox" checked={importUpdateExisting} onChange={e=>setImportUpdateExisting(e.target.checked)} style={{marginTop:2}}/>
+              <span>Update products that already exist (price, cost, names, barcode — <strong>never stock</strong>; a blank cell never erases a value). Leave off to skip them, so re-importing the same file is safe.</span>
+            </label>
+          </div>);})()}
           <div style={{maxHeight:260,overflowY:"auto",border:`1px solid ${C.border}`,borderRadius:8,marginBottom:16}}>
             <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-              <thead><tr style={{background:C.bg}}>{["Name","Arabic","Category","Price","Cost","Stock"].map(h=><th key={h} style={{padding:"8px 10px",textAlign:"left",fontWeight:700,color:C.textMid,fontSize:10,textTransform:"uppercase",borderBottom:`1px solid ${C.border}`}}>{h}</th>)}</tr></thead>
+              <thead><tr style={{background:C.bg}}>{["Name","Arabic","Category","Price","Cost"].map(h=><th key={h} style={{padding:"8px 10px",textAlign:"left",fontWeight:700,color:C.textMid,fontSize:10,textTransform:"uppercase",borderBottom:`1px solid ${C.border}`}}>{h}</th>)}</tr></thead>
               <tbody>{importRows.map((r,i)=><tr key={i} style={{borderBottom:`1px solid ${C.border}`,background:i%2===0?"#fff":"#FAFBFC"}}>
                 <td style={{padding:"7px 10px",fontWeight:600}}>{r.name}</td>
                 <td style={{padding:"7px 10px",direction:"rtl",fontFamily:"'Tajawal',sans-serif"}}>
@@ -8466,11 +8504,10 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
                 <td style={{padding:"7px 10px",color:C.textMid}}>{r.category||"—"}</td>
                 <td style={{padding:"7px 10px",color:C.primary,fontWeight:700}}>SAR {parseFloat(r.price||0).toFixed(2)}</td>
                 <td style={{padding:"7px 10px",color:C.textMid}}>{r.cost?`SAR ${parseFloat(r.cost).toFixed(2)}`:"—"}</td>
-                <td style={{padding:"7px 10px"}}>{r.stock||0}</td>
               </tr>)}</tbody>
             </table>
           </div>
-          <div style={{display:"flex",gap:10}}><Btn variant="ghost" onClick={()=>setImportRows([])} style={{flex:1}}>Cancel</Btn><Btn onClick={confirmImport} style={{flex:1}}>✓ Import {importRows.length} Items</Btn></div>
+          <div style={{display:"flex",gap:10}}><Btn variant="ghost" onClick={()=>setImportRows([])} style={{flex:1}}>Cancel</Btn><Btn onClick={confirmImport} style={{flex:1}}>✓ Apply Import</Btn></div>
         </>
       )}
       {importDone&&<div style={{textAlign:"center",padding:"30px 0"}}><div style={{fontSize:40,marginBottom:8}}>✅</div><div style={{fontSize:15,fontWeight:700,color:C.success}}>Import successful!</div></div>}
@@ -9005,7 +9042,7 @@ function Reports({sales,allSales,items,setSales,lang="en",license,archiveIndex={
       catMap[cat].qty+=(it.qty||0);
       catMap[cat].revenue+=lineTotal;
       // VAT portion of an inclusive price: total × 15/115
-      catMap[cat].tax+=lineTotal*15/115;
+      catMap[cat].tax+=vatFromInclusiveRaw(lineTotal);
     }));
     const catList=Object.values(catMap).sort((a,b)=>b.revenue-a.revenue);
     const expenses=(LS.get("restopos_expenses")||[]).filter(e=>e.date===dateStr);
@@ -12314,7 +12351,7 @@ function ZATCASetup({license,sales=[]}){
     const yr = (s.date||"").slice(0,4);
     if(!yr) return;
     const total = s.total||0;
-    const vat = s.vat||(total*15/115);
+    const vat = s.vat||vatFromInclusiveRaw(total);
     const taxable = total - vat; // VAT-exclusive taxable revenue
     posRevenueByYear[yr] = (posRevenueByYear[yr]||0) + taxable;
   });
@@ -13071,7 +13108,7 @@ const zr2=v=>zatcaRound(v,2);
 function extractVATInclusive(total,rate=0.15){if(rate===0)return{net:zr2(total),vat:0,total:zr2(total)};const net=zr2(total/(1+rate));return{net,vat:zr2(total-net),total:zr2(total)};}
 const ZATCA_PEN={not_issuing:{fixed:5000,pct:0,label:"Not issuing e-invoice (per invoice)"},not_storing:{fixed:5000,pct:0,label:"Not storing e-invoice electronically"},bad_qr:{fixed:10000,pct:0,label:"Non-compliant or missing QR code"},modifying:{fixed:10000,pct:0,label:"Deleting or modifying an e-invoice"},late_reg:{fixed:10000,pct:0,label:"Failure to register for VAT on time"},late_return:{fixed:0,pct:0.05,label:"Late VAT return (5% of unpaid tax)"},incorrect_return:{fixed:0,pct:0.50,label:"Incorrect VAT return (50% of tax difference)"}};
 function calcPen(type,tax=0){const r=ZATCA_PEN[type];if(!r)return 0;return zr2(Math.min(r.fixed+(tax*r.pct),50000));}
-function aggVAT(sales=[],year=""){const f=year?sales.filter(s=>(s.date||"").startsWith(year)):sales;let out=0,gross=0,net=0;const byMo={};f.forEach(s=>{const t=s.total||0;const v=s.vat||(t*15/115);const n=t-v;out+=v;gross+=t;net+=n;const mo=(s.date||"").slice(0,7);if(!byMo[mo])byMo[mo]={gross:0,vat:0,net:0,count:0};byMo[mo].gross+=t;byMo[mo].vat+=v;byMo[mo].net+=n;byMo[mo].count++;});return{out:zr2(out),gross:zr2(gross),net:zr2(net),byMo,count:f.length};}
+function aggVAT(sales=[],year=""){const f=year?sales.filter(s=>(s.date||"").startsWith(year)):sales;let out=0,gross=0,net=0;const byMo={};f.forEach(s=>{const t=s.total||0;const v=s.vat||vatFromInclusiveRaw(t);const n=t-v;out+=v;gross+=t;net+=n;const mo=(s.date||"").slice(0,7);if(!byMo[mo])byMo[mo]={gross:0,vat:0,net:0,count:0};byMo[mo].gross+=t;byMo[mo].vat+=v;byMo[mo].net+=n;byMo[mo].count++;});return{out:zr2(out),gross:zr2(gross),net:zr2(net),byMo,count:f.length};}
 const VCATS=[{code:"S",label:"Standard Rated",labelAr:"خاضع للضريبة",rate:"15%",color:"#1A6B4A",bg:"#E8F5F0",desc:"All restaurant food & beverage sales in KSA. Default rate since 1 Jul 2020.",rec:true,ex:"Meals, drinks, delivery, catering, service charges"},{code:"Z",label:"Zero Rated",labelAr:"معدل الصفر",rate:"0%",color:"#1565C0",bg:"#E3F2FD",desc:"Exports outside GCC, international transport, qualifying medicines. Input VAT still recoverable.",rec:true,ex:"Exported goods, international shipping"},{code:"E",label:"Exempt",labelAr:"معفاة",rate:"0%",color:"#7B1FA2",bg:"#F3E5F5",desc:"Residential rental, certain financial services, life insurance. Input VAT NOT recoverable.",rec:false,ex:"Residential rent, life insurance"},{code:"O",label:"Out of Scope",labelAr:"خارج النطاق",rate:"N/A",color:"#616161",bg:"#F5F5F5",desc:"Wages, dividends, government statutory fees. Not subject to VAT at all.",rec:false,ex:"Employee salaries, government fees"}];
 
 function ZATCAVATGuide({sales=[]}){
@@ -13257,7 +13294,7 @@ function InvoiceEnhancements({sales,items,license,company}){
     const subtotal=quoteItems.reduce((s,it)=>s+it.price*it.qty,0);
     const discount=parseFloat(quoteForm.discount)||0;
     const afterDisc=Math.max(0,subtotal-discount);
-    const vat=parseFloat((afterDisc*(15/115)).toFixed(2));
+    const vat=vatFromInclusive(afterDisc);
     const q={...quoteForm,id:editQuote?editQuote.id:Date.now(),createdAt:editQuote?.createdAt||now,updatedAt:now,items:quoteItems,subtotal,discount,vat,total:afterDisc,quoteNumber:editQuote?.quoteNumber||(quoteForm.type==="proforma"?`PRO-${String(Date.now()).slice(-6)}`:`QUO-${String(Date.now()).slice(-6)}`)};
     saveQuotations(editQuote?quotations.map(x=>x.id===editQuote.id?q:x):[q,...quotations]);
     setShowQuoteModal(false);
