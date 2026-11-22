@@ -45,6 +45,13 @@ export function findByBarcode(items, code) {
   return (items || []).find((i) => matchesBarcode(i, c)) || null;
 }
 
+/** All products in `items` matching `code` — used to detect duplicate/ambiguous barcodes. */
+export function findAllByBarcode(items, code) {
+  const c = normCode(code);
+  if (c === "") return [];
+  return (items || []).filter((i) => matchesBarcode(i, c));
+}
+
 /**
  * Parse a user-entered multi-barcode string (comma / space / semicolon / newline
  * separated) into { primary, extra[] }. The first code becomes the primary

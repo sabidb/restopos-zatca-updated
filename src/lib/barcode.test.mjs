@@ -1,7 +1,7 @@
 // Golden tests for src/lib/barcode.js — run with: npm test
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { normCode, productBarcodes, matchesBarcode, findByBarcode, parseBarcodeInput } from "./barcode.js";
+import { normCode, productBarcodes, matchesBarcode, findByBarcode, findAllByBarcode, parseBarcodeInput } from "./barcode.js";
 
 const items = [
   { id: 1, name: "Pepsi Can", barcode: "6281000", barcodes: ["12345678", "6281000"] },
@@ -40,6 +40,18 @@ test("findByBarcode returns the product (primary or secondary), else null", () =
 test("findByBarcode preserves old single-barcode behaviour", () => {
   const legacy = [{ id: 9, barcode: "111" }, { id: 10, barcode: "222" }];
   assert.equal(findByBarcode(legacy, "222")?.id, 10);
+});
+
+test("findAllByBarcode returns every matching product (for ambiguity detection)", () => {
+  const dup = [
+    { id: 1, name: "Milk A", barcode: "777" },
+    { id: 2, name: "Milk B", barcode: "777", active: false },
+    { id: 3, name: "Juice", barcode: "888" },
+  ];
+  assert.deepEqual(findAllByBarcode(dup, "777").map((i) => i.id), [1, 2]); // both, incl. inactive
+  assert.deepEqual(findAllByBarcode(dup, "888").map((i) => i.id), [3]);
+  assert.deepEqual(findAllByBarcode(dup, "000"), []);
+  assert.deepEqual(findAllByBarcode(dup, ""), []);
 });
 
 test("parseBarcodeInput splits on comma/space/semicolon/newline, de-dupes, first = primary", () => {

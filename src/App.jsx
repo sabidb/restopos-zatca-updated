@@ -17,7 +17,7 @@ import { C } from "./lib/theme.js";
 import { LS } from "./lib/storage.js";
 import { fmtSAR, fmtDate, fmtDateTime } from "./lib/format.js";
 import { vatFromInclusive, netFromInclusive, vatFromInclusiveRaw } from "./lib/tax.js";
-import { findByBarcode, productBarcodes, parseBarcodeInput } from "./lib/barcode.js";
+import { findByBarcode, findAllByBarcode, productBarcodes, parseBarcodeInput } from "./lib/barcode.js";
 import { TODAY } from "./lib/date.js";
 import { logActivity } from "./lib/activity.js";
 import { initSync, debouncedSync, syncKeyToFirestore } from "./lib/sync.js";
@@ -5279,10 +5279,25 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   function showN(msg){setNotif(msg);setTimeout(()=>setNotif(null),1500);}
   function handleBarcodeSearch(code){
     const c=code.trim();
-    // Match by barcode first, then fall back to a name match — barcode-friendly
-    // everywhere. On a hit, surface the full item card; on a miss, show the code.
-    const item=findByBarcode(items,c) || items.find(i=>i.name?.toLowerCase()===c.toLowerCase());
     setBarcodeInput("");
+    // Match by barcode first, then fall back to an active name match — barcode-
+    // friendly everywhere. On a hit, surface the full item card; on a miss, show
+    // the code. Inactive products are never added; an ambiguous (shared) barcode
+    // warns instead of silently guessing.
+    const bMatches=findAllByBarcode(items,c);
+    const bActive=bMatches.filter(i=>i.active!==false);
+    let item=null;
+    if(bActive.length>=1){
+      item=bActive[0];
+      if(bActive.length>1) showN(`⚠️ ${bActive.length} products share this barcode — using “${item.name}”. Fix in Products.`);
+    } else if(bMatches.length>0){
+      // only inactive product(s) carry this barcode — do not sell it
+      showN(`⛔ “${bMatches[0].name}” is inactive — not added.`);
+      if(!priceCheck) focusScanner();
+      return;
+    } else {
+      item=items.find(i=>i.name?.toLowerCase()===c.toLowerCase() && i.active!==false);
+    }
     if(item){ setScanMiss(""); setScannedItem(item); }
     else if(priceCheck){ showN("❌ No product for “"+c+"”"); focusScanner(); }
     else { setNewProd({barcode:c,name:"",price:"",category:posCats[0]||"General",weighed:false}); } // unknown → offer create
