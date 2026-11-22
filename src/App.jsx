@@ -17,6 +17,7 @@ import { C } from "./lib/theme.js";
 import { LS } from "./lib/storage.js";
 import { fmtSAR, fmtDate, fmtDateTime } from "./lib/format.js";
 import { vatFromInclusive, netFromInclusive, vatFromInclusiveRaw } from "./lib/tax.js";
+import { findByBarcode, productBarcodes, parseBarcodeInput } from "./lib/barcode.js";
 import { TODAY } from "./lib/date.js";
 import { logActivity } from "./lib/activity.js";
 import { initSync, debouncedSync, syncKeyToFirestore } from "./lib/sync.js";
@@ -5280,7 +5281,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     const c=code.trim();
     // Match by barcode first, then fall back to a name match — barcode-friendly
     // everywhere. On a hit, surface the full item card; on a miss, show the code.
-    const item=items.find(i=>String(i.barcode||"")===c) || items.find(i=>i.name?.toLowerCase()===c.toLowerCase());
+    const item=findByBarcode(items,c) || items.find(i=>i.name?.toLowerCase()===c.toLowerCase());
     setBarcodeInput("");
     if(item){ setScanMiss(""); setScannedItem(item); }
     else if(priceCheck){ showN("❌ No product for “"+c+"”"); focusScanner(); }
@@ -6410,7 +6411,7 @@ function GlobalScanPopup({items,active}){
   },[active,items]);
   function show(codeRaw){
     const code=codeRaw.trim();
-    const item=items.find(i=>String(i.barcode||"")===code)||items.find(i=>i.name?.toLowerCase()===code.toLowerCase());
+    const item=findByBarcode(items,code)||items.find(i=>i.name?.toLowerCase()===code.toLowerCase());
     setHit(item?{item,t:Date.now()}:{miss:code,t:Date.now()});
     if(timer.current)clearTimeout(timer.current);
     timer.current=setTimeout(()=>setHit(null),3000);
@@ -8331,7 +8332,7 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
   const [itemCatFilter,setItemCatFilter]=useState("All");
   const filteredItems=items.filter(it=>{
     const q=itemSearch.trim().toLowerCase();
-    const matchQ=!q||it.name?.toLowerCase().includes(q)||it.nameAr?.includes(itemSearch.trim())||String(it.barcode||"").includes(q);
+    const matchQ=!q||it.name?.toLowerCase().includes(q)||it.nameAr?.includes(itemSearch.trim())||productBarcodes(it).some(b=>b.includes(q));
     const matchCat=itemCatFilter==="All"||it.category===itemCatFilter;
     return matchQ&&matchCat;
   });
@@ -8350,8 +8351,8 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
     setTranslating(false);
   }
   function saveItem(){if(!itemForm.name||!itemForm.price)return alert("Name and price required");const item={...itemForm,price:parseFloat(itemForm.price),cost:parseFloat(itemForm.cost||0),stock:parseInt(itemForm.stock||0),id:editItem?editItem.id:Date.now()};setItems(prev=>editItem?prev.map(i=>i.id===editItem.id?item:i):[...prev,item]);setShowItemModal(false);}
-  function openBarcodeModal(it){setBarcodeItem(it);setBarcodeInput(it.barcode||"");setShowBarcodeModal(true);setTimeout(()=>barcodeRef.current?.focus(),100);}
-  function saveBarcode(){setItems(prev=>prev.map(i=>i.id===barcodeItem.id?{...i,barcode:barcodeInput.trim()}:i));setShowBarcodeModal(false);alert("Barcode saved!");}
+  function openBarcodeModal(it){setBarcodeItem(it);setBarcodeInput(productBarcodes(it).join(", "));setShowBarcodeModal(true);setTimeout(()=>barcodeRef.current?.focus(),100);}
+  function saveBarcode(){const {primary,extra}=parseBarcodeInput(barcodeInput);setItems(prev=>prev.map(i=>i.id===barcodeItem.id?{...i,barcode:primary,barcodes:extra}:i));setShowBarcodeModal(false);alert("Barcode saved!");}
   function openPromoModal(p=null){setEditPromo(p);setPromoForm(p?{...p}:{...blankPromo});setShowPromoModal(true);}
   function savePromo(){if(!promoForm.code||!promoForm.value)return alert("Code and value required");const promo={...promoForm,value:parseFloat(promoForm.value),minOrder:parseFloat(promoForm.minOrder||0),id:editPromo?editPromo.id:Date.now()};setPromos(prev=>editPromo?prev.map(p=>p.id===editPromo.id?promo:p):[...prev,promo]);setShowPromoModal(false);}
 
@@ -8416,8 +8417,8 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
       <div style={{display:"flex",gap:10,marginTop:16}}><Btn variant="ghost" onClick={()=>setShowItemModal(false)} style={{flex:1}}>Cancel</Btn><Btn onClick={saveItem} style={{flex:1}}>Save Item</Btn></div>
     </Modal>}
     {showBarcodeModal&&barcodeItem&&<Modal title={`🔲 Add Barcode — ${barcodeItem.name}`} onClose={()=>setShowBarcodeModal(false)} width={420}>
-      <div style={{fontSize:13,color:C.textMid,marginBottom:16}}>Scan the barcode with your scanner or type it manually. Press Enter or click Save.</div>
-      <input ref={barcodeRef} value={barcodeInput} onChange={e=>setBarcodeInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")saveBarcode();}} placeholder="Scan barcode here…" style={{width:"100%",padding:"14px 16px",border:`2px solid ${C.zatca}`,borderRadius:10,fontSize:18,fontFamily:"monospace",fontWeight:700,textAlign:"center",color:C.text,background:C.zatcaLight}} autoFocus/>
+      <div style={{fontSize:13,color:C.textMid,marginBottom:16}}>Scan one or more barcodes one after another (each scan is added), or type codes separated by commas. The first code is the primary barcode. Click <strong>Save Barcode</strong> when done.</div>
+      <input ref={barcodeRef} value={barcodeInput} onChange={e=>setBarcodeInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();setBarcodeInput(v=>v.trim()?v.replace(/[\s,;]+$/,"")+", ":v);}}} placeholder="Scan barcode here…" style={{width:"100%",padding:"14px 16px",border:`2px solid ${C.zatca}`,borderRadius:10,fontSize:18,fontFamily:"monospace",fontWeight:700,textAlign:"center",color:C.text,background:C.zatcaLight}} autoFocus/>
       <div style={{display:"flex",gap:10,marginTop:16}}><Btn variant="ghost" onClick={()=>setShowBarcodeModal(false)} style={{flex:1}}>Cancel</Btn><Btn variant="zatca" onClick={saveBarcode} style={{flex:1}}>Save Barcode</Btn></div>
     </Modal>}
     {showPromoModal&&<Modal title={editPromo?"Edit Promo":"New Promo"} onClose={()=>setShowPromoModal(false)} width={420}>
