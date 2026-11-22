@@ -18,6 +18,7 @@ import { LS } from "./lib/storage.js";
 import { fmtSAR, fmtDate, fmtDateTime } from "./lib/format.js";
 import { vatFromInclusive, netFromInclusive, vatFromInclusiveRaw } from "./lib/tax.js";
 import { findByBarcode, findAllByBarcode, productBarcodes, parseBarcodeInput } from "./lib/barcode.js";
+import { parseCSV } from "./lib/csv.js";
 import { TODAY } from "./lib/date.js";
 import { logActivity } from "./lib/activity.js";
 import { initSync, debouncedSync, syncKeyToFirestore } from "./lib/sync.js";
@@ -8372,8 +8373,10 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
   function savePromo(){if(!promoForm.code||!promoForm.value)return alert("Code and value required");const promo={...promoForm,value:parseFloat(promoForm.value),minOrder:parseFloat(promoForm.minOrder||0),id:editPromo?editPromo.id:Date.now()};setPromos(prev=>editPromo?prev.map(p=>p.id===editPromo.id?promo:p):[...prev,promo]);setShowPromoModal(false);}
 
   function downloadTemplate(){
-    const csv="name,nameAr,category,price,cost,stock,barcode\nChicken Burger,برجر دجاج,Burgers,28,12,50,\nFrench Fries,بطاطس,Sides,10,3,100,\n";
-    const blob=new Blob([csv],{type:"text/csv"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="menu-import-template.csv";a.click();
+    // Stock is intentionally NOT a column — opening stock is set separately.
+    // Values containing a comma must be wrapped in double quotes (see the first row).
+    const csv='name,nameAr,category,price,cost,barcode\n"Rice, Basmati 5kg",أرز بسمتي,Grocery,45,30,6281000000001\nFrench Fries,بطاطس,Sides,10,3,\n';
+    const blob=new Blob(['﻿'+csv],{type:"text/csv;charset=utf-8"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="products-import-template.csv";a.click();
   }
   function handleImportFile(e){
     setImportError("");setImportRows([]);setImportDone(false);
@@ -8386,12 +8389,8 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
         if(file.name.endsWith(".json")){
           const parsed=JSON.parse(text);rows=Array.isArray(parsed)?parsed:[];
         } else {
-          const lines=text.trim().split("\n");
-          const headers=lines[0].split(",").map(h=>h.trim().toLowerCase());
-          rows=lines.slice(1).filter(l=>l.trim()).map(line=>{
-            const vals=line.split(",").map(v=>v.trim());
-            const obj={};headers.forEach((h,i)=>obj[h]=vals[i]||"");return obj;
-          });
+          // RFC-4180 CSV: quoted commas, "" escapes, CRLF and BOM all handled.
+          rows=parseCSV(text).rows;
         }
         const valid=rows.filter(r=>r.name&&r.price&&!isNaN(parseFloat(r.price)));
         if(valid.length===0){setImportError("No valid rows found. Make sure your file has 'name' and 'price' columns.");return;}
@@ -8402,7 +8401,10 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
     e.target.value="";
   }
   function confirmImport(){
-    const newItems=importRows.map(r=>({id:Date.now()+Math.random(),name:r.name||"",nameAr:r.namear||r.nameAr||"",category:r.category||categories[0],price:parseFloat(r.price)||0,cost:parseFloat(r.cost||0),stock:parseInt(r.stock||0),active:true,barcode:r.barcode||""}));
+    // Catalogue import never sets stock — opening stock is a separate, authorised
+    // workflow (Stock Takes), so importing a product list can't silently create
+    // inventory. New products start at 0.
+    const newItems=importRows.map(r=>({id:Date.now()+Math.random(),name:r.name||"",nameAr:r.namear||r.nameAr||"",category:r.category||categories[0],price:parseFloat(r.price)||0,cost:parseFloat(r.cost||0),stock:0,active:true,barcode:r.barcode||""}));
     setItems(prev=>[...prev,...newItems]);setImportDone(true);setTimeout(()=>{setShowImport(false);setImportRows([]);setImportDone(false);},1500);
   }
 
@@ -8447,7 +8449,8 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
       <div style={{display:"flex",gap:10,marginTop:16}}><Btn variant="ghost" onClick={()=>setShowPromoModal(false)} style={{flex:1}}>Cancel</Btn><Btn onClick={savePromo} style={{flex:1}}>Save</Btn></div>
     </Modal>}
     {showImport&&<Modal title="📥 Import Menu Items" onClose={()=>{setShowImport(false);setImportRows([]);setImportError("");setImportDone(false);}} width={640}>
-      <div style={{fontSize:13,color:C.textMid,marginBottom:16}}>Upload a CSV or JSON file to bulk-import menu items. Download the template to see the correct format.</div>
+      <div style={{fontSize:13,color:C.textMid,marginBottom:8}}>Upload a CSV or JSON file to bulk-import products. Download the template to see the correct format. Wrap any value containing a comma in "double quotes".</div>
+      <div style={{fontSize:12,color:C.textMid,marginBottom:16,padding:"8px 12px",background:C.infoLight,border:`1px solid ${C.info}44`,borderRadius:8}}>ℹ️ This imports the product catalogue only. <strong>Opening stock is not set here</strong> — new products start at 0; set quantities separately so your catalogue and inventory stay correct.</div>
       <div style={{display:"flex",gap:10,marginBottom:20,alignItems:"center"}}>
         <label style={{display:"inline-flex",alignItems:"center",gap:8,padding:"9px 16px",background:C.primaryLight,border:`1.5px solid ${C.primary}`,borderRadius:8,cursor:"pointer",fontSize:13,fontWeight:600,color:C.primary}}>
           📂 Choose File (CSV or JSON)<input type="file" accept=".csv,.json" onChange={handleImportFile} style={{display:"none"}}/>
@@ -8460,7 +8463,7 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
           <div style={{fontSize:13,fontWeight:700,marginBottom:10,color:C.success}}>✓ {importRows.length} items ready to import — preview below:</div>
           <div style={{maxHeight:260,overflowY:"auto",border:`1px solid ${C.border}`,borderRadius:8,marginBottom:16}}>
             <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-              <thead><tr style={{background:C.bg}}>{["Name","Arabic","Category","Price","Cost","Stock"].map(h=><th key={h} style={{padding:"8px 10px",textAlign:"left",fontWeight:700,color:C.textMid,fontSize:10,textTransform:"uppercase",borderBottom:`1px solid ${C.border}`}}>{h}</th>)}</tr></thead>
+              <thead><tr style={{background:C.bg}}>{["Name","Arabic","Category","Price","Cost"].map(h=><th key={h} style={{padding:"8px 10px",textAlign:"left",fontWeight:700,color:C.textMid,fontSize:10,textTransform:"uppercase",borderBottom:`1px solid ${C.border}`}}>{h}</th>)}</tr></thead>
               <tbody>{importRows.map((r,i)=><tr key={i} style={{borderBottom:`1px solid ${C.border}`,background:i%2===0?"#fff":"#FAFBFC"}}>
                 <td style={{padding:"7px 10px",fontWeight:600}}>{r.name}</td>
                 <td style={{padding:"7px 10px",direction:"rtl",fontFamily:"'Tajawal',sans-serif"}}>
@@ -8483,7 +8486,6 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
                 <td style={{padding:"7px 10px",color:C.textMid}}>{r.category||"—"}</td>
                 <td style={{padding:"7px 10px",color:C.primary,fontWeight:700}}>SAR {parseFloat(r.price||0).toFixed(2)}</td>
                 <td style={{padding:"7px 10px",color:C.textMid}}>{r.cost?`SAR ${parseFloat(r.cost).toFixed(2)}`:"—"}</td>
-                <td style={{padding:"7px 10px"}}>{r.stock||0}</td>
               </tr>)}</tbody>
             </table>
           </div>
