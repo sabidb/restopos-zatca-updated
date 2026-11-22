@@ -41,7 +41,7 @@ export const BUSINESS_TYPES={
   supermarket:{
     id:"supermarket", label:"Supermarket", labelAr:"سوبرماركت", icon:"🛒",
     posLayout:"scan", nav:"sidebar",
-    features:{ tables:false, dineIn:false, kot:false, kitchen:false, kds:false, recipes:false, weighing:true, barcodeFirst:true, manualBilling:true },
+    features:{ tables:false, dineIn:false, kot:false, kitchen:false, kds:false, recipes:false, weighing:true, barcodeFirst:true, manualBilling:true, purchasing:true },
     orderTypes:[["takeaway","🛒","Sale"],["delivery","🛵","Delivery"]],
     hideAdvancedTabs:["kitchen","kds","recipes"],
     navLabels:{ create:"Products" },
@@ -52,7 +52,7 @@ export const BUSINESS_TYPES={
   hypermarket:{
     id:"hypermarket", label:"Hypermarket", labelAr:"هايبر ماركت", icon:"🏬",
     posLayout:"scan", nav:"sidebar",
-    features:{ tables:false, dineIn:false, kot:false, kitchen:false, kds:false, recipes:false, weighing:true, barcodeFirst:true, approvals:true, loyalty:true, manualBilling:true },
+    features:{ tables:false, dineIn:false, kot:false, kitchen:false, kds:false, recipes:false, weighing:true, barcodeFirst:true, approvals:true, loyalty:true, manualBilling:true, purchasing:true },
     orderTypes:[["takeaway","🛒","Sale"],["delivery","🛵","Delivery"]],
     hideAdvancedTabs:["kitchen","kds","recipes"],
     navLabels:{ create:"Products" },
