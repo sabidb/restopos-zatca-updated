@@ -8,6 +8,7 @@ import { LS } from "../lib/storage.js";
 import { t } from "../i18n/index.js";
 import { fmtSAR } from "../lib/format.js";
 import { debouncedSync } from "../lib/sync.js";
+import { Card, Btn, Badge, Modal, DataTable } from "../components/ui.jsx";
 
 export function InventoryManagement({items,setItems,lang="en"}){
   const _t=s=>t(s,lang);
