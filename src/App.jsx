@@ -18,8 +18,7 @@ import { LS } from "./lib/storage.js";
 import { fmtSAR, fmtDate, fmtDateTime } from "./lib/format.js";
 import { vatFromInclusive, netFromInclusive, vatFromInclusiveRaw } from "./lib/tax.js";
 import { findByBarcode, findAllByBarcode, productBarcodes, parseBarcodeInput } from "./lib/barcode.js";
-import { parseCSV } from "./lib/csv.js";
-import { classifyImport, mergeUpdate } from "./lib/importPlan.js";
+import ImportWizard from "./components/ImportWizard.jsx";
 import { TODAY } from "./lib/date.js";
 import { logActivity } from "./lib/activity.js";
 import { initSync, debouncedSync, syncKeyToFirestore } from "./lib/sync.js";
@@ -8337,7 +8336,7 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
   const [categories,setCategories]=useState(()=>LS.get("restopos_categories")||SEED_CATEGORIES);const [newCat,setNewCat]=useState("");
   function saveCategories(newList){setCategories(newList);LS.set("restopos_categories",newList);const _lic_cat=LS.get("restopos_license_v2")?.licenseKey;if(_lic_cat)debouncedSync(_lic_cat,"restopos_categories",newList);}
   function addCategory(){const trimmed=newCat.trim();if(!trimmed)return alert("Category name cannot be empty");if(categories.includes(trimmed))return alert("Category already exists");saveCategories([...categories,trimmed]);setNewCat("");}
-  const [showImport,setShowImport]=useState(false);const [importRows,setImportRows]=useState([]);const [importError,setImportError]=useState("");const [importDone,setImportDone]=useState(false);const [importUpdateExisting,setImportUpdateExisting]=useState(false);
+  const [showImport,setShowImport]=useState(false);
   const blankItem={name:"",nameAr:"",category:categories[0],price:"",cost:"",stock:"",active:true,barcode:"",weighed:false};const [itemForm,setItemForm]=useState(blankItem);
   const allowWeighing=bizFeature("weighing"); // show the per-kg option only for types that weigh goods
   const blankPromo={code:"",type:"%",value:"",minOrder:0,active:true};const [promoForm,setPromoForm]=useState(blankPromo);const barcodeRef=useRef();
@@ -8378,40 +8377,6 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
     // Values containing a comma must be wrapped in double quotes (see the first row).
     const csv='name,nameAr,category,price,cost,barcode\n"Rice, Basmati 5kg",أرز بسمتي,Grocery,45,30,6281000000001\nFrench Fries,بطاطس,Sides,10,3,\n';
     const blob=new Blob(['﻿'+csv],{type:"text/csv;charset=utf-8"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="products-import-template.csv";a.click();
-  }
-  function handleImportFile(e){
-    setImportError("");setImportRows([]);setImportDone(false);
-    const file=e.target.files[0];if(!file)return;
-    const reader=new FileReader();
-    reader.onload=ev=>{
-      try{
-        const text=ev.target.result;
-        let rows=[];
-        if(file.name.endsWith(".json")){
-          const parsed=JSON.parse(text);rows=Array.isArray(parsed)?parsed:[];
-        } else {
-          // RFC-4180 CSV: quoted commas, "" escapes, CRLF and BOM all handled.
-          rows=parseCSV(text).rows;
-        }
-        const valid=rows.filter(r=>r.name&&r.price&&!isNaN(parseFloat(r.price)));
-        if(valid.length===0){setImportError("No valid rows found. Make sure your file has 'name' and 'price' columns.");return;}
-        setImportRows(valid);
-      }catch(err){setImportError("Could not parse file: "+err.message);}
-    };
-    reader.readAsText(file);
-    e.target.value="";
-  }
-  function confirmImport(){
-    // Plan the import against the current catalogue so a re-run can't create
-    // duplicates: matched products are updated (only if the user opted in) or
-    // skipped, in-file duplicates are dropped, and new products are created.
-    // Catalogue import never sets stock — opening stock is a separate, authorised
-    // workflow — so new products start at 0.
-    const plan=classifyImport(importRows,items,{updateExisting:importUpdateExisting});
-    const newItems=plan.create.map(({row:r})=>({id:Date.now()+Math.random(),name:r.name||"",nameAr:r.namear||r.nameAr||"",category:r.category||categories[0],price:parseFloat(r.price)||0,cost:parseFloat(r.cost||0),stock:0,active:true,barcode:r.barcode||""}));
-    const updatedById=new Map(plan.update.map(({existing,row})=>[existing.id,mergeUpdate(existing,row)]));
-    setItems(prev=>[...prev.map(it=>updatedById.get(it.id)||it),...newItems]);
-    setImportDone(true);setTimeout(()=>{setShowImport(false);setImportRows([]);setImportDone(false);},1800);
   }
 
   return(<div>
@@ -8454,64 +8419,14 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
       </div>
       <div style={{display:"flex",gap:10,marginTop:16}}><Btn variant="ghost" onClick={()=>setShowPromoModal(false)} style={{flex:1}}>Cancel</Btn><Btn onClick={savePromo} style={{flex:1}}>Save</Btn></div>
     </Modal>}
-    {showImport&&<Modal title="📥 Import Products" onClose={()=>{setShowImport(false);setImportRows([]);setImportError("");setImportDone(false);setImportUpdateExisting(false);}} width={640}>
-      <div style={{fontSize:13,color:C.textMid,marginBottom:8}}>Upload a CSV or JSON file to bulk-import products. Download the template to see the correct format. Wrap any value containing a comma in "double quotes".</div>
-      <div style={{fontSize:12,color:C.textMid,marginBottom:16,padding:"8px 12px",background:C.infoLight,border:`1px solid ${C.info}44`,borderRadius:8}}>ℹ️ This imports the product catalogue only. <strong>Opening stock is not set here</strong> — new products start at 0; set quantities separately so your catalogue and inventory stay correct.</div>
-      <div style={{display:"flex",gap:10,marginBottom:20,alignItems:"center"}}>
-        <label style={{display:"inline-flex",alignItems:"center",gap:8,padding:"9px 16px",background:C.primaryLight,border:`1.5px solid ${C.primary}`,borderRadius:8,cursor:"pointer",fontSize:13,fontWeight:600,color:C.primary}}>
-          📂 Choose File (CSV or JSON)<input type="file" accept=".csv,.json" onChange={handleImportFile} style={{display:"none"}}/>
-        </label>
-        <button onClick={downloadTemplate} style={{padding:"9px 14px",background:"transparent",border:`1px solid ${C.border}`,borderRadius:8,fontSize:12,fontWeight:600,color:C.textMid,cursor:"pointer",fontFamily:"inherit"}}>⬇️ Download Template</button>
-      </div>
-      {importError&&<div style={{padding:"10px 14px",background:C.dangerLight,border:`1px solid ${C.danger}`,borderRadius:8,fontSize:13,color:C.danger,marginBottom:16}}>{importError}</div>}
-      {importRows.length>0&&!importDone&&(
-        <>
-          {(()=>{const plan=classifyImport(importRows,items,{updateExisting:importUpdateExisting});return(
-          <div style={{marginBottom:12}}>
-            <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:10}}>
-              <Badge color={C.success} bg={C.successLight}>{plan.summary.create} new</Badge>
-              {importUpdateExisting&&plan.summary.update>0&&<Badge color={C.info} bg={C.infoLight}>{plan.summary.update} update</Badge>}
-              {!importUpdateExisting&&plan.summary.existingSkipped>0&&<Badge color={C.textMid} bg={C.bg}>{plan.summary.existingSkipped} already exist · skipped</Badge>}
-              {plan.summary.duplicateInFile>0&&<Badge color={C.warning} bg={C.warningLight}>{plan.summary.duplicateInFile} duplicate rows · skipped</Badge>}
-            </div>
-            <label style={{display:"flex",alignItems:"flex-start",gap:8,fontSize:12,color:C.textMid,cursor:"pointer",lineHeight:1.4}}>
-              <input type="checkbox" checked={importUpdateExisting} onChange={e=>setImportUpdateExisting(e.target.checked)} style={{marginTop:2}}/>
-              <span>Update products that already exist (price, cost, names, barcode — <strong>never stock</strong>; a blank cell never erases a value). Leave off to skip them, so re-importing the same file is safe.</span>
-            </label>
-          </div>);})()}
-          <div style={{maxHeight:260,overflowY:"auto",border:`1px solid ${C.border}`,borderRadius:8,marginBottom:16}}>
-            <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-              <thead><tr style={{background:C.bg}}>{["Name","Arabic","Category","Price","Cost"].map(h=><th key={h} style={{padding:"8px 10px",textAlign:"left",fontWeight:700,color:C.textMid,fontSize:10,textTransform:"uppercase",borderBottom:`1px solid ${C.border}`}}>{h}</th>)}</tr></thead>
-              <tbody>{importRows.map((r,i)=><tr key={i} style={{borderBottom:`1px solid ${C.border}`,background:i%2===0?"#fff":"#FAFBFC"}}>
-                <td style={{padding:"7px 10px",fontWeight:600}}>{r.name}</td>
-                <td style={{padding:"7px 10px",direction:"rtl",fontFamily:"'Tajawal',sans-serif"}}>
-                  {r.namear||r.nameAr
-                    ? <span>{r.namear||r.nameAr}</span>
-                    : <button onClick={async()=>{
-                        if(!r.name)return;
-                        try{
-                          const res=await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(r.name)}&langpair=en|ar`);
-                          const data=await res.json();
-                          if(data.responseStatus===200&&data.responseData?.translatedText){
-                            setItems(prev=>prev.map(i=>i.id===r.id?{...i,nameAr:data.responseData.translatedText}:i));
-                          }
-                        }catch(e){}
-                      }} style={{fontSize:10,padding:"3px 8px",background:C.primaryLight,border:`1px solid ${C.primary}44`,borderRadius:6,color:C.primary,cursor:"pointer",fontFamily:"inherit",fontWeight:600}}>
-                        🌐 Translate
-                      </button>
-                  }
-                </td>
-                <td style={{padding:"7px 10px",color:C.textMid}}>{r.category||"—"}</td>
-                <td style={{padding:"7px 10px",color:C.primary,fontWeight:700}}>SAR {parseFloat(r.price||0).toFixed(2)}</td>
-                <td style={{padding:"7px 10px",color:C.textMid}}>{r.cost?`SAR ${parseFloat(r.cost).toFixed(2)}`:"—"}</td>
-              </tr>)}</tbody>
-            </table>
-          </div>
-          <div style={{display:"flex",gap:10}}><Btn variant="ghost" onClick={()=>setImportRows([])} style={{flex:1}}>Cancel</Btn><Btn onClick={confirmImport} style={{flex:1}}>✓ Apply Import</Btn></div>
-        </>
-      )}
-      {importDone&&<div style={{textAlign:"center",padding:"30px 0"}}><div style={{fontSize:40,marginBottom:8}}>✅</div><div style={{fontSize:15,fontWeight:700,color:C.success}}>Import successful!</div></div>}
-    </Modal>}
+    {showImport&&<ImportWizard
+      items={items}
+      categories={categories}
+      onApply={(newItems,updatedById)=>{setItems(prev=>[...prev.map(it=>updatedById.get(it.id)||it),...newItems]);}}
+      onPersist={(k,d)=>{const lic=LS.get("restopos_license_v2")?.licenseKey;if(lic)debouncedSync(lic,k,d);}}
+      onTemplate={downloadTemplate}
+      onClose={()=>setShowImport(false)}
+    />}
     <div style={{display:"flex",gap:8,marginBottom:20}}>{[[`items`,`🍔 ${_t("Items")}`],[`categories`,`📂 ${_t("Categories")}`],[`promos`,`🏷️ ${_t("Promo Codes")}`]].map(([id,label])=><button key={id} onClick={()=>setTab(id)} style={{padding:"8px 16px",borderRadius:8,border:`1.5px solid ${tab===id?C.primary:C.border}`,background:tab===id?C.primaryLight:"#fff",color:tab===id?C.primary:C.textMid,fontFamily:"inherit",fontSize:13,fontWeight:600,cursor:"pointer"}}>{label}</button>)}</div>
     {tab==="items"&&<Card><div style={{display:"flex",justifyContent:"space-between",marginBottom:16,gap:8,flexWrap:"wrap"}}><div style={{fontSize:15,fontWeight:700}}>{_t("Menu Items")} ({filteredItems.length}{filteredItems.length!==items.length?`/${items.length}`:""})</div><div style={{display:"flex",gap:8}}><Btn size="sm" variant="outline" onClick={()=>setShowImport(true)}>📥 {_t("Import")}</Btn><Btn size="sm" onClick={()=>openItemModal()}>+ {_t("New")}</Btn></div></div>
       <div style={{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap"}}>

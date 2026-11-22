@@ -1,7 +1,18 @@
 // Golden tests for src/lib/csv.js — run with: npm test
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseCSV, parseCSVRecords } from "./csv.js";
+import { parseCSV, parseCSVRecords, toCSV } from "./csv.js";
+
+test("toCSV round-trips through parseCSV, quoting commas/quotes/newlines", () => {
+  const headers = ["name", "note"];
+  const rows = [["Rice, Basmati", 'he said "hi"'], ["Milk", "line1\nline2"]];
+  const text = toCSV(headers, rows);
+  const back = parseCSV(text);
+  assert.deepEqual(back.headers, ["name", "note"]);
+  assert.equal(back.rows[0].name, "Rice, Basmati");
+  assert.equal(back.rows[0].note, 'he said "hi"');
+  assert.equal(back.rows[1].note, "line1\nline2");
+});
 
 test("basic header + rows, values trimmed", () => {
   const { headers, rows } = parseCSV("name,price\n Pepsi , 5 \nWater,2");

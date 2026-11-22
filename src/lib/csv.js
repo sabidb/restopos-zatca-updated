@@ -40,6 +40,17 @@ export function parseCSVRecords(text) {
   return records;
 }
 
+/** Serialise rows to CSV text (RFC-4180 quoting). headers: string[]; rows: (string|number)[][]. */
+export function toCSV(headers = [], rows = []) {
+  const q = (v) => {
+    const s = String(v ?? "");
+    return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const lines = [headers.map(q).join(",")];
+  for (const r of rows) lines.push(r.map(q).join(","));
+  return lines.join("\r\n");
+}
+
 /** Parse CSV text to { headers, rows } objects. Blank lines dropped; cells trimmed. */
 export function parseCSV(text) {
   const records = parseCSVRecords(text).filter(
