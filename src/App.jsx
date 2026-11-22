@@ -18,6 +18,7 @@ import { LS } from "./lib/storage.js";
 import { fmtSAR, fmtDate, fmtDateTime } from "./lib/format.js";
 import { vatFromInclusive, netFromInclusive, vatFromInclusiveRaw } from "./lib/tax.js";
 import { findByBarcode, findAllByBarcode, productBarcodes, parseBarcodeInput } from "./lib/barcode.js";
+import { discountManual, discountPromo, totalAfterDiscount, cashChange, isCashShort, splitDiff, splitValid, paymentReady } from "./lib/checkout.js";
 import ImportWizard from "./components/ImportWizard.jsx";
 import { TODAY } from "./lib/date.js";
 import { logActivity } from "./lib/activity.js";
@@ -3901,16 +3902,10 @@ function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1
 
   // ── Discount calculation ─────────────────────────────────────────
   // Manual discount applied to subtotal (before VAT)
-  const manualDiscountAmt=useMemo(()=>{
-    const v=parseFloat(manualDiscount)||0;
-    if(discountType==="%")return Math.min(subtotal,subtotal*v/100);
-    return Math.min(subtotal,v);
-  },[manualDiscount,discountType,subtotal]);
+  const manualDiscountAmt=useMemo(()=>discountManual(subtotal,{type:discountType,value:manualDiscount}),[manualDiscount,discountType,subtotal]);
 
   // Promo discount applied to subtotal
-  const promoDiscountAmt=appliedPromo
-    ?(appliedPromo.type==="%"?subtotal*appliedPromo.value/100:Math.min(subtotal,appliedPromo.value))
-    :0;
+  const promoDiscountAmt=discountPromo(subtotal,appliedPromo);
 
   // Loyalty redemption — only when the active type enables loyalty AND a saved
   // customer is attached. For every other type loyaltyRules is null, so
@@ -3932,7 +3927,7 @@ function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1
   // producing 34.99. Here we keep the original inclusive total and only subtract
   // the discount (which is computed on the subtotal, unchanged), then derive VAT
   // from the resulting inclusive amount with 15/115 so everything stays consistent.
-  const finalTotal=parseFloat((Math.max(0,_origTotal-totalDiscountAmt)).toFixed(2));
+  const finalTotal=totalAfterDiscount(_origTotal,totalDiscountAmt);
   const finalVat=vatFromInclusive(finalTotal);
   const discountedSubtotal=netFromInclusive(finalTotal);
 
@@ -3954,24 +3949,17 @@ function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1
 
   // Cash validation
   const cashFloat=parseFloat(cashGiven)||0;
-  const shortfall=method==="Cash"&&cashFloat>0&&cashFloat<finalTotal;
-  const change=method==="Cash"?Math.max(0,cashFloat-finalTotal):0;
+  const shortfall=method==="Cash"&&isCashShort(finalTotal,cashGiven);
+  const change=method==="Cash"?cashChange(finalTotal,cashGiven):0;
 
   // Both split validation
   const bothCard=parseFloat(cardAmount)||0;
   const bothCash=parseFloat(cashAmount)||0;
-  const bothTotal=parseFloat((bothCard+bothCash).toFixed(2));
-  const bothDiff=parseFloat((bothTotal-finalTotal).toFixed(2));
-  const bothValid=Math.abs(bothDiff)<0.01;
+  const bothDiff=splitDiff(finalTotal,cashAmount,cardAmount);
+  const bothValid=splitValid(finalTotal,cashAmount,cardAmount);
 
   // canConfirm: cash needs amount >= total, card/digital always ready if total > 0
-  const canConfirm=(
-    finalTotal>0&&(
-      method==="Cash"?(cashFloat>=finalTotal):
-      method==="Both"?bothValid:
-      true  // Card — always ready
-    )
-  );
+  const canConfirm=paymentReady({method,total:finalTotal,cashGiven,splitCash:cashAmount,splitCard:cardAmount});
 
   // ── Apply promo ───────────────────────────────────────────────────
   function applyPromo(){
