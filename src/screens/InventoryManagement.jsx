@@ -6,9 +6,12 @@ import { useState } from "react";
 import { C } from "../lib/theme.js";
 import { LS } from "../lib/storage.js";
 import { t } from "../i18n/index.js";
-import { fmtSAR } from "../lib/format.js";
+import { fmtSAR, fmtDate } from "../lib/format.js";
 import { debouncedSync } from "../lib/sync.js";
 import { Card, Btn, Badge, Modal, DataTable } from "../components/ui.jsx";
+import { bizFeature } from "../config/businessTypes.js";
+import { computePurchaseInvoice, validatePurchaseInvoice, detectDuplicatePurchase } from "../lib/purchases.js";
+import { loadPurchaseInvoices, savePurchaseInvoice, deletePurchaseInvoice } from "../lib/purchaseStore.js";
 
 export function InventoryManagement({items,setItems,lang="en"}){
   const _t=s=>t(s,lang);
@@ -24,6 +27,43 @@ export function InventoryManagement({items,setItems,lang="en"}){
   const [adjSupplier,setAdjSupplier]=useState("");
   const [newSupplier,setNewSupplier]=useState({name:"",phone:"",email:"",notes:""});
   const [showSupplierModal,setShowSupplierModal]=useState(false);
+
+  // ── Purchases (supplier/AP invoices) — Supermarket/Hypermarket only ─────────
+  // Feature-flagged so Restaurant Mode's Inventory screen is unchanged.
+  const showPurchases=bizFeature("purchasing");
+  const blankLine=()=>({name:"",qty:"",unitCost:"",rate:0.15});
+  const blankPurchase=()=>({supplierId:"",supplierName:"",supplierInvoiceNo:"",invoiceDate:new Date().toISOString().slice(0,10),hasValidEInvoice:false,notes:"",lines:[blankLine()]});
+  const [purchases,setPurchases]=useState(()=>loadPurchaseInvoices());
+  const [showPurchaseModal,setShowPurchaseModal]=useState(false);
+  const [draft,setDraft]=useState(blankPurchase);
+  const [dupWarn,setDupWarn]=useState(null); // { level:"exact"|"near", match } when a save is held
+
+  function openNewPurchase(){ setDraft(blankPurchase()); setDupWarn(null); setShowPurchaseModal(true); }
+  function setDraftLine(i,patch){ setDraft(d=>({...d,lines:d.lines.map((l,j)=>j===i?{...l,...patch}:l)})); setDupWarn(null); }
+  function addDraftLine(){ setDraft(d=>({...d,lines:[...d.lines,blankLine()]})); }
+  function removeDraftLine(i){ setDraft(d=>({...d,lines:d.lines.length>1?d.lines.filter((_,j)=>j!==i):d.lines})); setDupWarn(null); }
+  function onPickSupplier(id){ const s=suppliers.find(x=>x.id===id); setDraft(d=>({...d,supplierId:id,supplierName:s?s.name:""})); setDupWarn(null); }
+
+  // Save a purchase invoice. Validation blocks always; an EXACT duplicate (same
+  // supplier + invoice number) and a NEAR duplicate (same supplier + total +
+  // date) hold the save behind an explicit "save anyway" so the same supplier
+  // invoice can't be entered twice by accident (which would double-count input VAT).
+  function submitPurchase(force){
+    const v=validatePurchaseInvoice(draft);
+    if(!v.valid){
+      const msg={"supplier-required":_t("Choose a supplier."),"invoice-number-required":_t("Enter the supplier's invoice number."),"invoice-date-required":_t("Enter the invoice date."),"no-lines":_t("Add at least one line with a quantity."),"negative-qty":_t("Quantity can't be negative."),"negative-cost":_t("Cost can't be negative.")};
+      alert(v.errors.map(e=>msg[e]||e).join("\n"));
+      return;
+    }
+    if(!force){
+      const dup=detectDuplicatePurchase(draft,purchases);
+      if(dup.duplicate){ setDupWarn(dup); return; }
+    }
+    savePurchaseInvoice(draft);
+    setPurchases(loadPurchaseInvoices());
+    setShowPurchaseModal(false); setDupWarn(null);
+  }
+  function removePurchase(id){ if(confirm(_t("Delete this purchase invoice")+"?")) setPurchases(deletePurchaseInvoice(id)); }
 
   function saveMovements(list){setMovements(list);LS.set("restopos_stock_movements",list);const lk=LS.get("restopos_license_v2")?.licenseKey;if(lk)debouncedSync(lk,"restopos_stock_movements",list);}
   function saveSuppliers(list){setSuppliers(list);LS.set("restopos_suppliers",list);const lk=LS.get("restopos_license_v2")?.licenseKey;if(lk)debouncedSync(lk,"restopos_suppliers",list);}
@@ -67,7 +107,7 @@ export function InventoryManagement({items,setItems,lang="en"}){
     setNewSupplier({name:"",phone:"",email:"",notes:""});setShowSupplierModal(false);
   }
 
-  const tabs=[["overview","📊 "+_t("Overview")],["stock","📦 "+_t("Stock Levels")],["movements","🔄 "+_t("Movements")],["suppliers","🏭 "+_t("Suppliers")]];
+  const tabs=[["overview","📊 "+_t("Overview")],["stock","📦 "+_t("Stock Levels")],["movements","🔄 "+_t("Movements")],["suppliers","🏭 "+_t("Suppliers")],...(showPurchases?[["purchases","🧾 "+_t("Purchases")]]:[])];
   const statCard=(label,value,color,sub)=>(
     <div style={{background:"#fff",border:`1px solid ${C.border}`,borderLeft:`4px solid ${color}`,borderRadius:12,padding:"14px 16px",flex:1,minWidth:150}}>
       <div style={{fontSize:11,color:C.textMid,fontWeight:700}}>{label}</div>
@@ -173,6 +213,89 @@ export function InventoryManagement({items,setItems,lang="en"}){
           ])}/>
         )}
       </Card>}
+
+      {/* PURCHASES (supplier / accounts-payable invoices) */}
+      {showPurchases&&tab==="purchases"&&<Card>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6,flexWrap:"wrap",gap:8}}>
+          <div style={{fontSize:14,fontWeight:800}}>🧾 {_t("Purchase Invoices")} ({purchases.length})</div>
+          <Btn size="sm" onClick={openNewPurchase}>+ {_t("New Purchase Invoice")}</Btn>
+        </div>
+        <div style={{fontSize:11.5,color:C.textMid,marginBottom:12}}>{_t("Supplier invoices you receive (accounts payable). These record input VAT — they are NOT sent to ZATCA; the supplier already reported them.")}</div>
+        {purchases.length===0?(
+          <div style={{padding:"20px",textAlign:"center",color:C.textMid,fontSize:13}}>{_t("No purchase invoices yet.")}</div>
+        ):(
+          <DataTable headers={[_t("Date"),_t("Supplier"),_t("Invoice #"),_t("Net"),_t("VAT"),_t("Total"),""]} rows={purchases.slice(0,200).map(p=>[
+            p.invoiceDate?fmtDate(p.invoiceDate):"—",
+            p.supplierName||"—",
+            p.supplierInvoiceNo||"—",
+            fmtSAR(p.subtotal),
+            fmtSAR(p.vatAmount),
+            <strong>{fmtSAR(p.total)}</strong>,
+            <Btn size="sm" variant="danger" onClick={()=>removePurchase(p.id)}>{_t("Delete")}</Btn>
+          ])}/>
+        )}
+      </Card>}
+
+      {/* PURCHASE INVOICE MODAL */}
+      {showPurchaseModal&&(()=>{ const c=computePurchaseInvoice(draft); const inSty={padding:"9px 11px",border:`1px solid ${C.border}`,borderRadius:8,fontFamily:"inherit",fontSize:13.5,background:"#fff"}; return(
+        <Modal title={"🧾 "+_t("New Purchase Invoice")} onClose={()=>{setShowPurchaseModal(false);setDupWarn(null);}} width={760}>
+          {dupWarn&&<div style={{padding:"12px 14px",borderRadius:10,marginBottom:14,border:`1.5px solid ${dupWarn.level==="exact"?C.danger:C.warning}`,background:dupWarn.level==="exact"?C.dangerLight:C.warningLight}}>
+            <div style={{fontSize:13,fontWeight:800,color:dupWarn.level==="exact"?C.danger:C.warning}}>{dupWarn.level==="exact"?("⛔ "+_t("Possible duplicate invoice")):("⚠️ "+_t("Looks similar to an existing invoice"))}</div>
+            <div style={{fontSize:12,color:C.textMid,marginTop:4}}>
+              {(dupWarn.level==="exact"?_t("This supplier and invoice number are already recorded"):_t("Same supplier, total and date as an existing invoice"))}: <strong>{dupWarn.match.supplierName} · {dupWarn.match.supplierInvoiceNo||"—"} · {fmtSAR(computePurchaseInvoice(dupWarn.match).total)}</strong>. {_t("Entering it twice double-counts input VAT.")}
+            </div>
+            <div style={{display:"flex",gap:8,marginTop:10}}>
+              <Btn size="sm" variant="ghost" onClick={()=>setDupWarn(null)}>{_t("Go back & edit")}</Btn>
+              <Btn size="sm" variant="danger" onClick={()=>submitPurchase(true)}>{_t("Save anyway")}</Btn>
+            </div>
+          </div>}
+
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
+            <select value={draft.supplierId} onChange={e=>onPickSupplier(e.target.value)} style={inSty}>
+              <option value="">{_t("Select supplier")+" *"}</option>
+              {suppliers.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+            <input value={draft.supplierInvoiceNo} onChange={e=>{const v=e.target.value;setDraft(d=>({...d,supplierInvoiceNo:v}));setDupWarn(null);}} placeholder={_t("Supplier invoice #")+" *"} style={inSty}/>
+            <input type="date" value={draft.invoiceDate} onChange={e=>{const v=e.target.value;setDraft(d=>({...d,invoiceDate:v}));setDupWarn(null);}} style={inSty}/>
+            <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,color:C.textMid}}>
+              <input type="checkbox" checked={draft.hasValidEInvoice} onChange={e=>setDraft(d=>({...d,hasValidEInvoice:e.target.checked}))}/>
+              {_t("Supplier issued a valid ZATCA e-invoice (input VAT recoverable)")}
+            </label>
+          </div>
+          {suppliers.length===0&&<div style={{fontSize:12,color:C.warning,marginBottom:10}}>{_t("Add a supplier first on the Suppliers tab.")}</div>}
+
+          <div style={{fontSize:12.5,fontWeight:800,margin:"6px 0 8px"}}>{_t("Lines")} <span style={{fontWeight:500,color:C.textLight,fontSize:11}}>· {_t("unit cost is ex-VAT; VAT is added on top")}</span></div>
+          <div style={{display:"flex",flexDirection:"column",gap:7,marginBottom:10}}>
+            {draft.lines.map((l,i)=>{ const cl=c.lines[i]||{}; return(
+              <div key={i} style={{display:"grid",gridTemplateColumns:"2fr 0.8fr 1fr 0.9fr 1fr auto",gap:6,alignItems:"center"}}>
+                <input value={l.name} onChange={e=>setDraftLine(i,{name:e.target.value})} placeholder={_t("Item / description")} style={inSty}/>
+                <input type="number" value={l.qty} onChange={e=>setDraftLine(i,{qty:e.target.value})} placeholder={_t("Qty")} min={0} style={{...inSty,textAlign:"right"}}/>
+                <input type="number" value={l.unitCost} onChange={e=>setDraftLine(i,{unitCost:e.target.value})} placeholder={_t("Unit cost")} min={0} style={{...inSty,textAlign:"right"}}/>
+                <select value={l.rate} onChange={e=>setDraftLine(i,{rate:parseFloat(e.target.value)})} style={inSty}>
+                  <option value={0.15}>15%</option>
+                  <option value={0}>0%</option>
+                </select>
+                <div style={{fontSize:13,fontWeight:700,textAlign:"right"}}>{fmtSAR(cl.gross||0)}</div>
+                <button onClick={()=>removeDraftLine(i)} title={_t("Remove")} style={{border:"none",background:"none",cursor:"pointer",fontSize:16,color:C.danger,opacity:draft.lines.length>1?1:0.3}}>✕</button>
+              </div>
+            );})}
+          </div>
+          <Btn size="sm" variant="outline" onClick={addDraftLine}>+ {_t("Add line")}</Btn>
+
+          <div style={{display:"flex",justifyContent:"flex-end",marginTop:14}}>
+            <div style={{minWidth:220,fontSize:13}}>
+              <div style={{display:"flex",justifyContent:"space-between",padding:"3px 0",color:C.textMid}}><span>{_t("Net (ex-VAT)")}</span><span>{fmtSAR(c.subtotal)}</span></div>
+              <div style={{display:"flex",justifyContent:"space-between",padding:"3px 0",color:C.textMid}}><span>{_t("Input VAT")}</span><span>{fmtSAR(c.vatAmount)}</span></div>
+              <div style={{display:"flex",justifyContent:"space-between",padding:"6px 0",fontWeight:900,fontSize:15,borderTop:`1px solid ${C.border}`,marginTop:4}}><span>{_t("Total")}</span><span>{fmtSAR(c.total)}</span></div>
+            </div>
+          </div>
+
+          <div style={{display:"flex",gap:10,marginTop:14}}>
+            <Btn variant="ghost" style={{flex:1}} onClick={()=>{setShowPurchaseModal(false);setDupWarn(null);}}>{_t("Cancel")}</Btn>
+            <Btn style={{flex:1}} onClick={()=>submitPurchase(false)}>{_t("Save Purchase Invoice")}</Btn>
+          </div>
+        </Modal>
+      );})()}
 
       {/* ADJUSTMENT MODAL */}
       {adjItem&&<Modal title={(adjType==="in"?"➕ "+_t("Stock In"):"➖ "+_t("Stock Out"))+" — "+adjItem.name} onClose={()=>setAdjItem(null)} width={420}>
