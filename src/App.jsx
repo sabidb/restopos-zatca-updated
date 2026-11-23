@@ -5994,6 +5994,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
           <span style={{fontSize:18,fontWeight:900,color:C.primary}}>RestoPos</span>
           {superModeChip}
         </div>
+        <PanelClock lang={lang}/>
         <div style={{background:C.bg,borderRadius:14,border:`1px solid ${C.border}`,padding:14}}>
           <div style={{display:"flex",justifyContent:"space-between",fontSize:12.5,color:C.textMid,marginBottom:6}}><span>Items</span><span style={{fontWeight:700,color:C.text}}>{cart.length}</span></div>
           <div style={{display:"flex",justifyContent:"space-between",fontSize:12.5,color:C.textMid,marginBottom:6}}><span>Quantity</span><span style={{fontWeight:700,color:C.text}}>{cart.reduce((s,i)=>s+i.qty,0)}</span></div>
@@ -16166,6 +16167,20 @@ function ToolbarClock({lang="en"}){
       <span style={{fontSize:13,fontWeight:800,fontVariantNumeric:"tabular-nums"}}>{now.toLocaleTimeString(loc,{hour:"2-digit",minute:"2-digit",second:"2-digit"})}</span>
       <span style={{fontSize:8.5,fontWeight:600,color:"rgba(255,255,255,0.6)"}}>{now.toLocaleDateString(loc,{weekday:"short",day:"2-digit",month:"short"})}</span>
     </span>
+  );
+}
+
+// Prominent live clock for the supermarket till's left panel (light card),
+// sits at the top-left above the function keys.
+function PanelClock({lang="en"}){
+  const [now,setNow]=useState(()=>new Date());
+  useEffect(()=>{ const id=setInterval(()=>setNow(new Date()),1000); return ()=>clearInterval(id); },[]);
+  const loc=lang==="ar"?"ar-SA":"en-GB";
+  return (
+    <div title="Current date & time" style={{background:"linear-gradient(135deg,#1A6B4A,#134D36)",borderRadius:12,padding:"10px 14px",color:"#fff",textAlign:"center"}}>
+      <div style={{fontSize:22,fontWeight:900,fontFamily:"'DM Mono','Courier New',monospace",letterSpacing:"0.06em",fontVariantNumeric:"tabular-nums",lineHeight:1}}>{now.toLocaleTimeString(loc,{hour:"2-digit",minute:"2-digit",second:"2-digit"})}</div>
+      <div style={{fontSize:10.5,fontWeight:600,color:"rgba(255,255,255,0.8)",marginTop:3}}>{now.toLocaleDateString(loc,{weekday:"short",day:"2-digit",month:"short",year:"numeric"})}</div>
+    </div>
   );
 }
 
