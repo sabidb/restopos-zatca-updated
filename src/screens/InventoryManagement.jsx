@@ -12,6 +12,7 @@ import { Card, Btn, Badge, Modal, DataTable } from "../components/ui.jsx";
 import { bizFeature } from "../config/businessTypes.js";
 import { computePurchaseInvoice, validatePurchaseInvoice, detectDuplicatePurchase, signedAmounts, normDocType } from "../lib/purchases.js";
 import { loadPurchaseInvoices, savePurchaseInvoice, deletePurchaseInvoice } from "../lib/purchaseStore.js";
+import { purchaseRegister, supplierBalances } from "../lib/purchaseReports.js";
 
 export function InventoryManagement({items,setItems,lang="en"}){
   const _t=s=>t(s,lang);
@@ -37,6 +38,8 @@ export function InventoryManagement({items,setItems,lang="en"}){
   const [showPurchaseModal,setShowPurchaseModal]=useState(false);
   const [draft,setDraft]=useState(blankPurchase);
   const [dupWarn,setDupWarn]=useState(null); // { level:"exact"|"near", match } when a save is held
+  const [repFrom,setRepFrom]=useState(""); // purchase-report date filter (empty = all time)
+  const [repTo,setRepTo]=useState("");
 
   function openNewPurchase(docType="invoice"){ setDraft({...blankPurchase(),docType}); setDupWarn(null); setShowPurchaseModal(true); }
   const isCN=normDocType(draft.docType)==="credit_note"; // current draft is a credit note?
@@ -108,7 +111,7 @@ export function InventoryManagement({items,setItems,lang="en"}){
     setNewSupplier({name:"",phone:"",email:"",notes:""});setShowSupplierModal(false);
   }
 
-  const tabs=[["overview","📊 "+_t("Overview")],["stock","📦 "+_t("Stock Levels")],["movements","🔄 "+_t("Movements")],["suppliers","🏭 "+_t("Suppliers")],...(showPurchases?[["purchases","🧾 "+_t("Purchases")]]:[])];
+  const tabs=[["overview","📊 "+_t("Overview")],["stock","📦 "+_t("Stock Levels")],["movements","🔄 "+_t("Movements")],["suppliers","🏭 "+_t("Suppliers")],...(showPurchases?[["purchases","🧾 "+_t("Purchases")],["preports","📈 "+_t("Purchase Reports")]]:[])];
   const statCard=(label,value,color,sub)=>(
     <div style={{background:"#fff",border:`1px solid ${C.border}`,borderLeft:`4px solid ${color}`,borderRadius:12,padding:"14px 16px",flex:1,minWidth:150}}>
       <div style={{fontSize:11,color:C.textMid,fontWeight:700}}>{label}</div>
@@ -249,6 +252,74 @@ export function InventoryManagement({items,setItems,lang="en"}){
           );})()}
         </>)}
       </Card>}
+
+      {/* PURCHASE REPORTS (register + supplier balances) */}
+      {showPurchases&&tab==="preports"&&(()=>{
+        const reg=purchaseRegister(purchases,{from:repFrom||undefined,to:repTo||undefined});
+        const bals=supplierBalances(purchases,{from:repFrom||undefined,to:repTo||undefined});
+        const inSty={padding:"8px 10px",border:`1px solid ${C.border}`,borderRadius:8,fontFamily:"inherit",fontSize:13,background:"#fff"};
+        const stat=(label,value,color,sub)=>(
+          <div style={{background:"#fff",border:`1px solid ${C.border}`,borderLeft:`4px solid ${color}`,borderRadius:12,padding:"12px 14px",flex:1,minWidth:150}}>
+            <div style={{fontSize:11,color:C.textMid,fontWeight:700}}>{label}</div>
+            <div style={{fontSize:20,fontWeight:900,color,marginTop:3}}>{value}</div>
+            {sub&&<div style={{fontSize:10,color:C.textLight,marginTop:2}}>{sub}</div>}
+          </div>
+        );
+        return(<div style={{display:"flex",flexDirection:"column",gap:14}}>
+          <Card>
+            <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+              <div style={{fontSize:13,fontWeight:800}}>📈 {_t("Purchase Register")}</div>
+              <span style={{fontSize:11,color:C.textMid}}>{_t("From")}</span>
+              <input type="date" value={repFrom} onChange={e=>setRepFrom(e.target.value)} style={inSty}/>
+              <span style={{fontSize:11,color:C.textMid}}>{_t("To")}</span>
+              <input type="date" value={repTo} onChange={e=>setRepTo(e.target.value)} style={inSty}/>
+              {(repFrom||repTo)&&<Btn size="sm" variant="ghost" onClick={()=>{setRepFrom("");setRepTo("");}}>{_t("Clear")}</Btn>}
+              <span style={{fontSize:11,color:C.textLight}}>{reg.count} {_t("documents")} · {reg.totals.invoices} {_t("invoices")}, {reg.totals.creditNotes} {_t("credit notes")}</span>
+            </div>
+          </Card>
+          <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
+            {stat(_t("Net (ex-VAT)"),fmtSAR(reg.totals.net),C.info)}
+            {stat(_t("Input VAT"),fmtSAR(reg.totals.vat),C.zatca,_t("Recoverable")+" "+fmtSAR(reg.totals.recoverableVat)+" · "+_t("Non")+" "+fmtSAR(reg.totals.nonRecoverableVat))}
+            {stat(_t("Net Payable"),fmtSAR(reg.totals.gross),C.primary,_t("Invoices minus credit notes"))}
+          </div>
+          {reg.totals.nonRecoverableVat>0&&<div style={{fontSize:11.5,color:C.warning,padding:"8px 12px",background:C.warningLight,borderRadius:8}}>⚠️ {fmtSAR(reg.totals.nonRecoverableVat)} {_t("of input VAT is NOT recoverable — those suppliers were not marked as having issued a valid ZATCA e-invoice.")}</div>}
+
+          <Card>
+            <div style={{fontSize:13,fontWeight:800,marginBottom:10}}>🏭 {_t("Supplier Balances")} ({bals.length})</div>
+            {bals.length===0?(
+              <div style={{padding:"18px",textAlign:"center",color:C.textMid,fontSize:13}}>{_t("No purchase documents in this period.")}</div>
+            ):(
+              <DataTable headers={[_t("Supplier"),_t("Invoices"),_t("Credit Notes"),_t("Balance"),_t("Docs"),_t("Last")]} rows={bals.map(b=>[
+                <strong>{b.supplierName||"—"}</strong>,
+                fmtSAR(b.invoiceTotal),
+                fmtSAR(b.creditTotal),
+                <strong style={{color:b.balance<0?C.danger:C.text}}>{fmtSAR(b.balance)}</strong>,
+                b.docCount,
+                b.lastDate?fmtDate(b.lastDate):"—"
+              ])}/>
+            )}
+            <div style={{fontSize:10.5,color:C.textLight,marginTop:8}}>{_t("Balance = invoices − credit notes (before any supplier payments; payment tracking is a later feature).")}</div>
+          </Card>
+
+          <Card>
+            <div style={{fontSize:13,fontWeight:800,marginBottom:10}}>📄 {_t("Documents in period")} ({reg.count})</div>
+            {reg.count===0?(
+              <div style={{padding:"18px",textAlign:"center",color:C.textMid,fontSize:13}}>{_t("None.")}</div>
+            ):(
+              <DataTable headers={[_t("Date"),_t("Type"),_t("Supplier"),_t("Doc #"),_t("Net"),_t("VAT"),_t("Total")]} rows={reg.rows.slice(0,300).map(p=>{
+                const cn=normDocType(p.docType)==="credit_note"; const s=signedAmounts(p);
+                return [
+                  p.invoiceDate?fmtDate(p.invoiceDate):"—",
+                  cn?<Badge color={C.danger} bg={C.dangerLight}>{_t("Credit")}</Badge>:<Badge color={C.success} bg={C.successLight}>{_t("Invoice")}</Badge>,
+                  p.supplierName||"—", p.supplierInvoiceNo||"—",
+                  fmtSAR(s.subtotal), fmtSAR(s.vatAmount),
+                  <strong style={cn?{color:C.danger}:undefined}>{fmtSAR(s.total)}</strong>
+                ];
+              })}/>
+            )}
+          </Card>
+        </div>);
+      })()}
 
       {/* PURCHASE INVOICE MODAL */}
       {showPurchaseModal&&(()=>{ const c=computePurchaseInvoice(draft); const inSty={padding:"9px 11px",border:`1px solid ${C.border}`,borderRadius:8,fontFamily:"inherit",fontSize:13.5,background:"#fff"}; return(
