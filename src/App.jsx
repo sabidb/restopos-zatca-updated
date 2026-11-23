@@ -5030,14 +5030,19 @@ function buildPresetHTML(order,license,zatcaInvoice,fmt,qrImgSrc,opts){
   // Optional divider AFTER the Simplified Tax Invoice box (toggle: lineAfterTitle)
   const lineAfterTitle=fmt.lineAfterTitle?SEP:"";
   // ── TOKEN + ORDER TYPE BOX (smart labels: Parcel / Dine in / Telephone) ──
+  // Supermarket till: no dine-in/takeaway, so the receipt keeps the big Token
+  // number but drops the order-type label (everything else is identical).
+  const _superRcpt=bizProfile().posLayout==="scan";
   const _isPhone=order.billType==="telephone";
   const _typeEn=order.type==="Takeaway"?"Parcel":order.type==="Dine-in"?"Dine in":order.type==="Delivery"?"Delivery":(order.type||"Parcel");
   const orderTypeAr=order.type==="Takeaway"?"سفري":order.type==="Dine-in"?"محلي":order.type==="Delivery"?"توصيل":"سفري";
   // Telephone line above the token box when it's a phone order.
   // Optional: wrap the telephone line in a box (toggle: phoneInBox)
   const _phoneInner=`<div style="text-align:center;font-weight:900;font-size:${headFont}px;margin:3px 0">Telephone</div>`;
-  const _phoneLine=_isPhone?(fmt.phoneInBox?boxed(_phoneInner,true):_phoneInner):"";
-  const tokenBox=_phoneLine+boxed(`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span style="font-weight:${wToken};font-size:${tokenFont}px">Token No: ${_escHTML(order.token||order.kot||"—")}</span><span style="display:flex;align-items:center;gap:6px"><span style="font-weight:900;font-size:${tokenFont}px">${_escHTML(_typeEn)}</span>${_arSpan(orderTypeAr,"font-size:"+tokenFont+"px")}</span></div>`);
+  const _phoneLine=(_isPhone&&!_superRcpt)?(fmt.phoneInBox?boxed(_phoneInner,true):_phoneInner):"";
+  const tokenBox=_phoneLine+boxed(_superRcpt
+    ? `<div style="text-align:center;font-weight:${wToken};font-size:${tokenFont}px">Token No: ${_escHTML(order.token||order.kot||"—")}</div>`
+    : `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span style="font-weight:${wToken};font-size:${tokenFont}px">Token No: ${_escHTML(order.token||order.kot||"—")}</span><span style="display:flex;align-items:center;gap:6px"><span style="font-weight:900;font-size:${tokenFont}px">${_escHTML(_typeEn)}</span>${_arSpan(orderTypeAr,"font-size:"+tokenFont+"px")}</span></div>`);
   // Optional divider AFTER the Token box (toggle: lineAfterToken)
   const lineAfterToken=fmt.lineAfterToken?SEP:"";
   // ── VOUCHER ──
@@ -8251,12 +8256,72 @@ function CheckoutLayoutTab(){
   );
 }
 
+// Pull the newest deploy: update the service worker, skip waiting, drop all
+// caches, then hard-reload cache-busted. Same mechanism as Help → Update, so a
+// push to GitHub (→ Vercel build) is picked up here. onMsg reports progress.
+async function runAppUpdate(onMsg){
+  try{
+    if("serviceWorker" in navigator){
+      try{
+        const regs=await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map(async r=>{ try{await r.update();}catch(e){} try{r.waiting&&r.waiting.postMessage({type:"SKIP_WAITING"});}catch(e){} }));
+      }catch(e){}
+    }
+    if("caches" in window){ try{const keys=await caches.keys();await Promise.all(keys.map(k=>caches.delete(k)));}catch(e){} }
+    onMsg&&onMsg("Latest version downloaded — reloading…");
+    setTimeout(()=>{ try{ const u=new URL(window.location.href); u.searchParams.set("_v",Date.now().toString()); window.location.replace(u.toString()); }catch(e){ window.location.reload(true); } },800);
+  }catch(e){ onMsg&&onMsg("⚠️ Update failed: "+(e.message||"unknown error")); }
+}
+
+// Settings → Updates: version + one-tap "download the latest update".
+function UpdatesTab({lang="en"}){
+  const [busy,setBusy]=useState(false); const [msg,setMsg]=useState("");
+  return (<Card style={{maxWidth:560}}>
+    <div style={{fontSize:15,fontWeight:700,marginBottom:6}}>🔄 {t("App Updates",lang)}</div>
+    <div style={{fontSize:13,color:C.textMid,marginBottom:16}}>Download the newest version. Your sales, invoices and settings are kept — only the app files refresh.</div>
+    <div style={{display:"flex",alignItems:"center",gap:12,padding:"12px 16px",background:C.bg,borderRadius:10,marginBottom:16}}>
+      <span style={{fontSize:12,fontWeight:700,color:C.textMid}}>Current version</span>
+      <span style={{marginLeft:"auto",fontSize:13,fontWeight:800,color:C.text,fontFamily:"monospace"}}>{APP_VERSION}</span>
+    </div>
+    <Btn disabled={busy} onClick={async()=>{ setBusy(true); setMsg("Checking for the latest version…"); await runAppUpdate(setMsg); }}>
+      {busy?"⏳ Updating…":"⬇️ Download latest update"}
+    </Btn>
+    {msg&&<div style={{marginTop:14,padding:"11px 14px",background:C.primaryLight,border:`1px solid ${C.primary}44`,borderRadius:10,fontSize:12.5,color:C.primary,fontWeight:700}}>{msg}</div>}
+    <div style={{marginTop:16,fontSize:11.5,color:C.textLight,lineHeight:1.6}}>This fetches whatever is currently live on your deployment — i.e. the latest you have pushed to GitHub and built. If nothing changed, it simply reloads the current version.</div>
+  </Card>);
+}
+
+// Hardware check for the Bill Printer tab: a live scan box (a USB/BT scanner
+// types like a keyboard — if the code shows, it's connected) and a test print.
+function HardwareTest(){
+  const [scan,setScan]=useState(""); const [last,setLast]=useState("");
+  function testPrint(){
+    try{
+      let f=document.getElementById("restopos-hwtest-frame");
+      if(!f){ f=document.createElement("iframe"); f.id="restopos-hwtest-frame"; f.style.position="fixed"; f.style.left="-9999px"; f.style.width="0"; f.style.height="0"; f.style.border="0"; document.body.appendChild(f); }
+      const d=f.contentWindow.document; d.open();
+      d.write(`<!doctype html><html><head><style>@page{size:80mm auto;margin:0}body{font-family:monospace;width:80mm;padding:6mm;text-align:center}</style></head><body><div style="font-size:16px;font-weight:900">&#10004; TEST PRINT</div><div style="font-size:12px;margin-top:6px">RestoPOS printer OK</div><div style="font-size:11px;margin-top:4px">${new Date().toLocaleString()}</div><hr/><div style="font-size:11px">If you can read this,<br/>your thermal printer works.</div><script>window.onload=function(){window.print();}<\/script></body></html>`);
+      d.close();
+    }catch(e){ alert("Test print failed: "+e.message); }
+  }
+  return (<div style={{marginTop:18,borderTop:`1px solid ${C.border}`,paddingTop:16}}>
+    <div style={{fontSize:14,fontWeight:800,marginBottom:10}}>🔧 Hardware test</div>
+    <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:14}}>
+      <span style={{fontSize:12,fontWeight:700,color:C.textMid}}>📷 Barcode scanner — scan any item into this box:</span>
+      <input value={scan} onChange={e=>setScan(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&scan.trim()){setLast(scan.trim());setScan("");}}} placeholder="Scan here…" style={{padding:"10px 12px",border:`1.5px solid ${C.primary}`,borderRadius:8,fontSize:14,fontFamily:"inherit"}}/>
+      {last&&<span style={{fontSize:12.5,fontWeight:700,color:C.success}}>✓ Scanner works — last read: <span style={{fontFamily:"monospace"}}>{last}</span></span>}
+    </div>
+    <Btn onClick={testPrint}>🖨️ Test print a sample receipt</Btn>
+    <div style={{marginTop:10,fontSize:11.5,color:C.textLight,lineHeight:1.6}}>A USB / Bluetooth scanner types the barcode like a keyboard — if the code appears above when you scan, it's connected. If the sample receipt prints, your printer is set as default and working.</div>
+  </div>);
+}
+
 function Settings({company,setCompany,tables,setTables,license,onClearLicense,onSwitchAccount,pins,setPins,invoiceFormat,setInvoiceFormat,lang="en",onLangChange,sales=[],items=[]}){
   const [tab,setTab]=useState("company");const [newTableCount,setNewTableCount]=useState(tables.length);const [companySaved,setCompanySaved]=useState(false);
   const TAB_LABELS={"company":"🏢 "+t("Company",lang),"dashboard":"📊 "+t("Dashboard",lang),"tables":"🪑 "+t("Tables",lang),"printers":"🖨️ "+t("Bill Printer",lang),"invoices":"📄 "+t("Invoices",lang),"backup":"💾 "+t("Backup",lang),"security":"🔐 "+t("Security",lang),"license":"📋 "+t("License",lang),"language":"🌐 "+t("Language",lang)};
   // Tables tab for types that seat guests; Checkout (scan-layout picker) for barcode-first types.
   const hasTables=bizFeature("tables");
-  const tabs=[[`company`,`🏢 ${t("Company",lang)}`],[`dashboard`,`📊 ${t("Dashboard",lang)}`],...(hasTables?[[`tables`,`🪑 ${t("Tables",lang)}`]]:[[`checkout`,`🛒 ${t("Checkout",lang)}`]]),[`printers`,`🖨️ ${t("Bill Printer",lang)}`],[`invoices`,`📄 ${t("Invoices",lang)}`],[`presets`,`🎨 ${t("Preset Bills",lang)}`],[`backup`,`💾 ${t("Backup",lang)}`],[`security`,`🔐 ${t("Security",lang)}`],[`license`,`📋 ${t("License",lang)}`],[`language`,`🌐 ${t("Language",lang)}`]];
+  const tabs=[[`company`,`🏢 ${t("Company",lang)}`],[`dashboard`,`📊 ${t("Dashboard",lang)}`],...(hasTables?[[`tables`,`🪑 ${t("Tables",lang)}`]]:[[`checkout`,`🛒 ${t("Checkout",lang)}`]]),[`printers`,`🖨️ ${t("Bill Printer",lang)}`],[`invoices`,`📄 ${t("Invoices",lang)}`],[`presets`,`🎨 ${t("Preset Bills",lang)}`],[`backup`,`💾 ${t("Backup",lang)}`],[`security`,`🔐 ${t("Security",lang)}`],[`license`,`📋 ${t("License",lang)}`],[`updates`,`🔄 ${t("Updates",lang)}`],[`language`,`🌐 ${t("Language",lang)}`]];
   return(<div dir={lang==="ar"?"rtl":"ltr"} style={{fontFamily:lang==="ar"?"'Tajawal',sans-serif":"inherit"}}>
     <div style={{display:"flex",gap:8,marginBottom:20,flexWrap:"wrap"}}>{tabs.map(([id,label])=><button key={id} onClick={()=>setTab(id)} style={{padding:"8px 16px",borderRadius:8,border:`1.5px solid ${tab===id?C.primary:C.border}`,background:tab===id?C.primaryLight:"#fff",color:tab===id?C.primary:C.textMid,fontFamily:"inherit",fontSize:13,fontWeight:600,cursor:"pointer"}}>{TAB_LABELS[id]||label}</button>)}</div>
     {tab==="company"&&<Card style={{maxWidth:640}}>
@@ -8284,12 +8349,14 @@ function Settings({company,setCompany,tables,setTables,license,onClearLicense,on
       </div>
       <div style={{background:C.successLight,border:`1px solid ${C.success}`,borderRadius:10,padding:"12px 16px",marginBottom:16,fontSize:13,color:C.success,fontWeight:600}}>✅ RestoPOS uses a hidden iframe for printing — no pop-up dialog, no extra confirmation.</div>
       <div style={{display:"flex",flexDirection:"column",gap:12}}>{[["Paper Width","80mm standard thermal roll"],["Print Method","Hidden iframe → auto-prints, no pop-up"],["USB / Network","Set thermal printer as default in OS"],["Bluetooth","Pair first via OS settings, then set as default"]].map(([k,v])=><div key={k} style={{display:"flex",gap:12,padding:"10px 14px",background:C.bg,borderRadius:8}}><span style={{fontSize:12,fontWeight:700,color:C.textMid,width:130,flexShrink:0}}>{k}</span><span style={{fontSize:13}}>{v}</span></div>)}</div>
+      <HardwareTest/>
     </Card>}
     {tab==="invoices"&&<InvoiceEnhancements sales={sales} items={items} license={license} company={company}/>}
     {tab==="presets"&&<PresetFormatTab license={license} company={company}/>}
     {tab==="backup"&&<div><CloudSyncStatus/><BackupManager sales={sales} items={items} lang={lang}/></div>}
     {tab==="security"&&<SecurityTab pins={pins} setPins={setPins} lang={lang}/>}
     {tab==="license"&&<LicenseTab license={license} onClearLicense={onClearLicense} onSwitchAccount={onSwitchAccount}/>}
+    {tab==="updates"&&<UpdatesTab lang={lang}/>}
     {tab==="language"&&<Card style={{maxWidth:520}}>
       <div style={{fontSize:15,fontWeight:700,marginBottom:6,fontFamily:lang==="ar"?"'Tajawal',sans-serif":"inherit"}}>
         {lang==="ar"?"إعدادات اللغة":"Language Settings"}
@@ -8726,7 +8793,10 @@ function ReceiptPreview({sale,license}){
 // ═══════════════════════════════════════════════════════════════════
 function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,archiveIndex={},fetchCloudRange,cloudLoading,cloudError}){
   const _t=s=>t(s,lang);
-  const [tab,setTab]=useState("sales");const [dateFrom,setDateFrom]=useState(TODAY);const [dateTo,setDateTo]=useState(TODAY);const [search,setSearch]=useState("");const [refundTarget,setRefundTarget]=useState(null);
+  // Supermarket defaults the view to the last 7 days (restaurant keeps TODAY).
+  // Only the *displayed* range changes — every invoice is still stored and
+  // reachable by widening the date filter (ZATCA retention is untouched).
+  const [tab,setTab]=useState("sales");const [dateFrom,setDateFrom]=useState(()=>bizProfile().posLayout==="scan"?new Date(Date.now()-6*864e5).toISOString().slice(0,10):TODAY);const [dateTo,setDateTo]=useState(TODAY);const [search,setSearch]=useState("");const [refundTarget,setRefundTarget]=useState(null);
   const [kotPrompt,setKotPrompt]=useState(null);const [viewInvoice,setViewInvoice]=useState(null);
   const [debitTarget,setDebitTarget]=useState(null);const [debitReason,setDebitReason]=useState("");const [debitAmount,setDebitAmount]=useState("");const [debitBusy,setDebitBusy]=useState(false);
   // Manager-approval gate for void/refund. requiresApproval() is false unless
@@ -16085,6 +16155,20 @@ function PendingReportBadge({compact}){
   );
 }
 
+// Compact live digital clock for the top toolbar. Ticks every second; shows
+// HH:MM:SS + short date in the till's language.
+function ToolbarClock({lang="en"}){
+  const [now,setNow]=useState(()=>new Date());
+  useEffect(()=>{ const id=setInterval(()=>setNow(new Date()),1000); return ()=>clearInterval(id); },[]);
+  const loc=lang==="ar"?"ar-SA":"en-GB";
+  return (
+    <span title="Current date & time" style={{display:"flex",flexDirection:"column",alignItems:"flex-end",lineHeight:1.1,color:"rgba(255,255,255,0.92)",whiteSpace:"nowrap"}}>
+      <span style={{fontSize:13,fontWeight:800,fontVariantNumeric:"tabular-nums"}}>{now.toLocaleTimeString(loc,{hour:"2-digit",minute:"2-digit",second:"2-digit"})}</span>
+      <span style={{fontSize:8.5,fontWeight:600,color:"rgba(255,255,255,0.6)"}}>{now.toLocaleDateString(loc,{weekday:"short",day:"2-digit",month:"short"})}</span>
+    </span>
+  );
+}
+
 function ZatcaStatusChip({viewport}){
   const [state,setState]=useState({phase2:false,pending:0,failed:0,urgent:0});
 
@@ -17082,12 +17166,14 @@ export default function App(){
             </div>
           )}
           {justCameOnline&&<span style={{fontSize:9,background:"rgba(16,185,129,0.3)",color:"#6ee7b7",padding:"3px 8px",borderRadius:4,fontWeight:800,border:"1px solid rgba(16,185,129,0.5)",whiteSpace:"nowrap"}}>🟢 Back Online</span>}
-          <span title="Today's token — resets on Close Day" style={{fontSize:9,background:"rgba(240,165,0,0.25)",color:"#FFD27F",padding:"2px 7px",borderRadius:4,fontWeight:800,border:"1px solid rgba(240,165,0,0.45)",whiteSpace:"nowrap"}}>🎫 Token {dailyToken}</span>
+          <button onClick={()=>{ try{ if("serviceWorker" in navigator) navigator.serviceWorker.getRegistration().then(r=>r&&r.update()).catch(()=>{}); }catch(e){} window.location.reload(); }}
+            title="Refresh the app — fully reloads and re-reads the latest invoice number and data" style={{display:"flex",alignItems:"center",gap:4,fontSize:10,background:"rgba(255,255,255,0.14)",color:"#fff",padding:"3px 9px",borderRadius:6,fontWeight:800,border:"1px solid rgba(255,255,255,0.22)",cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>🔄 Refresh</button>
           <span title="Last ZATCA invoice number — only real invoices count, not drafts" style={{fontSize:9,background:"rgba(26,107,74,0.35)",color:"#6ee7b7",padding:"2px 7px",borderRadius:4,fontWeight:800,border:"1px solid rgba(26,107,74,0.5)",whiteSpace:"nowrap"}}>🧾 INV-{String(currentICV).padStart(6,"0")}</span>
           <PendingReportBadge compact/>
           {/* Strict Live indicator — always visible when online (offline shown separately with queue count) */}
           {isOnline&&<span style={{fontSize:8,background:"rgba(46,204,113,0.25)",color:"#7FFAB5",padding:"2px 6px",borderRadius:4,fontWeight:800,border:"1px solid rgba(46,204,113,0.5)",whiteSpace:"nowrap"}}>● LIVE</span>}
 
+          <ToolbarClock lang={lang}/>
           <ZatcaStatusChip viewport={viewport}/>
           <div style={{display:"flex",alignItems:"center",gap:2,background:"rgba(255,255,255,0.1)",borderRadius:5,padding:"2px 4px",border:"1px solid rgba(255,255,255,0.15)"}}>
             <div style={{display:"flex",alignItems:"center",gap:4}}>
@@ -17412,8 +17498,13 @@ function ZATCAVatEngine({lang="en"}) {
   // VAT from captured purchase documents into the return instead of re-keying.
   // Default off keeps every existing return byte-for-byte unchanged.
   const canAutoPurchaseVat = bizFeature("purchasing");
+  // When purchasing is enabled (supermarket/hypermarket), include captured
+  // purchase documents as recoverable input VAT BY DEFAULT, so the VAT return
+  // nets sales output VAT against purchase input VAT automatically and stays
+  // current. Respect an explicit opt-out. Types without purchasing (restaurant)
+  // keep the old behaviour (off).
   const [autoPurchaseVat, setAutoPurchaseVat] = useState(() => {
-    try { return canAutoPurchaseVat && LS.get("restopos_vat_autopurchase") === true; } catch { return false; }
+    try { if (!canAutoPurchaseVat) return false; return LS.get("restopos_vat_autopurchase") !== false; } catch { return canAutoPurchaseVat; }
   });
   function toggleAutoPurchaseVat() {
     setAutoPurchaseVat((v) => { const n = !v; try { LS.set("restopos_vat_autopurchase", n); } catch (e) {} return n; });
