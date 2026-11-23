@@ -19,13 +19,26 @@ export function debouncedSync(licenseKey,key,data){
 // every OTHER key with it, and the only symptom is a console warning nobody
 // reads. Refuse the oversized key instead, loudly, and keep the rest working.
 const MAX_SYNC_FIELD_BYTES=350000;
+export const SYNC_FIELD_BUDGET_BYTES=MAX_SYNC_FIELD_BYTES;
 const _oversizeWarned=new Set();
+
+// Observable per-key sync status, so the app can show a sync-health view instead
+// of relying on console warnings nobody reads. In-memory only (resets on reload);
+// records the last outcome of each key's sync attempt this session.
+const _syncStatus={};
+export function getSyncStatus(){
+  const out={};
+  for(const k in _syncStatus) out[k]={..._syncStatus[k]};
+  return out;
+}
+
 export async function syncKeyToFirestore(licenseKey,key,data){
   if(!licenseKey)return;
   try{
     const json=JSON.stringify(data);
     const size=new TextEncoder().encode(json).length;
     if(size>MAX_SYNC_FIELD_BYTES){
+      _syncStatus[key]={key,ok:false,reason:"oversize",sizeBytes:size,budgetBytes:MAX_SYNC_FIELD_BYTES,at:new Date().toISOString()};
       if(!_oversizeWarned.has(key)){
         _oversizeWarned.add(key);
         console.error(`[Sync] REFUSING to sync "${key}": ${(size/1024).toFixed(0)} KB exceeds the `+
@@ -43,8 +56,10 @@ export async function syncKeyToFirestore(licenseKey,key,data){
       licenseKey,
       lastSyncAt:new Date().toISOString(),
     },{merge:true});
+    _syncStatus[key]={key,ok:true,sizeBytes:size,at:new Date().toISOString()};
   }catch(e){
     // Louder than a warning: this is the client's backup failing.
+    _syncStatus[key]={key,ok:false,reason:"error",message:e.message,at:new Date().toISOString()};
     console.error("[Sync] Failed to sync",key,":",e.message);
   }
 }
