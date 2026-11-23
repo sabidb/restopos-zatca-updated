@@ -23,6 +23,7 @@ import ImportWizard from "./components/ImportWizard.jsx";
 import { TODAY } from "./lib/date.js";
 import { logActivity } from "./lib/activity.js";
 import { initSync, debouncedSync, syncKeyToFirestore } from "./lib/sync.js";
+import { initCatalogueCloud, setCatalogueLicense, catalogueCloud, loadAllItems as loadCatalogueCloud, backfillCatalogue } from "./lib/catalogueCloud.js";
 import { initPurchaseStore, setPurchaseInvoicesLocal, loadPurchaseInvoices } from "./lib/purchaseStore.js";
 import { initPOStore, setPurchaseOrdersLocal, loadPurchaseOrders } from "./lib/poStore.js";
 import { initPurchaseCloud, setPurchaseCloudLicense, purchaseDocsCloud, purchaseOrdersCloud, mergeById } from "./lib/purchaseCloud.js";
@@ -136,6 +137,11 @@ if (TRIAL) initTrialMirror({ db, doc, collection, setDoc, writeBatch });
 // Every client's sales history, one document per business day, kept for years.
 // Must also come after db exists.
 initCloudArchive({ db, doc, collection, setDoc, getDoc, getDocs, query, where, orderBy, limit, startAfter, writeBatch });
+// R1 — optional catalogue subcollection (one doc per product), for tenants whose
+// catalogue is too large for the 350 KB client_data blob. OFF by default; the
+// operator backfills and flips restopos_catalogue_subcollection during cutover.
+initCatalogueCloud({ db, doc, setDoc, deleteDoc, collection, getDocs, writeBatch });
+function catalogueSubOn(){ try{ return LS.get("restopos_catalogue_subcollection")===true; }catch(e){ return false; } }
 // Debounced per-key cloud backup engine (src/lib/sync.js). Inject the Firestore
 // handles the same way; must come after db exists, before any screen renders.
 initSync({ db, doc, setDoc });
@@ -16358,6 +16364,21 @@ export default function App(){
     // Then upload any local-only records the cloud doesn't have yet (first-time
     // migration for data captured before cloud persistence existed). Best-effort.
     setPurchaseCloudLicense(savedLic.licenseKey);
+    // R1: when the catalogue subcollection is active, point the adapter at this
+    // client and hydrate the catalogue from it on boot (survives the 350 KB blob
+    // cap). Off by default → the catalogue loads from the blob exactly as before.
+    setCatalogueLicense(savedLic.licenseKey);
+    // Operator cutover hook: run `await window.__restoposCatalogueBackfill()` in the
+    // console to copy this device's catalogue into the subcollection (idempotent).
+    try{ if(typeof window!=="undefined"){ window.__restoposCatalogueBackfill=async()=>{ setCatalogueLicense(savedLic.licenseKey); const r=await backfillCatalogue(LS.get("restopos_items")||[]); console.log("[Catalogue] backfill result:",r); return r; }; } }catch(e){}
+    if(catalogueSubOn()){
+      setTimeout(async()=>{
+        try{
+          const cloudItems=await loadCatalogueCloud();
+          if(cloudItems.length){ LS.set("restopos_items",cloudItems); _setItems(cloudItems); }
+        }catch(e){console.warn("[Catalogue] hydrate failed:",e.message);}
+      },9800);
+    }
     setTimeout(async()=>{
       try{
         const localDocs=loadPurchaseInvoices(), localPOs=loadPurchaseOrders();
@@ -16705,7 +16726,18 @@ export default function App(){
       window.removeEventListener("pagehide",onHide);
     };
   },[trialSnapshot]);
-  function setItems(v){_setItems(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_items",n);const _lic_setItems=LS.get("restopos_license_v2")?.licenseKey;if(_lic_setItems)debouncedSync(_lic_setItems,"restopos_items",n);if(n.length!==p.length)logActivity(n.length>p.length?"ITEM_ADDED":"ITEM_DELETED",{after:{itemCount:n.length}},currentUser?.role||"System");return n;});}
+  function setItems(v){_setItems(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_items",n);const _lic_setItems=LS.get("restopos_license_v2")?.licenseKey;
+    if(catalogueSubOn()){
+      // R1 cutover active: persist only CHANGED products to the subcollection and
+      // delete removed ones (not the whole blob), and stop blob-syncing the catalogue.
+      try{
+        const prevById=new Map((p||[]).map(x=>[String(x.id),x]));
+        const nextIds=new Set();
+        for(const it of n){ nextIds.add(String(it.id)); const old=prevById.get(String(it.id)); if(!old||JSON.stringify(old)!==JSON.stringify(it)) catalogueCloud.persist(it); }
+        for(const it of (p||[])) if(!nextIds.has(String(it.id))) catalogueCloud.remove(it.id);
+      }catch(e){console.error("[Catalogue] subcollection write failed:",e.message);}
+    } else if(_lic_setItems){ debouncedSync(_lic_setItems,"restopos_items",n); }
+    if(n.length!==p.length)logActivity(n.length>p.length?"ITEM_ADDED":"ITEM_DELETED",{after:{itemCount:n.length}},currentUser?.role||"System");return n;});}
   function setTables(v){_setTables(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_tables",n);const lic=LS.get("restopos_license_v2")?.licenseKey;if(lic)debouncedSync(lic,"restopos_tables",n);return n;});}
   function setUsers(v){_setUsers(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_users",n);if(n.length!==p.length)logActivity(n.length>p.length?"USER_ADDED":"USER_DELETED",{after:{userCount:n.length}},currentUser?.role||"System");return n;});}
   function setPromos(v){_setPromos(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_promos",n);const lic=LS.get("restopos_license_v2")?.licenseKey;if(lic)debouncedSync(lic,"restopos_promos",n);return n;});}
