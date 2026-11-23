@@ -41,6 +41,15 @@ export function normInvoiceNo(v) {
   return String(v ?? "").trim().toUpperCase().replace(/[\s\-/\\.]+/g, "");
 }
 
+// Purchase documents come in two kinds: a purchase INVOICE (the shop owes the
+// supplier) and a supplier CREDIT NOTE (the supplier owes the shop back — a
+// return or an overcharge correction). They share the same structure and line
+// math; only the SIGN differs when aggregating (a credit note reduces payables
+// and reduces recoverable input VAT). Default is "invoice" so documents captured
+// before credit notes existed keep behaving exactly as before.
+export const PURCHASE_DOC_TYPES = ["invoice", "credit_note"];
+export function normDocType(v) { return v === "credit_note" ? "credit_note" : "invoice"; }
+
 /**
  * Compute one purchase-invoice line's money from a raw entered line.
  * unitCost is VAT-EXCLUSIVE. rate defaults to the standard KSA VAT rate; pass
@@ -73,6 +82,7 @@ export function computePurchaseInvoice(inv = {}) {
   const total = zr2(subtotal + vatAmount);
   return {
     ...inv,
+    docType: normDocType(inv.docType),
     supplierId: inv.supplierId ?? null,
     supplierName: String(inv.supplierName ?? "").trim(),
     supplierInvoiceNo: String(inv.supplierInvoiceNo ?? "").trim(),
@@ -84,6 +94,20 @@ export function computePurchaseInvoice(inv = {}) {
     vatAmount,
     total,
   };
+}
+
+/**
+ * Signed money for aggregation (reports, supplier balances, input-VAT totals).
+ * An invoice counts positive; a credit note counts negative. Accepts either a
+ * raw document or one already carrying computed totals.
+ * @returns { subtotal, vatAmount, total, sign }
+ */
+export function signedAmounts(doc = {}) {
+  const t = (typeof doc.total === "number" && typeof doc.vatAmount === "number" && typeof doc.subtotal === "number")
+    ? { subtotal: doc.subtotal, vatAmount: doc.vatAmount, total: doc.total }
+    : computePurchaseInvoice(doc);
+  const sign = normDocType(doc.docType) === "credit_note" ? -1 : 1;
+  return { subtotal: sign * t.subtotal, vatAmount: sign * t.vatAmount, total: sign * t.total, sign };
 }
 
 /**
@@ -141,7 +165,10 @@ export function detectDuplicatePurchase(candidate = {}, existing = [], opts = {}
     return an !== "" && an === cn;
   };
 
-  const pool = (existing || []).filter((a) => a && a.id !== ignoreId);
+  // Only compare like with like: an invoice duplicates an invoice, a credit note
+  // duplicates a credit note (they can legitimately share a number otherwise).
+  const pool = (existing || []).filter((a) =>
+    a && a.id !== ignoreId && normDocType(a.docType) === normDocType(cand.docType));
 
   // 1) exact: supplier + invoice number (only when the candidate HAS a number)
   if (cand.supplierInvoiceNoNorm) {

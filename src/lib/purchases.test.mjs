@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   normInvoiceNo, computeLine, computePurchaseInvoice,
   validatePurchaseInvoice, detectDuplicatePurchase,
+  normDocType, signedAmounts,
 } from "./purchases.js";
 
 // ── line & invoice math (VAT-EXCLUSIVE, VAT added on top) ─────────────────
@@ -146,4 +147,43 @@ test("a blank candidate number never triggers an exact match", () => {
     { supplierId: "SUP-1", supplierInvoiceNo: "", invoiceDate: "2026-11-20",
       lines: [{ qty: 1, unitCost: 1 }] }, existing);
   assert.equal(r.level, null);
+});
+
+// ── doc types: invoice vs credit note ────────────────────────────────────
+test("normDocType defaults to invoice; only 'credit_note' is the other", () => {
+  assert.equal(normDocType(undefined), "invoice");
+  assert.equal(normDocType("invoice"), "invoice");
+  assert.equal(normDocType("anything"), "invoice");
+  assert.equal(normDocType("credit_note"), "credit_note");
+});
+
+test("computePurchaseInvoice always carries a docType (default invoice)", () => {
+  assert.equal(computePurchaseInvoice({ lines: [] }).docType, "invoice");
+  assert.equal(computePurchaseInvoice({ docType: "credit_note", lines: [] }).docType, "credit_note");
+});
+
+test("signedAmounts: invoice positive, credit note negative", () => {
+  const inv = { docType: "invoice", subtotal: 100, vatAmount: 15, total: 115 };
+  const cn = { docType: "credit_note", subtotal: 100, vatAmount: 15, total: 115 };
+  assert.deepEqual(signedAmounts(inv), { subtotal: 100, vatAmount: 15, total: 115, sign: 1 });
+  assert.deepEqual(signedAmounts(cn), { subtotal: -100, vatAmount: -15, total: -115, sign: -1 });
+});
+
+test("signedAmounts computes totals when the doc carries only raw lines", () => {
+  const cn = { docType: "credit_note", lines: [{ qty: 2, unitCost: 10 }] }; // net 20, vat 3
+  assert.deepEqual(signedAmounts(cn), { subtotal: -20, vatAmount: -3, total: -23, sign: -1 });
+});
+
+test("duplicate detection is scoped to the same doc type", () => {
+  const pool = [
+    { id: "I1", docType: "invoice", supplierId: "SUP-1", supplierInvoiceNo: "X1", invoiceDate: "2026-11-01", lines: [{ qty: 1, unitCost: 10 }] },
+  ];
+  // a CREDIT NOTE numbered X1 for the same supplier is NOT a duplicate of the invoice
+  const cn = detectDuplicatePurchase(
+    { docType: "credit_note", supplierId: "SUP-1", supplierInvoiceNo: "X1", invoiceDate: "2026-11-02", lines: [{ qty: 1, unitCost: 5 }] }, pool);
+  assert.equal(cn.duplicate, false);
+  // another invoice X1 for the same supplier IS a duplicate
+  const inv = detectDuplicatePurchase(
+    { docType: "invoice", supplierId: "SUP-1", supplierInvoiceNo: "X1", invoiceDate: "2026-11-09", lines: [{ qty: 1, unitCost: 1 }] }, pool);
+  assert.equal(inv.level, "exact");
 });
