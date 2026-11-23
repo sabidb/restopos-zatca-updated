@@ -15,6 +15,7 @@ import { loadPurchaseInvoices, savePurchaseInvoice, deletePurchaseInvoice } from
 import { purchaseRegister, supplierBalances } from "../lib/purchaseReports.js";
 import { getSyncStatus, SYNC_FIELD_BUDGET_BYTES } from "../lib/sync.js";
 import { computePO, matchThreeWay, addReceipt } from "../lib/purchaseOrders.js";
+import { postReceiptToStock } from "../lib/costing.js";
 import { loadPurchaseOrders, savePurchaseOrder, deletePurchaseOrder } from "../lib/poStore.js";
 
 export function InventoryManagement({items,setItems,lang="en"}){
@@ -57,7 +58,20 @@ export function InventoryManagement({items,setItems,lang="en"}){
   const [matchInvId,setMatchInvId]=useState("");  // invoice linked for the match
 
   function openNewPO(){ setPODraft(blankPO()); setShowPOModal(true); }
-  function setPOLine(i,patch){ setPODraft(d=>({...d,lines:d.lines.map((l,j)=>j===i?{...l,...patch}:l)})); }
+  // Editing a line's name resolves it to a catalogue product (exact, case-insensitive)
+  // so received goods can post to stock; pre-fills unit cost from the item when blank.
+  function setPOLine(i,patch){
+    setPODraft(d=>({...d,lines:d.lines.map((l,j)=>{
+      if(j!==i)return l;
+      const nl={...l,...patch};
+      if("name" in patch){
+        const m=items.find(it=>String(it.name||"").trim().toLowerCase()===String(patch.name||"").trim().toLowerCase());
+        nl.itemId=m?m.id:undefined;
+        if(m&&(nl.unitCost===""||nl.unitCost==null))nl.unitCost=m.cost!=null?String(m.cost):nl.unitCost;
+      }
+      return nl;
+    })}));
+  }
   function addPOLine(){ setPODraft(d=>({...d,lines:[...d.lines,blankPOLine()]})); }
   function removePOLine(i){ setPODraft(d=>({...d,lines:d.lines.length>1?d.lines.filter((_,j)=>j!==i):d.lines})); }
   function onPickPOSupplier(id){ const s=suppliers.find(x=>x.id===id); setPODraft(d=>({...d,supplierId:id,supplierName:s?s.name:""})); }
@@ -70,10 +84,16 @@ export function InventoryManagement({items,setItems,lang="en"}){
   function removePO(id){ if(confirm(_t("Delete this purchase order")+"?")) setOrders(deletePurchaseOrder(id)); }
   function openReceive(po){ setReceivePO(computePO(po)); setReceiveNow({}); }
   function submitReceive(){
-    const lines=receivePO.lines.map((l,i)=>({name:l.name,itemId:l.itemId,qty:parseFloat(receiveNow[i])||0})).filter(l=>l.qty>0);
-    if(lines.length===0)return alert(_t("Enter at least one received quantity."));
-    savePurchaseOrder(addReceipt(receivePO,{lines}));
-    setOrders(loadPurchaseOrders()); setReceivePO(null);
+    const recv=receivePO.lines.map((l,i)=>({name:l.name,itemId:l.itemId,qty:parseFloat(receiveNow[i])||0,unitCost:parseFloat(l.unitCost)||0})).filter(l=>l.qty>0);
+    if(recv.length===0)return alert(_t("Enter at least one received quantity."));
+    // Record the delivery on the PO (history) …
+    savePurchaseOrder(addReceipt(receivePO,{lines:recv.map(({name,itemId,qty})=>({name,itemId,qty}))}));
+    setOrders(loadPurchaseOrders());
+    // … and post it to stock (weighted-average cost) for lines that map to a product.
+    const {items:newItems,posted,unmatched}=postReceiptToStock(items,recv);
+    if(posted.length)setItems(newItems);
+    setReceivePO(null);
+    if(unmatched.length)alert(`${_t("Received")}. ${_t("Posted to stock")}: ${posted.length}. ${_t("No matching product (recorded on the PO only)")}: ${unmatched.length}.`);
   }
   function openMatch(po){ setMatchPO(po); setMatchInvId(""); }
 
@@ -330,11 +350,12 @@ export function InventoryManagement({items,setItems,lang="en"}){
             <input type="date" value={poDraft.date} onChange={e=>setPODraft(d=>({...d,date:e.target.value}))} style={inSty}/>
           </div>
           {suppliers.length===0&&<div style={{fontSize:12,color:C.warning,marginBottom:10}}>{_t("Add a supplier first on the Suppliers tab.")}</div>}
-          <div style={{fontSize:12.5,fontWeight:800,margin:"6px 0 8px"}}>{_t("Order lines")}</div>
+          <div style={{fontSize:12.5,fontWeight:800,margin:"6px 0 4px"}}>{_t("Order lines")} <span style={{fontWeight:500,color:C.textLight,fontSize:11}}>· {_t("pick a catalogue item (🔗) so received goods post to stock")}</span></div>
+          <datalist id="po-item-names">{items.map(it=><option key={it.id} value={it.name}/>)}</datalist>
           <div style={{display:"flex",flexDirection:"column",gap:7,marginBottom:10}}>
-            {poDraft.lines.map((l,i)=>{ const cl=c.lines[i]||{}; return(
+            {poDraft.lines.map((l,i)=>{ const cl=c.lines[i]||{}; const linked=l.itemId!=null; return(
               <div key={i} style={{display:"grid",gridTemplateColumns:"2.4fr 0.9fr 1fr 1fr auto",gap:6,alignItems:"center"}}>
-                <input value={l.name} onChange={e=>setPOLine(i,{name:e.target.value})} placeholder={_t("Item / description")} style={inSty}/>
+                <input list="po-item-names" value={l.name} onChange={e=>setPOLine(i,{name:e.target.value})} placeholder={(linked?"🔗 ":"")+_t("Item / description")} title={linked?_t("Linked to a catalogue item — will post to stock"):_t("Not linked — won't post to stock")} style={{...inSty,borderColor:linked?C.success:C.border}}/>
                 <input type="number" value={l.qty} onChange={e=>setPOLine(i,{qty:e.target.value})} placeholder={_t("Qty")} min={0} style={{...inSty,textAlign:"right"}}/>
                 <input type="number" value={l.unitCost} onChange={e=>setPOLine(i,{unitCost:e.target.value})} placeholder={_t("Unit cost")} min={0} style={{...inSty,textAlign:"right"}}/>
                 <div style={{fontSize:13,fontWeight:700,textAlign:"right"}}>{fmtSAR(cl.lineTotal||0)}</div>
