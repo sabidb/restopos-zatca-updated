@@ -20,11 +20,28 @@ const lineKey = (l) => (l.itemId != null && l.itemId !== "")
   ? "id:" + l.itemId
   : "name:" + String(l.name ?? "").trim().toLowerCase();
 
-/** PO ordered totals (net, ex-VAT expected cost). Receipt progress too. */
+/**
+ * PO ordered totals + receipt progress.
+ *
+ * Goods receipts are recorded as discrete delivery events in po.receipts — a PO
+ * can be delivered in several shipments, each its own GRN:
+ *   receipts: [{ id, date, note, lines: [{ name, itemId?, qty }] }]
+ * Per-line receivedQty is the SUM of matching receipt lines. For POs created
+ * before receipt history existed (no receipts array), it falls back to the
+ * legacy per-line receivedQty, so older orders keep behaving exactly as before.
+ */
 export function computePO(po = {}) {
+  const receipts = Array.isArray(po.receipts) ? po.receipts : null;
+  const recvByKey = new Map();
+  if (receipts) {
+    for (const r of receipts) for (const rl of (Array.isArray(r.lines) ? r.lines : [])) {
+      const k = lineKey(rl); recvByKey.set(k, (recvByKey.get(k) || 0) + num(rl.qty));
+    }
+  }
   const lines = (Array.isArray(po.lines) ? po.lines : []).map((l) => {
-    const qty = num(l.qty), receivedQty = num(l.receivedQty), unitCost = num(l.unitCost);
-    return { ...l, qty, receivedQty, unitCost, lineTotal: zr2(qty * unitCost) };
+    const qty = num(l.qty), unitCost = num(l.unitCost);
+    const receivedQty = receipts ? (recvByKey.get(lineKey(l)) || 0) : num(l.receivedQty);
+    return { ...l, qty, unitCost, receivedQty, lineTotal: zr2(qty * unitCost) };
   });
   const orderedValue = zr2(lines.reduce((s, l) => s + l.lineTotal, 0));
   const orderedQty = lines.reduce((s, l) => s + l.qty, 0);
@@ -33,8 +50,34 @@ export function computePO(po = {}) {
   const partlyReceived = !fullyReceived && lines.some((l) => l.receivedQty > 0);
   return {
     ...po, lines, orderedValue, orderedQty, receivedQty,
+    receiptCount: receipts ? receipts.length : (receivedQty > 0 ? 1 : 0),
     receiptStatus: fullyReceived ? "received" : partlyReceived ? "partial" : "open",
   };
+}
+
+/** New goods-receipt event id. */
+export function newReceiptId() {
+  return "GRN-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6);
+}
+
+/**
+ * Append a goods-receipt event to a PO (a delivery). Returns a NEW po object
+ * with the receipt added to po.receipts; only lines with qty > 0 are kept.
+ * Does not mutate the input. computePO then re-derives receivedQty from the
+ * full receipt history.
+ */
+export function addReceipt(po = {}, receipt = {}) {
+  const receipts = Array.isArray(po.receipts) ? po.receipts.slice() : [];
+  const lines = (Array.isArray(receipt.lines) ? receipt.lines : [])
+    .map((l) => ({ name: l.name, itemId: l.itemId, qty: num(l.qty) }))
+    .filter((l) => l.qty > 0);
+  receipts.push({
+    id: receipt.id || newReceiptId(),
+    date: receipt.date || new Date().toISOString().slice(0, 10),
+    note: receipt.note || "",
+    lines,
+  });
+  return { ...po, receipts };
 }
 
 /**
