@@ -14,6 +14,7 @@ import { computePurchaseInvoice, validatePurchaseInvoice, detectDuplicatePurchas
 import { loadPurchaseInvoices, savePurchaseInvoice, deletePurchaseInvoice } from "../lib/purchaseStore.js";
 import { purchaseRegister, supplierBalances } from "../lib/purchaseReports.js";
 import { getSyncStatus, SYNC_FIELD_BUDGET_BYTES } from "../lib/sync.js";
+import { catalogueSubEnabled, setCatalogueSubEnabled } from "../lib/catalogueFlag.js";
 import { computePO, matchThreeWay, addReceipt } from "../lib/purchaseOrders.js";
 import { postReceiptToStock } from "../lib/costing.js";
 import { loadPurchaseOrders, savePurchaseOrder, deletePurchaseOrder } from "../lib/poStore.js";
@@ -466,6 +467,19 @@ export function InventoryManagement({items,setItems,lang="en"}){
                     : _t("No cloud-sync activity yet this session. Make a change (or reopen the app) to populate this."))}
             </div>
             <div style={{fontSize:11,color:C.textLight,marginTop:8}}>{_t("Each data set must stay under the")} {budgetKB} KB {_t("per-key budget; a set that exceeds it stops backing up (it belongs in a subcollection). Status is for this session.")}</div>
+            {(()=>{ void syncTick; const on=catalogueSubEnabled(); return(
+              <div style={{marginTop:14,padding:"12px 14px",borderRadius:10,border:`1px solid ${on?C.primary:C.border}`,background:on?C.primaryLight:C.bg}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+                  <div style={{fontSize:13,fontWeight:800}}>📦 {_t("Catalogue cloud storage (subcollection)")} — {on?_t("ON"):_t("OFF")}</div>
+                  <Btn size="sm" variant={on?"danger":"primary"} onClick={()=>{
+                    if(!on){ if(!confirm(_t("Turn ON for this whole account (all devices)? Back up the catalogue to the cloud FIRST (run the backfill), or products may be missing after reload. Continue?")))return; }
+                    setCatalogueSubEnabled(!on); setSyncTick(n=>n+1);
+                    alert(_t("Saved. It syncs to this account's other devices on their next load. Reload this device for it to take effect here."));
+                  }}>{on?_t("Turn OFF"):_t("Turn ON")}</Btn>
+                </div>
+                <div style={{fontSize:11,color:C.textMid,marginTop:6}}>{_t("Stores the product catalogue as one document per product (for catalogues too large for the backup budget). This is an ACCOUNT-WIDE switch — it applies to every device on this licence. Back up first via the cutover runbook; validate on the emulator before using in production.")}</div>
+              </div>
+            );})()}
           </Card>
 
           {problems.length>0&&<Card>
