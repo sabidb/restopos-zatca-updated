@@ -301,7 +301,7 @@ export function InventoryManagement({items,setItems,lang="en"}){
               <Btn size="sm" variant="danger" onClick={()=>removePurchase(p.id)}>{_t("Delete")}</Btn>
             ];
           })}/>
-          {(()=>{ const net=purchases.reduce((a,p)=>{const s=signedAmounts(p);return{total:a.total+s.total,vat:a.vat+s.vat};},{total:0,vat:0}); return(
+          {(()=>{ const net=purchases.reduce((a,p)=>{const s=signedAmounts(p);return{total:a.total+s.total,vat:a.vat+s.vatAmount};},{total:0,vat:0}); return(
             <div style={{display:"flex",justifyContent:"flex-end",gap:18,marginTop:10,fontSize:12.5,color:C.textMid}}>
               <span>{_t("Net input VAT")}: <strong style={{color:C.text}}>{fmtSAR(net.vat)}</strong></span>
               <span>{_t("Net payable")}: <strong style={{color:C.text}}>{fmtSAR(net.total)}</strong></span>
