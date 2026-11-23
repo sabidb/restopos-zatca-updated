@@ -14,6 +14,8 @@ import { computePurchaseInvoice, validatePurchaseInvoice, detectDuplicatePurchas
 import { loadPurchaseInvoices, savePurchaseInvoice, deletePurchaseInvoice } from "../lib/purchaseStore.js";
 import { purchaseRegister, supplierBalances } from "../lib/purchaseReports.js";
 import { getSyncStatus, SYNC_FIELD_BUDGET_BYTES } from "../lib/sync.js";
+import { computePO, matchThreeWay } from "../lib/purchaseOrders.js";
+import { loadPurchaseOrders, savePurchaseOrder, deletePurchaseOrder } from "../lib/poStore.js";
 
 export function InventoryManagement({items,setItems,lang="en"}){
   const _t=s=>t(s,lang);
@@ -42,6 +44,32 @@ export function InventoryManagement({items,setItems,lang="en"}){
   const [repFrom,setRepFrom]=useState(""); // purchase-report date filter (empty = all time)
   const [repTo,setRepTo]=useState("");
   const [syncTick,setSyncTick]=useState(0); // bump to re-read live sync status
+
+  // ── Purchase orders + goods receipt + 3-way match ──────────────────────────
+  const blankPOLine=()=>({name:"",qty:"",unitCost:"",receivedQty:""});
+  const blankPO=()=>({supplierId:"",supplierName:"",poNumber:"",date:new Date().toISOString().slice(0,10),notes:"",lines:[blankPOLine()]});
+  const [orders,setOrders]=useState(()=>loadPurchaseOrders());
+  const [showPOModal,setShowPOModal]=useState(false);
+  const [poDraft,setPODraft]=useState(blankPO);
+  const [receivePO,setReceivePO]=useState(null); // PO being received (goods receipt)
+  const [matchPO,setMatchPO]=useState(null);      // PO being matched
+  const [matchInvId,setMatchInvId]=useState("");  // invoice linked for the match
+
+  function openNewPO(){ setPODraft(blankPO()); setShowPOModal(true); }
+  function setPOLine(i,patch){ setPODraft(d=>({...d,lines:d.lines.map((l,j)=>j===i?{...l,...patch}:l)})); }
+  function addPOLine(){ setPODraft(d=>({...d,lines:[...d.lines,blankPOLine()]})); }
+  function removePOLine(i){ setPODraft(d=>({...d,lines:d.lines.length>1?d.lines.filter((_,j)=>j!==i):d.lines})); }
+  function onPickPOSupplier(id){ const s=suppliers.find(x=>x.id===id); setPODraft(d=>({...d,supplierId:id,supplierName:s?s.name:""})); }
+  function submitPO(){
+    if(!poDraft.supplierId&&!String(poDraft.supplierName).trim())return alert(_t("Choose a supplier."));
+    if(!String(poDraft.poNumber).trim())return alert(_t("Enter a PO number."));
+    if(!poDraft.lines.some(l=>parseFloat(l.qty)>0))return alert(_t("Add at least one line with a quantity."));
+    savePurchaseOrder(poDraft); setOrders(loadPurchaseOrders()); setShowPOModal(false);
+  }
+  function removePO(id){ if(confirm(_t("Delete this purchase order")+"?")) setOrders(deletePurchaseOrder(id)); }
+  function setReceiveLine(i,v){ setReceivePO(po=>({...po,lines:po.lines.map((l,j)=>j===i?{...l,receivedQty:v}:l)})); }
+  function submitReceive(){ savePurchaseOrder(receivePO); setOrders(loadPurchaseOrders()); setReceivePO(null); }
+  function openMatch(po){ setMatchPO(po); setMatchInvId(""); }
 
   function openNewPurchase(docType="invoice"){ setDraft({...blankPurchase(),docType}); setDupWarn(null); setShowPurchaseModal(true); }
   const isCN=normDocType(draft.docType)==="credit_note"; // current draft is a credit note?
@@ -113,7 +141,7 @@ export function InventoryManagement({items,setItems,lang="en"}){
     setNewSupplier({name:"",phone:"",email:"",notes:""});setShowSupplierModal(false);
   }
 
-  const tabs=[["overview","📊 "+_t("Overview")],["stock","📦 "+_t("Stock Levels")],["movements","🔄 "+_t("Movements")],["suppliers","🏭 "+_t("Suppliers")],...(showPurchases?[["purchases","🧾 "+_t("Purchases")],["preports","📈 "+_t("Purchase Reports")],["synchealth","☁️ "+_t("Sync Health")]]:[])];
+  const tabs=[["overview","📊 "+_t("Overview")],["stock","📦 "+_t("Stock Levels")],["movements","🔄 "+_t("Movements")],["suppliers","🏭 "+_t("Suppliers")],...(showPurchases?[["orders","📋 "+_t("Orders")],["purchases","🧾 "+_t("Purchases")],["preports","📈 "+_t("Purchase Reports")],["synchealth","☁️ "+_t("Sync Health")]]:[])];
   const statCard=(label,value,color,sub)=>(
     <div style={{background:"#fff",border:`1px solid ${C.border}`,borderLeft:`4px solid ${color}`,borderRadius:12,padding:"14px 16px",flex:1,minWidth:150}}>
       <div style={{fontSize:11,color:C.textMid,fontWeight:700}}>{label}</div>
@@ -254,6 +282,126 @@ export function InventoryManagement({items,setItems,lang="en"}){
           );})()}
         </>)}
       </Card>}
+
+      {/* PURCHASE ORDERS (+ goods receipt + 3-way match) */}
+      {showPurchases&&tab==="orders"&&<Card>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6,flexWrap:"wrap",gap:8}}>
+          <div style={{fontSize:14,fontWeight:800}}>📋 {_t("Purchase Orders")} ({orders.length})</div>
+          <Btn size="sm" onClick={openNewPO}>+ {_t("New Purchase Order")}</Btn>
+        </div>
+        <div style={{fontSize:11.5,color:C.textMid,marginBottom:12}}>{_t("What you ordered. Record goods as they arrive, then 3-way match the supplier invoice to catch short deliveries, over-billing and price changes before you pay.")}</div>
+        {orders.length===0?(
+          <div style={{padding:"20px",textAlign:"center",color:C.textMid,fontSize:13}}>{_t("No purchase orders yet.")}</div>
+        ):(
+          <DataTable headers={[_t("PO #"),_t("Supplier"),_t("Date"),_t("Ordered"),_t("Receipt"),""]} rows={orders.slice(0,200).map(po=>{
+            const rb={open:[C.textMid,C.bg],partial:[C.warning,C.warningLight],received:[C.success,C.successLight]}[po.receiptStatus]||[C.textMid,C.bg];
+            return [
+              <strong>{po.poNumber||"—"}</strong>,
+              po.supplierName||"—",
+              po.date?fmtDate(po.date):"—",
+              fmtSAR(po.orderedValue||0),
+              <Badge color={rb[0]} bg={rb[1]}>{_t(po.receiptStatus==="received"?"Received":po.receiptStatus==="partial"?"Partial":"Open")}</Badge>,
+              <div style={{display:"flex",gap:5}}>
+                <Btn size="sm" variant="outline" onClick={()=>setReceivePO(computePO(po))}>📥 {_t("Receive")}</Btn>
+                <Btn size="sm" variant="ghost" onClick={()=>openMatch(computePO(po))}>🔍 {_t("Match")}</Btn>
+                <Btn size="sm" variant="danger" onClick={()=>removePO(po.id)}>✕</Btn>
+              </div>
+            ];
+          })}/>
+        )}
+      </Card>}
+
+      {/* NEW PO MODAL */}
+      {showPOModal&&(()=>{ const c=computePO(poDraft); const inSty={padding:"9px 11px",border:`1px solid ${C.border}`,borderRadius:8,fontFamily:"inherit",fontSize:13.5,background:"#fff"}; return(
+        <Modal title={"📋 "+_t("New Purchase Order")} onClose={()=>setShowPOModal(false)} width={720}>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:12}}>
+            <select value={poDraft.supplierId} onChange={e=>onPickPOSupplier(e.target.value)} style={inSty}>
+              <option value="">{_t("Select supplier")+" *"}</option>
+              {suppliers.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+            <input value={poDraft.poNumber} onChange={e=>setPODraft(d=>({...d,poNumber:e.target.value}))} placeholder={_t("PO number")+" *"} style={inSty}/>
+            <input type="date" value={poDraft.date} onChange={e=>setPODraft(d=>({...d,date:e.target.value}))} style={inSty}/>
+          </div>
+          {suppliers.length===0&&<div style={{fontSize:12,color:C.warning,marginBottom:10}}>{_t("Add a supplier first on the Suppliers tab.")}</div>}
+          <div style={{fontSize:12.5,fontWeight:800,margin:"6px 0 8px"}}>{_t("Order lines")}</div>
+          <div style={{display:"flex",flexDirection:"column",gap:7,marginBottom:10}}>
+            {poDraft.lines.map((l,i)=>{ const cl=c.lines[i]||{}; return(
+              <div key={i} style={{display:"grid",gridTemplateColumns:"2.4fr 0.9fr 1fr 1fr auto",gap:6,alignItems:"center"}}>
+                <input value={l.name} onChange={e=>setPOLine(i,{name:e.target.value})} placeholder={_t("Item / description")} style={inSty}/>
+                <input type="number" value={l.qty} onChange={e=>setPOLine(i,{qty:e.target.value})} placeholder={_t("Qty")} min={0} style={{...inSty,textAlign:"right"}}/>
+                <input type="number" value={l.unitCost} onChange={e=>setPOLine(i,{unitCost:e.target.value})} placeholder={_t("Unit cost")} min={0} style={{...inSty,textAlign:"right"}}/>
+                <div style={{fontSize:13,fontWeight:700,textAlign:"right"}}>{fmtSAR(cl.lineTotal||0)}</div>
+                <button onClick={()=>removePOLine(i)} style={{border:"none",background:"none",cursor:"pointer",fontSize:16,color:C.danger,opacity:poDraft.lines.length>1?1:0.3}}>✕</button>
+              </div>
+            );})}
+          </div>
+          <Btn size="sm" variant="outline" onClick={addPOLine}>+ {_t("Add line")}</Btn>
+          <div style={{display:"flex",justifyContent:"flex-end",marginTop:14,fontWeight:900,fontSize:15}}>{_t("Ordered total")}: {fmtSAR(c.orderedValue)}</div>
+          <div style={{display:"flex",gap:10,marginTop:14}}>
+            <Btn variant="ghost" style={{flex:1}} onClick={()=>setShowPOModal(false)}>{_t("Cancel")}</Btn>
+            <Btn style={{flex:1}} onClick={submitPO}>{_t("Save Purchase Order")}</Btn>
+          </div>
+        </Modal>
+      );})()}
+
+      {/* GOODS RECEIPT MODAL */}
+      {receivePO&&(()=>{ const inSty={padding:"8px 10px",border:`1px solid ${C.border}`,borderRadius:8,fontFamily:"inherit",fontSize:13,background:"#fff",width:90,textAlign:"right"}; return(
+        <Modal title={"📥 "+_t("Receive Goods")+" — "+(receivePO.poNumber||"")} onClose={()=>setReceivePO(null)} width={560}>
+          <div style={{fontSize:12,color:C.textMid,marginBottom:12}}>{_t("Enter the quantity actually received for each line.")}</div>
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            {receivePO.lines.map((l,i)=>(
+              <div key={i} style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,padding:"8px 10px",background:C.bg,borderRadius:8}}>
+                <div><div style={{fontSize:13,fontWeight:700}}>{l.name||"—"}</div><div style={{fontSize:11,color:C.textMid}}>{_t("Ordered")}: {l.qty}</div></div>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{fontSize:11,color:C.textMid}}>{_t("Received")}</span>
+                  <input type="number" min={0} value={l.receivedQty} onChange={e=>setReceiveLine(i,e.target.value)} style={inSty}/>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div style={{display:"flex",gap:10,marginTop:16}}>
+            <Btn variant="ghost" style={{flex:1}} onClick={()=>setReceivePO(null)}>{_t("Cancel")}</Btn>
+            <Btn style={{flex:1}} onClick={submitReceive}>{_t("Save Receipt")}</Btn>
+          </div>
+        </Modal>
+      );})()}
+
+      {/* 3-WAY MATCH MODAL */}
+      {matchPO&&(()=>{
+        const invChoices=purchases.filter(p=>normDocType(p.docType)!=="credit_note");
+        const inv=invChoices.find(p=>p.id===matchInvId)||null;
+        const m=inv?matchThreeWay(matchPO,inv):null;
+        const sc={"ok":[C.success,C.successLight,"OK"],"short-receipt":[C.warning,C.warningLight,"Short"],"over-receipt":[C.warning,C.warningLight,"Over-recv"],"price-variance":[C.warning,C.warningLight,"Price"],"over-billed":[C.danger,C.dangerLight,"Over-billed"],"not-received":[C.danger,C.dangerLight,"Not recv"],"not-ordered":[C.danger,C.dangerLight,"Not ordered"]};
+        const inSty={padding:"9px 11px",border:`1px solid ${C.border}`,borderRadius:8,fontFamily:"inherit",fontSize:13.5,background:"#fff"};
+        return(
+        <Modal title={"🔍 "+_t("3-Way Match")+" — "+(matchPO.poNumber||"")} onClose={()=>setMatchPO(null)} width={820}>
+          <div style={{fontSize:12,color:C.textMid,marginBottom:10}}>{_t("Compare what was ordered and received against the supplier's invoice.")}</div>
+          <select value={matchInvId} onChange={e=>setMatchInvId(e.target.value)} style={{...inSty,width:"100%",marginBottom:12}}>
+            <option value="">{_t("Select the supplier invoice to match…")}</option>
+            {invChoices.map(p=><option key={p.id} value={p.id}>{(p.supplierName||"—")+" · "+(p.supplierInvoiceNo||"—")+" · "+fmtSAR(p.total)+(p.invoiceDate?" · "+fmtDate(p.invoiceDate):"")}</option>)}
+          </select>
+          {!inv?(
+            <div style={{padding:"20px",textAlign:"center",color:C.textMid,fontSize:13}}>{invChoices.length?_t("Pick an invoice above to run the match."):_t("No purchase invoices captured yet — add one on the Purchases tab.")}</div>
+          ):(<>
+            <div style={{marginBottom:10,padding:"10px 12px",borderRadius:8,fontSize:13,fontWeight:700,background:m.summary.hasIssues?C.dangerLight:C.successLight,color:m.summary.hasIssues?C.danger:C.success}}>
+              {m.summary.hasIssues?`⚠️ ${m.summary.issues} ${_t("line(s) need attention")} · ${m.summary.matched} ${_t("OK")}`:`✅ ${_t("All")} ${m.summary.matched} ${_t("line(s) match")}`}
+            </div>
+            <DataTable headers={[_t("Item"),_t("Ordered"),_t("Received"),_t("Invoiced"),_t("PO cost"),_t("Inv cost"),_t("Δ price"),_t("Status")]} rows={m.lines.map(l=>{
+              const s=sc[l.status]||[C.textMid,C.bg,l.status];
+              return [
+                l.name||"—", l.orderedQty, l.receivedQty, l.invoicedQty,
+                l.expectedCost!=null?fmtSAR(l.expectedCost):"—",
+                l.invoicedCost!=null?fmtSAR(l.invoicedCost):"—",
+                <span style={{color:l.priceVariance?C.danger:C.textMid}}>{l.priceVariance?fmtSAR(l.priceVariance):"—"}</span>,
+                <Badge color={s[0]} bg={s[1]}>{_t(s[2])}</Badge>
+              ];
+            })}/>
+          </>)}
+          <div style={{display:"flex",marginTop:16}}>
+            <Btn variant="ghost" style={{flex:1}} onClick={()=>setMatchPO(null)}>{_t("Close")}</Btn>
+          </div>
+        </Modal>
+      );})()}
 
       {/* SYNC HEALTH (cloud-backup status per key) */}
       {showPurchases&&tab==="synchealth"&&(()=>{
