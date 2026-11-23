@@ -71,6 +71,11 @@ export function trialStatus(license) {
 // The tier the app should actually enforce: the trial tier while a trial is
 // live, otherwise the client's own plan.
 export function effectivePlan(license) {
+  // Trial users get the full paid experience: the "explore" trial build
+  // (license.isTrial) and a live premium trial (premiumTrialUntil) both run at
+  // the top tier, so a prospect can try everything a paid client can use —
+  // Inventory/Purchases, exports, analytics, loyalty, supermarket mode, etc.
+  if (license?.isTrial) return TRIAL_PLAN;
   if (trialStatus(license).active) return TRIAL_PLAN;
   return license?.subscriptionPlan || "basic";
 }
