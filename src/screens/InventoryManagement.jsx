@@ -14,7 +14,7 @@ import { computePurchaseInvoice, validatePurchaseInvoice, detectDuplicatePurchas
 import { loadPurchaseInvoices, savePurchaseInvoice, deletePurchaseInvoice } from "../lib/purchaseStore.js";
 import { purchaseRegister, supplierBalances } from "../lib/purchaseReports.js";
 import { getSyncStatus, SYNC_FIELD_BUDGET_BYTES } from "../lib/sync.js";
-import { computePO, matchThreeWay } from "../lib/purchaseOrders.js";
+import { computePO, matchThreeWay, addReceipt } from "../lib/purchaseOrders.js";
 import { loadPurchaseOrders, savePurchaseOrder, deletePurchaseOrder } from "../lib/poStore.js";
 
 export function InventoryManagement({items,setItems,lang="en"}){
@@ -51,7 +51,8 @@ export function InventoryManagement({items,setItems,lang="en"}){
   const [orders,setOrders]=useState(()=>loadPurchaseOrders());
   const [showPOModal,setShowPOModal]=useState(false);
   const [poDraft,setPODraft]=useState(blankPO);
-  const [receivePO,setReceivePO]=useState(null); // PO being received (goods receipt)
+  const [receivePO,setReceivePO]=useState(null); // computed PO being received (goods receipt)
+  const [receiveNow,setReceiveNow]=useState({});  // {lineIndex: qty received in THIS delivery}
   const [matchPO,setMatchPO]=useState(null);      // PO being matched
   const [matchInvId,setMatchInvId]=useState("");  // invoice linked for the match
 
@@ -67,8 +68,13 @@ export function InventoryManagement({items,setItems,lang="en"}){
     savePurchaseOrder(poDraft); setOrders(loadPurchaseOrders()); setShowPOModal(false);
   }
   function removePO(id){ if(confirm(_t("Delete this purchase order")+"?")) setOrders(deletePurchaseOrder(id)); }
-  function setReceiveLine(i,v){ setReceivePO(po=>({...po,lines:po.lines.map((l,j)=>j===i?{...l,receivedQty:v}:l)})); }
-  function submitReceive(){ savePurchaseOrder(receivePO); setOrders(loadPurchaseOrders()); setReceivePO(null); }
+  function openReceive(po){ setReceivePO(computePO(po)); setReceiveNow({}); }
+  function submitReceive(){
+    const lines=receivePO.lines.map((l,i)=>({name:l.name,itemId:l.itemId,qty:parseFloat(receiveNow[i])||0})).filter(l=>l.qty>0);
+    if(lines.length===0)return alert(_t("Enter at least one received quantity."));
+    savePurchaseOrder(addReceipt(receivePO,{lines}));
+    setOrders(loadPurchaseOrders()); setReceivePO(null);
+  }
   function openMatch(po){ setMatchPO(po); setMatchInvId(""); }
 
   function openNewPurchase(docType="invoice"){ setDraft({...blankPurchase(),docType}); setDupWarn(null); setShowPurchaseModal(true); }
@@ -293,16 +299,17 @@ export function InventoryManagement({items,setItems,lang="en"}){
         {orders.length===0?(
           <div style={{padding:"20px",textAlign:"center",color:C.textMid,fontSize:13}}>{_t("No purchase orders yet.")}</div>
         ):(
-          <DataTable headers={[_t("PO #"),_t("Supplier"),_t("Date"),_t("Ordered"),_t("Receipt"),""]} rows={orders.slice(0,200).map(po=>{
+          <DataTable headers={[_t("PO #"),_t("Supplier"),_t("Date"),_t("Ordered"),_t("Receipt"),""]} rows={orders.slice(0,200).map(po0=>{
+            const po=computePO(po0); // derive status/value live (robust to cloud-restored data)
             const rb={open:[C.textMid,C.bg],partial:[C.warning,C.warningLight],received:[C.success,C.successLight]}[po.receiptStatus]||[C.textMid,C.bg];
             return [
               <strong>{po.poNumber||"—"}</strong>,
               po.supplierName||"—",
               po.date?fmtDate(po.date):"—",
               fmtSAR(po.orderedValue||0),
-              <Badge color={rb[0]} bg={rb[1]}>{_t(po.receiptStatus==="received"?"Received":po.receiptStatus==="partial"?"Partial":"Open")}</Badge>,
+              <Badge color={rb[0]} bg={rb[1]}>{_t(po.receiptStatus==="received"?"Received":po.receiptStatus==="partial"?"Partial":"Open")}{po.receiptCount>0?` (${po.receiptCount})`:""}</Badge>,
               <div style={{display:"flex",gap:5}}>
-                <Btn size="sm" variant="outline" onClick={()=>setReceivePO(computePO(po))}>📥 {_t("Receive")}</Btn>
+                <Btn size="sm" variant="outline" onClick={()=>openReceive(po)}>📥 {_t("Receive")}</Btn>
                 <Btn size="sm" variant="ghost" onClick={()=>openMatch(computePO(po))}>🔍 {_t("Match")}</Btn>
                 <Btn size="sm" variant="danger" onClick={()=>removePO(po.id)}>✕</Btn>
               </div>
@@ -346,22 +353,32 @@ export function InventoryManagement({items,setItems,lang="en"}){
 
       {/* GOODS RECEIPT MODAL */}
       {receivePO&&(()=>{ const inSty={padding:"8px 10px",border:`1px solid ${C.border}`,borderRadius:8,fontFamily:"inherit",fontSize:13,background:"#fff",width:90,textAlign:"right"}; return(
-        <Modal title={"📥 "+_t("Receive Goods")+" — "+(receivePO.poNumber||"")} onClose={()=>setReceivePO(null)} width={560}>
-          <div style={{fontSize:12,color:C.textMid,marginBottom:12}}>{_t("Enter the quantity actually received for each line.")}</div>
+        <Modal title={"📥 "+_t("Receive Goods")+" — "+(receivePO.poNumber||"")} onClose={()=>setReceivePO(null)} width={600}>
+          <div style={{fontSize:12,color:C.textMid,marginBottom:12}}>{_t("Record THIS delivery. Enter only what arrived now — each delivery is kept as a separate goods receipt.")}</div>
           <div style={{display:"flex",flexDirection:"column",gap:8}}>
-            {receivePO.lines.map((l,i)=>(
+            {receivePO.lines.map((l,i)=>{ const remaining=Math.max(0,(l.qty||0)-(l.receivedQty||0)); return(
               <div key={i} style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,padding:"8px 10px",background:C.bg,borderRadius:8}}>
-                <div><div style={{fontSize:13,fontWeight:700}}>{l.name||"—"}</div><div style={{fontSize:11,color:C.textMid}}>{_t("Ordered")}: {l.qty}</div></div>
+                <div><div style={{fontSize:13,fontWeight:700}}>{l.name||"—"}</div><div style={{fontSize:11,color:C.textMid}}>{_t("Ordered")}: {l.qty} · {_t("Already received")}: {l.receivedQty} · {_t("Remaining")}: {remaining}</div></div>
                 <div style={{display:"flex",alignItems:"center",gap:8}}>
-                  <span style={{fontSize:11,color:C.textMid}}>{_t("Received")}</span>
-                  <input type="number" min={0} value={l.receivedQty} onChange={e=>setReceiveLine(i,e.target.value)} style={inSty}/>
+                  <span style={{fontSize:11,color:C.textMid}}>{_t("Receiving now")}</span>
+                  <input type="number" min={0} placeholder="0" value={receiveNow[i]??""} onChange={e=>setReceiveNow(m=>({...m,[i]:e.target.value}))} style={inSty}/>
                 </div>
               </div>
-            ))}
+            );})}
           </div>
+          {Array.isArray(receivePO.receipts)&&receivePO.receipts.length>0&&<div style={{marginTop:14}}>
+            <div style={{fontSize:12,fontWeight:800,marginBottom:6}}>📜 {_t("Delivery history")} ({receivePO.receipts.length})</div>
+            <div style={{display:"flex",flexDirection:"column",gap:4}}>
+              {receivePO.receipts.map((r,ri)=>(
+                <div key={r.id||ri} style={{fontSize:11.5,color:C.textMid,padding:"5px 10px",background:C.bg,borderRadius:6}}>
+                  {r.date?fmtDate(r.date):"—"} · {r.lines.map(rl=>`${rl.name||"—"} ×${rl.qty}`).join(", ")}
+                </div>
+              ))}
+            </div>
+          </div>}
           <div style={{display:"flex",gap:10,marginTop:16}}>
             <Btn variant="ghost" style={{flex:1}} onClick={()=>setReceivePO(null)}>{_t("Cancel")}</Btn>
-            <Btn style={{flex:1}} onClick={submitReceive}>{_t("Save Receipt")}</Btn>
+            <Btn style={{flex:1}} onClick={submitReceive}>{_t("Save Delivery")}</Btn>
           </div>
         </Modal>
       );})()}

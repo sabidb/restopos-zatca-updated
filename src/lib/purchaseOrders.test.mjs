@@ -1,7 +1,7 @@
 // Golden tests for src/lib/purchaseOrders.js — run with: npm test
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { computePO, matchThreeWay } from "./purchaseOrders.js";
+import { computePO, matchThreeWay, addReceipt } from "./purchaseOrders.js";
 
 // ── computePO ─────────────────────────────────────────────────────────────
 test("computePO totals ordered value and reports receipt status", () => {
@@ -15,6 +15,47 @@ test("computePO totals ordered value and reports receipt status", () => {
 
   const full = computePO({ lines: [{ name: "A", qty: 10, unitCost: 5, receivedQty: 10 }] });
   assert.equal(full.receiptStatus, "received");
+});
+
+// ── goods-receipt history (multiple deliveries) ────────────────────────────
+test("addReceipt appends a delivery without mutating the PO; keeps qty>0 only", () => {
+  const po = { lines: [{ name: "A", qty: 10, unitCost: 5 }] };
+  const po2 = addReceipt(po, { date: "2026-11-02", lines: [{ name: "A", qty: 4 }, { name: "A", qty: 0 }] });
+  assert.equal(po.receipts, undefined);         // original untouched
+  assert.equal(po2.receipts.length, 1);
+  assert.equal(po2.receipts[0].lines.length, 1); // zero-qty line dropped
+  assert.ok(po2.receipts[0].id.startsWith("GRN-"));
+});
+
+test("receivedQty is the SUM across multiple receipts", () => {
+  let po = { lines: [{ name: "A", qty: 10, unitCost: 5 }] };
+  po = addReceipt(po, { lines: [{ name: "A", qty: 4 }] });
+  po = addReceipt(po, { lines: [{ name: "A", qty: 6 }] });
+  const c = computePO(po);
+  assert.equal(c.lines[0].receivedQty, 10);
+  assert.equal(c.receiptStatus, "received");
+  assert.equal(c.receiptCount, 2);
+});
+
+test("partial across deliveries stays 'partial' until fully received", () => {
+  let po = { lines: [{ name: "A", qty: 10, unitCost: 5 }] };
+  po = addReceipt(po, { lines: [{ name: "A", qty: 3 }] });
+  assert.equal(computePO(po).receiptStatus, "partial");
+});
+
+test("legacy POs (no receipts array) still use per-line receivedQty", () => {
+  const c = computePO({ lines: [{ name: "A", qty: 10, unitCost: 5, receivedQty: 10 }] });
+  assert.equal(c.lines[0].receivedQty, 10);
+  assert.equal(c.receiptStatus, "received");
+});
+
+test("3-way match reads summed receipts from computePO", () => {
+  let po = { lines: [{ name: "Milk", qty: 10, unitCost: 5 }] };
+  po = addReceipt(po, { lines: [{ name: "Milk", qty: 5 }] });
+  po = addReceipt(po, { lines: [{ name: "Milk", qty: 3 }] }); // 8 received total
+  const m = matchThreeWay(computePO(po), { lines: [{ name: "Milk", qty: 10, unitCost: 5 }] });
+  assert.equal(m.lines[0].receivedQty, 8);
+  assert.equal(m.lines[0].status, "over-billed"); // billed 10 > received 8
 });
 
 // ── matchThreeWay ─────────────────────────────────────────────────────────
