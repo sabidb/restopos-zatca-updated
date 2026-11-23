@@ -16759,11 +16759,19 @@ export default function App(){
           setTrialGift({days:Math.max(1,nowTrial.daysLeft)});
         }
         // Instant upgrade celebration — only when a plan we already knew about
-        // moves strictly UP a tier (never on first load or on a downgrade). The
-        // LS write above means the next snapshot sees prevPlanRaw===nextPlan, so
-        // this fires exactly once per real upgrade.
-        if(prevPlanRaw&&isUpgrade(prevPlanRaw,nextPlan)){
+        // moves strictly UP a tier (never on first load or on a downgrade).
+        // A durable ack (the highest plan already celebrated) makes this fire
+        // exactly once per real upgrade even if the local plan snapshot is
+        // rebuilt from the trial licence on a later open (which would otherwise
+        // re-trigger the celebration every time the app is reopened).
+        const _celebratedPlan=LS.get("restopos_celebrated_plan");
+        if(prevPlanRaw&&isUpgrade(prevPlanRaw,nextPlan)&&(!_celebratedPlan||isUpgrade(_celebratedPlan,nextPlan))){
+          LS.set("restopos_celebrated_plan",nextPlan);
           setPlanCelebration({from:prevPlanRaw,to:nextPlan});
+        }else if(!_celebratedPlan){
+          // Record the current plan the first time we see it (fresh install or
+          // a non-upgrade) so a later snapshot reset can't retro-celebrate.
+          LS.set("restopos_celebrated_plan",nextPlan);
         }
         // ── Subscription expiry enforcement ──────────────────────────
         const planMonths={basic:1,professional:12,premium:12};
