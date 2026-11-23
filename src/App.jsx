@@ -23,6 +23,9 @@ import ImportWizard from "./components/ImportWizard.jsx";
 import { TODAY } from "./lib/date.js";
 import { logActivity } from "./lib/activity.js";
 import { initSync, debouncedSync, syncKeyToFirestore } from "./lib/sync.js";
+import { initPurchaseStore, setPurchaseInvoicesLocal, loadPurchaseInvoices } from "./lib/purchaseStore.js";
+import { initPOStore, setPurchaseOrdersLocal, loadPurchaseOrders } from "./lib/poStore.js";
+import { initPurchaseCloud, setPurchaseCloudLicense, purchaseDocsCloud, purchaseOrdersCloud, mergeById } from "./lib/purchaseCloud.js";
 import { getLang, setLangStore, t, dir } from "./i18n/index.js";
 import { BUSINESS_TYPES, DEFAULT_BUSINESS_TYPE, getBusinessType, bizProfile, bizFeature, manualBillingEnabled, isSupermarket } from "./config/businessTypes.js";
 import { rolesForProfile, DEFAULT_PINS } from "./config/roles.js";
@@ -135,6 +138,13 @@ initCloudArchive({ db, doc, collection, setDoc, getDoc, getDocs, query, where, o
 // Debounced per-key cloud backup engine (src/lib/sync.js). Inject the Firestore
 // handles the same way; must come after db exists, before any screen renders.
 initSync({ db, doc, setDoc });
+// Purchase documents & orders persist to Firestore SUBCOLLECTIONS (one document
+// each), never the capped client_data document — the same shape as the sales
+// archive. The adapters plug into the local stores' cloud seam; the active
+// client is set at login (see purchase-cloud hydration on boot, below).
+initPurchaseCloud({ db, doc, setDoc, deleteDoc, collection, getDocs });
+initPurchaseStore({ cloud: purchaseDocsCloud });
+initPOStore({ cloud: purchaseOrdersCloud });
 // Support hook. Not temporary any more, and not decoration: the questions it
 // answers are ones nobody can answer from the outside — is this till signed in,
 // and are any of its invoices still missing from the permanent archive. Reading
@@ -16340,6 +16350,25 @@ export default function App(){
     setTimeout(()=>{
       backfillArchive(savedLic.licenseKey).catch(e=>console.warn("[Archive] backfill failed:",e.message));
     },9000);
+
+    // Purchase docs & POs: point the cloud adapter at this client and, on every
+    // boot, reconcile the device with the Firestore subcollections — so
+    // purchases survive a browser-clear and follow the client across devices.
+    // Then upload any local-only records the cloud doesn't have yet (first-time
+    // migration for data captured before cloud persistence existed). Best-effort.
+    setPurchaseCloudLicense(savedLic.licenseKey);
+    setTimeout(async()=>{
+      try{
+        const localDocs=loadPurchaseInvoices(), localPOs=loadPurchaseOrders();
+        const [cloudDocs,cloudPOs]=await Promise.all([purchaseDocsCloud.loadAll(),purchaseOrdersCloud.loadAll()]);
+        setPurchaseInvoicesLocal(mergeById(cloudDocs,localDocs));
+        setPurchaseOrdersLocal(mergeById(cloudPOs,localPOs));
+        const haveDoc=new Set(cloudDocs.map(d=>d&&d.id));
+        const havePO=new Set(cloudPOs.map(d=>d&&d.id));
+        localDocs.filter(d=>d&&!haveDoc.has(d.id)).forEach(d=>purchaseDocsCloud.persist(d));
+        localPOs.filter(d=>d&&!havePO.has(d.id)).forEach(d=>purchaseOrdersCloud.persist(d));
+      }catch(e){console.warn("[PurchaseCloud] hydrate failed:",e.message);}
+    },9500);
 
     // Trading sessions, on every boot and in both directions.
     //
