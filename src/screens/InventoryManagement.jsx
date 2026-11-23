@@ -13,6 +13,7 @@ import { bizFeature } from "../config/businessTypes.js";
 import { computePurchaseInvoice, validatePurchaseInvoice, detectDuplicatePurchase, signedAmounts, normDocType } from "../lib/purchases.js";
 import { loadPurchaseInvoices, savePurchaseInvoice, deletePurchaseInvoice } from "../lib/purchaseStore.js";
 import { purchaseRegister, supplierBalances } from "../lib/purchaseReports.js";
+import { getSyncStatus, SYNC_FIELD_BUDGET_BYTES } from "../lib/sync.js";
 
 export function InventoryManagement({items,setItems,lang="en"}){
   const _t=s=>t(s,lang);
@@ -40,6 +41,7 @@ export function InventoryManagement({items,setItems,lang="en"}){
   const [dupWarn,setDupWarn]=useState(null); // { level:"exact"|"near", match } when a save is held
   const [repFrom,setRepFrom]=useState(""); // purchase-report date filter (empty = all time)
   const [repTo,setRepTo]=useState("");
+  const [syncTick,setSyncTick]=useState(0); // bump to re-read live sync status
 
   function openNewPurchase(docType="invoice"){ setDraft({...blankPurchase(),docType}); setDupWarn(null); setShowPurchaseModal(true); }
   const isCN=normDocType(draft.docType)==="credit_note"; // current draft is a credit note?
@@ -111,7 +113,7 @@ export function InventoryManagement({items,setItems,lang="en"}){
     setNewSupplier({name:"",phone:"",email:"",notes:""});setShowSupplierModal(false);
   }
 
-  const tabs=[["overview","📊 "+_t("Overview")],["stock","📦 "+_t("Stock Levels")],["movements","🔄 "+_t("Movements")],["suppliers","🏭 "+_t("Suppliers")],...(showPurchases?[["purchases","🧾 "+_t("Purchases")],["preports","📈 "+_t("Purchase Reports")]]:[])];
+  const tabs=[["overview","📊 "+_t("Overview")],["stock","📦 "+_t("Stock Levels")],["movements","🔄 "+_t("Movements")],["suppliers","🏭 "+_t("Suppliers")],...(showPurchases?[["purchases","🧾 "+_t("Purchases")],["preports","📈 "+_t("Purchase Reports")],["synchealth","☁️ "+_t("Sync Health")]]:[])];
   const statCard=(label,value,color,sub)=>(
     <div style={{background:"#fff",border:`1px solid ${C.border}`,borderLeft:`4px solid ${color}`,borderRadius:12,padding:"14px 16px",flex:1,minWidth:150}}>
       <div style={{fontSize:11,color:C.textMid,fontWeight:700}}>{label}</div>
@@ -252,6 +254,57 @@ export function InventoryManagement({items,setItems,lang="en"}){
           );})()}
         </>)}
       </Card>}
+
+      {/* SYNC HEALTH (cloud-backup status per key) */}
+      {showPurchases&&tab==="synchealth"&&(()=>{
+        void syncTick; // re-read on refresh
+        const st=getSyncStatus();
+        const entries=Object.values(st);
+        const problems=entries.filter(e=>!e.ok);
+        const budgetKB=Math.round(SYNC_FIELD_BUDGET_BYTES/1024);
+        const kb=b=>Math.round((b||0)/1024);
+        const fmtAt=a=>{try{return new Date(a).toLocaleString("en-SA",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"});}catch{return "—";}};
+        return(<div style={{display:"flex",flexDirection:"column",gap:14}}>
+          <Card>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+              <div style={{fontSize:14,fontWeight:800}}>☁️ {_t("Cloud Backup Health")}</div>
+              <Btn size="sm" variant="outline" onClick={()=>setSyncTick(n=>n+1)}>↻ {_t("Refresh")}</Btn>
+            </div>
+            <div style={{marginTop:10,padding:"12px 14px",borderRadius:10,fontSize:13,fontWeight:600,
+              background:problems.length?C.dangerLight:(entries.length?C.successLight:C.bg),
+              color:problems.length?C.danger:(entries.length?C.success:C.textMid)}}>
+              {problems.length
+                ? `⚠️ ${problems.length} ${_t("data set(s) are NOT backing up to the cloud.")}`
+                : (entries.length
+                    ? `✅ ${_t("All")} ${entries.length} ${_t("synced data set(s) are backing up normally.")}`
+                    : _t("No cloud-sync activity yet this session. Make a change (or reopen the app) to populate this."))}
+            </div>
+            <div style={{fontSize:11,color:C.textLight,marginTop:8}}>{_t("Each data set must stay under the")} {budgetKB} KB {_t("per-key budget; a set that exceeds it stops backing up (it belongs in a subcollection). Status is for this session.")}</div>
+          </Card>
+
+          {problems.length>0&&<Card>
+            <div style={{fontSize:13,fontWeight:800,marginBottom:10,color:C.danger}}>⛔ {_t("Not backing up")}</div>
+            <DataTable headers={[_t("Data set"),_t("Problem"),_t("Size"),_t("When")]} rows={problems.map(e=>[
+              <code style={{fontSize:12}}>{e.key}</code>,
+              e.reason==="oversize"
+                ? <Badge color={C.danger} bg={C.dangerLight}>{_t("Too large")} ({kb(e.sizeBytes)} KB &gt; {budgetKB} KB)</Badge>
+                : <Badge color={C.danger} bg={C.dangerLight}>{_t("Error")}: {e.message||"—"}</Badge>,
+              e.sizeBytes?kb(e.sizeBytes)+" KB":"—",
+              fmtAt(e.at)
+            ])}/>
+          </Card>}
+
+          {entries.length>0&&<Card>
+            <div style={{fontSize:13,fontWeight:800,marginBottom:10}}>📋 {_t("All data sets")} ({entries.length})</div>
+            <DataTable headers={[_t("Data set"),_t("Status"),_t("Size"),_t("Last attempt")]} rows={entries.sort((a,b)=>(a.ok===b.ok)?0:(a.ok?1:-1)).map(e=>[
+              <code style={{fontSize:12}}>{e.key}</code>,
+              e.ok?<Badge color={C.success} bg={C.successLight}>{_t("Backed up")}</Badge>:<Badge color={C.danger} bg={C.dangerLight}>{e.reason==="oversize"?_t("Too large"):_t("Error")}</Badge>,
+              e.sizeBytes?kb(e.sizeBytes)+" KB":"—",
+              fmtAt(e.at)
+            ])}/>
+          </Card>}
+        </div>);
+      })()}
 
       {/* PURCHASE REPORTS (register + supplier balances) */}
       {showPurchases&&tab==="preports"&&(()=>{
