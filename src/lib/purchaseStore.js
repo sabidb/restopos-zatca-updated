@@ -42,6 +42,15 @@ function _writeLocal(list) {
 /** All captured purchase invoices, newest first. */
 export function loadPurchaseInvoices() { return _read(); }
 
+/**
+ * Replace the local list WITHOUT pushing to the cloud — used to hydrate the
+ * device from the Firestore subcollection on login (pushing back would loop).
+ */
+export function setPurchaseInvoicesLocal(list) {
+  _writeLocal(Array.isArray(list) ? list : []);
+  return _read();
+}
+
 // Unique even for two invoices saved in the same millisecond (a plain Date.now()
 // collides, and the second would silently upsert the first).
 export function newInvoiceId() {

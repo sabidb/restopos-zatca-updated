@@ -26,6 +26,12 @@ function _writeLocal(list) {
 
 export function loadPurchaseOrders() { return _read(); }
 
+/** Replace the local list WITHOUT pushing to cloud — used for cloud hydration. */
+export function setPurchaseOrdersLocal(list) {
+  _writeLocal(Array.isArray(list) ? list : []);
+  return _read();
+}
+
 export function newPOId() {
   return "PO-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
 }
