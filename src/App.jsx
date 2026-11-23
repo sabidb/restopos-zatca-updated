@@ -17,7 +17,7 @@ import { C } from "./lib/theme.js";
 import { LS } from "./lib/storage.js";
 import { fmtSAR, fmtDate, fmtDateTime } from "./lib/format.js";
 import { vatFromInclusive, netFromInclusive, vatFromInclusiveRaw } from "./lib/tax.js";
-import { TAX_CATEGORIES, TAX_CATEGORY_CODES, normTaxCategory, productVatRate, productTaxCategory, cartVat, hasNonStandard } from "./lib/taxCategories.js";
+import { TAX_CATEGORIES, TAX_CATEGORY_CODES, normTaxCategory, productVatRate, productTaxCategory, cartVat, hasNonStandard, invoiceTaxGroups, reasonsForCategory, categoryNeedsReason, exemptionReasonText } from "./lib/taxCategories.js";
 // Zero-rated / exempt tax categories: OFF unless the client enables it (and only
 // for business types that have the feature). Default off ⇒ every product is
 // Standard ⇒ cart/payment/invoice VAT and ZATCA XML are byte-identical to today.
@@ -331,27 +331,22 @@ function generateUBLXML(invoice) {
   // before. With any zero-rated/exempt line → one TaxSubtotal per category present
   // (exempt carries a configurable ZATCA exemption reason). MUST be validated in
   // ZATCA simulation before use.
-  const _taxItems = items || [];
-  const _grossByCat = { S:0, Z:0, E:0 };
-  for (const it of _taxItems) _grossByCat[normTaxCategory(it.taxCategory)] += (it.price * it.qty);
-  const _mixedTax = (_grossByCat.Z > 0 || _grossByCat.E > 0);
+  const _taxGroups = invoiceTaxGroups(items || []);
+  const _mixedTax = _taxGroups.some(g => g.code !== "S");
   function _taxSubtotalXml(){
     if(!_mixedTax){
       // unchanged single Standard subtotal (identical string to the original)
       return `<cac:TaxSubtotal><cbc:TaxableAmount currencyID="SAR">${subtotal.toFixed(2)}</cbc:TaxableAmount><cbc:TaxAmount currencyID="SAR">${vat_amount.toFixed(2)}</cbc:TaxAmount><cac:TaxCategory><cbc:ID>S</cbc:ID><cbc:Percent>15</cbc:Percent><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal>`;
     }
-    const reasonCode = escapeXML(invoice.tax_exemption_reason_code || "");
-    const reasonText = escapeXML(invoice.tax_exemption_reason || "");
+    // One TaxSubtotal per (category, exemption-reason) group. Standard carries no
+    // reason; Z/E/O carry their ZATCA VATEX-SA code + text (O falls back to the
+    // invoice-level free text). Validate against ZATCA simulation before use.
     const parts = [];
-    for(const code of TAX_CATEGORY_CODES){
-      const g = _grossByCat[code]; if(g <= 0) continue;
-      const taxable = code === "S" ? netFromInclusive(g) : parseFloat(g.toFixed(2));
-      const vat = code === "S" ? vatFromInclusive(g) : 0;
-      const pct = code === "S" ? 15 : 0;
-      const exemption = (code === "E" || code === "Z")
-        ? `<cbc:TaxExemptionReasonCode>${reasonCode}</cbc:TaxExemptionReasonCode><cbc:TaxExemptionReason>${reasonText}</cbc:TaxExemptionReason>`
-        : "";
-      parts.push(`<cac:TaxSubtotal><cbc:TaxableAmount currencyID="SAR">${taxable.toFixed(2)}</cbc:TaxableAmount><cbc:TaxAmount currencyID="SAR">${vat.toFixed(2)}</cbc:TaxAmount><cac:TaxCategory><cbc:ID>${code}</cbc:ID><cbc:Percent>${pct}</cbc:Percent>${exemption}<cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal>`);
+    for(const g of _taxGroups){
+      const pct = g.code === "S" ? 15 : 0;
+      const exemption = g.code === "S" ? "" :
+        `<cbc:TaxExemptionReasonCode>${escapeXML(g.reasonCode||"")}</cbc:TaxExemptionReasonCode><cbc:TaxExemptionReason>${escapeXML(g.reasonText||invoice.tax_exemption_reason||"")}</cbc:TaxExemptionReason>`;
+      parts.push(`<cac:TaxSubtotal><cbc:TaxableAmount currencyID="SAR">${g.taxable.toFixed(2)}</cbc:TaxableAmount><cbc:TaxAmount currencyID="SAR">${g.vat.toFixed(2)}</cbc:TaxAmount><cac:TaxCategory><cbc:ID>${g.code}</cbc:ID><cbc:Percent>${pct}</cbc:Percent>${exemption}<cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal>`);
     }
     return parts.join("");
   }
@@ -8442,7 +8437,9 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
           {itemForm.nameAr&&!translating&&<div style={{fontSize:11,color:C.success,marginTop:4,fontFamily:"'Tajawal',sans-serif",direction:"rtl",textAlign:"right"}}>✓ {itemForm.nameAr}</div>}
         </div>
         <Sel label="Category" value={itemForm.category} onChange={v=>setItemForm(f=>({...f,category:v}))} options={[...categories,...(categories.includes(OTHER_CAT)?[]:[OTHER_CAT])]}/><Inp label="Barcode" value={itemForm.barcode} onChange={v=>setItemForm(f=>({...f,barcode:v}))} placeholder="Scan or type barcode"/>
-        {taxCatsEnabled()&&<Sel label="VAT Tax Category" value={normTaxCategory(itemForm.taxCategory)} onChange={v=>setItemForm(f=>({...f,taxCategory:v}))} options={TAX_CATEGORY_CODES.map(code=>({value:code,label:TAX_CATEGORIES[code].label}))}/>}
+        {taxCatsEnabled()&&<Sel label="VAT Tax Category" value={normTaxCategory(itemForm.taxCategory)} onChange={v=>setItemForm(f=>({...f,taxCategory:v,taxExemptionReasonCode:v==="S"?"":(reasonsForCategory(v)[0]?.code||""),taxExemptionReason:""}))} options={TAX_CATEGORY_CODES.map(code=>({value:code,label:TAX_CATEGORIES[code].label}))}/>}
+        {taxCatsEnabled()&&categoryNeedsReason(itemForm.taxCategory)&&reasonsForCategory(itemForm.taxCategory).length>0&&<Sel label="ZATCA exemption reason" value={itemForm.taxExemptionReasonCode||reasonsForCategory(itemForm.taxCategory)[0].code} onChange={v=>setItemForm(f=>({...f,taxExemptionReasonCode:v}))} options={reasonsForCategory(itemForm.taxCategory).map(r=>({value:r.code,label:`${r.code} — ${r.text||"(free text)"}`}))}/>}
+        {taxCatsEnabled()&&normTaxCategory(itemForm.taxCategory)==="O"&&<Inp label="Out-of-scope reason (free text)" value={itemForm.taxExemptionReason||""} onChange={v=>setItemForm(f=>({...f,taxExemptionReason:v}))} placeholder="Reason this supply is outside VAT scope"/>}
         {allowWeighing&&<label style={{gridColumn:"1 / -1",display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:C.zatcaLight,border:`1px solid ${C.zatca}30`,borderRadius:8,cursor:"pointer"}}>
           <input type="checkbox" checked={!!itemForm.weighed} onChange={e=>setItemForm(f=>({...f,weighed:e.target.checked}))} style={{width:18,height:18,cursor:"pointer"}}/>
           <span style={{fontSize:13,fontWeight:700,color:C.text}}>⚖️ Weighed item — price is per kilogram</span>
