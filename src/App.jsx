@@ -17,6 +17,12 @@ import { C } from "./lib/theme.js";
 import { LS } from "./lib/storage.js";
 import { fmtSAR, fmtDate, fmtDateTime } from "./lib/format.js";
 import { vatFromInclusive, netFromInclusive, vatFromInclusiveRaw } from "./lib/tax.js";
+import { TAX_CATEGORIES, TAX_CATEGORY_CODES, normTaxCategory, productVatRate, productTaxCategory, cartVat, hasNonStandard } from "./lib/taxCategories.js";
+// Zero-rated / exempt tax categories: OFF unless the client enables it (and only
+// for business types that have the feature). Default off ⇒ every product is
+// Standard ⇒ cart/payment/invoice VAT and ZATCA XML are byte-identical to today.
+// Must be validated in ZATCA's simulation env before a tenant enables it.
+function taxCatsEnabled(){ try{ return bizFeature("taxCategories") && LS.get("restopos_tax_categories_enabled")===true; }catch(e){ return false; } }
 import { findByBarcode, findAllByBarcode, productBarcodes, parseBarcodeInput } from "./lib/barcode.js";
 import { discountManual, discountPromo, totalAfterDiscount, cashChange, isCashShort, splitDiff, splitValid, paymentReady } from "./lib/checkout.js";
 import ImportWizard from "./components/ImportWizard.jsx";
@@ -310,14 +316,48 @@ function generateUBLXML(invoice) {
   // Fix #7: CityName from invoice seller_city, fallback Riyadh
   const cityName = escapeXML(invoice.seller_city || "Riyadh");
 
+  // Per-line tax category. Default (and the only case unless zero-rated/exempt is
+  // enabled and a product is tagged) is Standard 15% → byte-identical to before.
   const lineItems = (items || []).map((item, idx) => {
     const lineTotal = (item.price * item.qty);
-    const lineVAT = vatFromInclusive(lineTotal);
-    const lineExclVAT = netFromInclusive(lineTotal);
-    return `<cac:InvoiceLine><cbc:ID>${idx+1}</cbc:ID><cbc:InvoicedQuantity unitCode="PCE">${item.qty}</cbc:InvoicedQuantity><cbc:LineExtensionAmount currencyID="SAR">${lineExclVAT.toFixed(2)}</cbc:LineExtensionAmount><cac:TaxTotal><cbc:TaxAmount currencyID="SAR">${lineVAT.toFixed(2)}</cbc:TaxAmount></cac:TaxTotal><cac:Item><cbc:Name>${escapeXML(item.name)}</cbc:Name><cac:ClassifiedTaxCategory><cbc:ID>S</cbc:ID><cbc:Percent>15</cbc:Percent><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:ClassifiedTaxCategory></cac:Item><cac:Price><cbc:PriceAmount currencyID="SAR">${item.price.toFixed(2)}</cbc:PriceAmount></cac:Price></cac:InvoiceLine>`;
+    const cat = normTaxCategory(item.taxCategory);     // "S" unless tagged Z/E
+    const pct = cat === "S" ? 15 : 0;
+    const lineVAT = cat === "S" ? vatFromInclusive(lineTotal) : 0;          // Z/E carry no VAT
+    const lineExclVAT = cat === "S" ? netFromInclusive(lineTotal) : lineTotal; // net==gross at 0%
+    return `<cac:InvoiceLine><cbc:ID>${idx+1}</cbc:ID><cbc:InvoicedQuantity unitCode="PCE">${item.qty}</cbc:InvoicedQuantity><cbc:LineExtensionAmount currencyID="SAR">${lineExclVAT.toFixed(2)}</cbc:LineExtensionAmount><cac:TaxTotal><cbc:TaxAmount currencyID="SAR">${lineVAT.toFixed(2)}</cbc:TaxAmount></cac:TaxTotal><cac:Item><cbc:Name>${escapeXML(item.name)}</cbc:Name><cac:ClassifiedTaxCategory><cbc:ID>${cat}</cbc:ID><cbc:Percent>${pct}</cbc:Percent><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:ClassifiedTaxCategory></cac:Item><cac:Price><cbc:PriceAmount currencyID="SAR">${item.price.toFixed(2)}</cbc:PriceAmount></cac:Price></cac:InvoiceLine>`;
   }).join("");
 
-  return `<?xml version="1.0" encoding="UTF-8"?><Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2" xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2" xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2" xmlns:ext="urn:oasis:names:specification:ubl:schema:xsd:CommonExtensionComponents-2"><ext:UBLExtensions><ext:UBLExtension><ext:ExtensionURI>urn:oasis:names:specification:ubl:dsig:ext:ZATCA</ext:ExtensionURI><ext:ExtensionContent><!-- ECDSA signature injected by Railway microservice --></ext:ExtensionContent></ext:UBLExtension></ext:UBLExtensions><cbc:UBLVersionID>2.1</cbc:UBLVersionID><cbc:CustomizationID>urn:zatca.gov.sa:trUBL:Invoice:2.0</cbc:CustomizationID><cbc:ProfileID>${profileID}</cbc:ProfileID><cbc:ID>${escapeXML(invoice_number)}</cbc:ID><cbc:UUID>${uuid}</cbc:UUID><cbc:IssueDate>${dateStr}</cbc:IssueDate><cbc:IssueTime>${timeStr}</cbc:IssueTime><cbc:InvoiceTypeCode name="${invoiceTypeCodeName}">${invoiceCode}</cbc:InvoiceTypeCode><cbc:DocumentCurrencyCode>SAR</cbc:DocumentCurrencyCode><cbc:TaxCurrencyCode>SAR</cbc:TaxCurrencyCode><cbc:AdditionalDocumentReference><cbc:ID>ICV</cbc:ID><cbc:UUID>${icv}</cbc:UUID></cbc:AdditionalDocumentReference><cbc:AdditionalDocumentReference><cbc:ID>PIH</cbc:ID><cac:Attachment><cbc:EmbeddedDocumentBinaryObject mimeCode="text/plain">${prev_invoice_hash||"NWZlY2ViNjZmZmM4NmYzOGQ5NTI3ODZjNmQ2OTZjNzljMmRiYzIzOWRkNGU5MWI0NjcyOWQ3M2EyN2ZhNTdlOQ=="}</cbc:EmbeddedDocumentBinaryObject></cac:Attachment></cbc:AdditionalDocumentReference><cbc:AdditionalDocumentReference><cbc:ID>QR</cbc:ID><cac:Attachment><cbc:EmbeddedDocumentBinaryObject mimeCode="text/plain">${qr_string}</cbc:EmbeddedDocumentBinaryObject></cac:Attachment></cbc:AdditionalDocumentReference>${billingRef}<cac:AccountingSupplierParty><cac:Party><cac:PartyIdentification><cbc:ID schemeID="CRN">${escapeXML(invoice.seller_cr||"")}</cbc:ID></cac:PartyIdentification><cac:PostalAddress><cbc:StreetName>${escapeXML(seller_address)}</cbc:StreetName><cbc:CityName>${cityName}</cbc:CityName><cbc:CountrySubentity>SA</cbc:CountrySubentity><cac:Country><cbc:IdentificationCode>SA</cbc:IdentificationCode></cac:Country></cac:PostalAddress><cac:PartyTaxScheme><cbc:CompanyID>${escapeXML(seller_vat)}</cbc:CompanyID><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:PartyTaxScheme><cac:PartyLegalEntity><cbc:RegistrationName>${escapeXML(seller_name)}</cbc:RegistrationName></cac:PartyLegalEntity></cac:Party></cac:AccountingSupplierParty><cac:AccountingCustomerParty>${buyerParty}</cac:AccountingCustomerParty>${allowanceCharge}<cac:PaymentMeans><cbc:PaymentMeansCode>${pmCode}</cbc:PaymentMeansCode></cac:PaymentMeans><cac:TaxTotal><cbc:TaxAmount currencyID="SAR">${vat_amount.toFixed(2)}</cbc:TaxAmount><cac:TaxSubtotal><cbc:TaxableAmount currencyID="SAR">${subtotal.toFixed(2)}</cbc:TaxableAmount><cbc:TaxAmount currencyID="SAR">${vat_amount.toFixed(2)}</cbc:TaxAmount><cac:TaxCategory><cbc:ID>S</cbc:ID><cbc:Percent>15</cbc:Percent><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal></cac:TaxTotal><cac:LegalMonetaryTotal><cbc:LineExtensionAmount currencyID="SAR">${subtotal.toFixed(2)}</cbc:LineExtensionAmount><cbc:TaxExclusiveAmount currencyID="SAR">${subtotal.toFixed(2)}</cbc:TaxExclusiveAmount><cbc:TaxInclusiveAmount currencyID="SAR">${total.toFixed(2)}</cbc:TaxInclusiveAmount><cbc:PayableAmount currencyID="SAR">${total.toFixed(2)}</cbc:PayableAmount></cac:LegalMonetaryTotal>${lineItems}</Invoice>`;
+  // Document-level tax breakdown. All-Standard → one Subtotal, byte-identical to
+  // before. With any zero-rated/exempt line → one TaxSubtotal per category present
+  // (exempt carries a configurable ZATCA exemption reason). MUST be validated in
+  // ZATCA simulation before use.
+  const _taxItems = items || [];
+  const _grossByCat = { S:0, Z:0, E:0 };
+  for (const it of _taxItems) _grossByCat[normTaxCategory(it.taxCategory)] += (it.price * it.qty);
+  const _mixedTax = (_grossByCat.Z > 0 || _grossByCat.E > 0);
+  function _taxSubtotalXml(){
+    if(!_mixedTax){
+      // unchanged single Standard subtotal (identical string to the original)
+      return `<cac:TaxSubtotal><cbc:TaxableAmount currencyID="SAR">${subtotal.toFixed(2)}</cbc:TaxableAmount><cbc:TaxAmount currencyID="SAR">${vat_amount.toFixed(2)}</cbc:TaxAmount><cac:TaxCategory><cbc:ID>S</cbc:ID><cbc:Percent>15</cbc:Percent><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal>`;
+    }
+    const reasonCode = escapeXML(invoice.tax_exemption_reason_code || "");
+    const reasonText = escapeXML(invoice.tax_exemption_reason || "");
+    const parts = [];
+    for(const code of TAX_CATEGORY_CODES){
+      const g = _grossByCat[code]; if(g <= 0) continue;
+      const taxable = code === "S" ? netFromInclusive(g) : parseFloat(g.toFixed(2));
+      const vat = code === "S" ? vatFromInclusive(g) : 0;
+      const pct = code === "S" ? 15 : 0;
+      const exemption = (code === "E" || code === "Z")
+        ? `<cbc:TaxExemptionReasonCode>${reasonCode}</cbc:TaxExemptionReasonCode><cbc:TaxExemptionReason>${reasonText}</cbc:TaxExemptionReason>`
+        : "";
+      parts.push(`<cac:TaxSubtotal><cbc:TaxableAmount currencyID="SAR">${taxable.toFixed(2)}</cbc:TaxableAmount><cbc:TaxAmount currencyID="SAR">${vat.toFixed(2)}</cbc:TaxAmount><cac:TaxCategory><cbc:ID>${code}</cbc:ID><cbc:Percent>${pct}</cbc:Percent>${exemption}<cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal>`);
+    }
+    return parts.join("");
+  }
+  const taxSubtotalXml = _taxSubtotalXml();
+
+  return `<?xml version="1.0" encoding="UTF-8"?><Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2" xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2" xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2" xmlns:ext="urn:oasis:names:specification:ubl:schema:xsd:CommonExtensionComponents-2"><ext:UBLExtensions><ext:UBLExtension><ext:ExtensionURI>urn:oasis:names:specification:ubl:dsig:ext:ZATCA</ext:ExtensionURI><ext:ExtensionContent><!-- ECDSA signature injected by Railway microservice --></ext:ExtensionContent></ext:UBLExtension></ext:UBLExtensions><cbc:UBLVersionID>2.1</cbc:UBLVersionID><cbc:CustomizationID>urn:zatca.gov.sa:trUBL:Invoice:2.0</cbc:CustomizationID><cbc:ProfileID>${profileID}</cbc:ProfileID><cbc:ID>${escapeXML(invoice_number)}</cbc:ID><cbc:UUID>${uuid}</cbc:UUID><cbc:IssueDate>${dateStr}</cbc:IssueDate><cbc:IssueTime>${timeStr}</cbc:IssueTime><cbc:InvoiceTypeCode name="${invoiceTypeCodeName}">${invoiceCode}</cbc:InvoiceTypeCode><cbc:DocumentCurrencyCode>SAR</cbc:DocumentCurrencyCode><cbc:TaxCurrencyCode>SAR</cbc:TaxCurrencyCode><cbc:AdditionalDocumentReference><cbc:ID>ICV</cbc:ID><cbc:UUID>${icv}</cbc:UUID></cbc:AdditionalDocumentReference><cbc:AdditionalDocumentReference><cbc:ID>PIH</cbc:ID><cac:Attachment><cbc:EmbeddedDocumentBinaryObject mimeCode="text/plain">${prev_invoice_hash||"NWZlY2ViNjZmZmM4NmYzOGQ5NTI3ODZjNmQ2OTZjNzljMmRiYzIzOWRkNGU5MWI0NjcyOWQ3M2EyN2ZhNTdlOQ=="}</cbc:EmbeddedDocumentBinaryObject></cac:Attachment></cbc:AdditionalDocumentReference><cbc:AdditionalDocumentReference><cbc:ID>QR</cbc:ID><cac:Attachment><cbc:EmbeddedDocumentBinaryObject mimeCode="text/plain">${qr_string}</cbc:EmbeddedDocumentBinaryObject></cac:Attachment></cbc:AdditionalDocumentReference>${billingRef}<cac:AccountingSupplierParty><cac:Party><cac:PartyIdentification><cbc:ID schemeID="CRN">${escapeXML(invoice.seller_cr||"")}</cbc:ID></cac:PartyIdentification><cac:PostalAddress><cbc:StreetName>${escapeXML(seller_address)}</cbc:StreetName><cbc:CityName>${cityName}</cbc:CityName><cbc:CountrySubentity>SA</cbc:CountrySubentity><cac:Country><cbc:IdentificationCode>SA</cbc:IdentificationCode></cac:Country></cac:PostalAddress><cac:PartyTaxScheme><cbc:CompanyID>${escapeXML(seller_vat)}</cbc:CompanyID><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:PartyTaxScheme><cac:PartyLegalEntity><cbc:RegistrationName>${escapeXML(seller_name)}</cbc:RegistrationName></cac:PartyLegalEntity></cac:Party></cac:AccountingSupplierParty><cac:AccountingCustomerParty>${buyerParty}</cac:AccountingCustomerParty>${allowanceCharge}<cac:PaymentMeans><cbc:PaymentMeansCode>${pmCode}</cbc:PaymentMeansCode></cac:PaymentMeans><cac:TaxTotal><cbc:TaxAmount currencyID="SAR">${vat_amount.toFixed(2)}</cbc:TaxAmount>${taxSubtotalXml}</cac:TaxTotal><cac:LegalMonetaryTotal><cbc:LineExtensionAmount currencyID="SAR">${subtotal.toFixed(2)}</cbc:LineExtensionAmount><cbc:TaxExclusiveAmount currencyID="SAR">${subtotal.toFixed(2)}</cbc:TaxExclusiveAmount><cbc:TaxInclusiveAmount currencyID="SAR">${total.toFixed(2)}</cbc:TaxInclusiveAmount><cbc:PayableAmount currencyID="SAR">${total.toFixed(2)}</cbc:PayableAmount></cac:LegalMonetaryTotal>${lineItems}</Invoice>`;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -870,13 +910,15 @@ async function generateZATCAInvoice({seller_name,seller_vat,seller_address,selle
   const discountFactor = grossInclusive>0 ? (grossInclusive-discountAmt)/grossInclusive : 1;
   if(discountFactor!==1) items = items.map(i=>({...i,price:i.price*discountFactor}));
   const total = parseFloat((grossInclusive-discountAmt).toFixed(2));
-  const vat_amount = vatFromInclusive(total);
-  const subtotal = netFromInclusive(total);
+  // VAT is taken only on standard-rated lines; zero-rated/exempt lines carry 0.
+  // For an all-standard order this equals vatFromInclusive(total) exactly.
+  const vat_amount = cartVat(items).vat;
+  const subtotal = parseFloat((total - vat_amount).toFixed(2));
   const prev_invoice_hash = invoiceStorage.getLastHash();
   // Buyer address is carried on the invoice because ZATCA requires it on every
   // standard (B2B) document — street, city and postal code are mandatory, and a
   // clearance request without them is rejected.
-  const partial = {invoice_number,uuid,timestamp,icv,seller_name,seller_vat,seller_address,seller_cr,seller_city,items,subtotal,vat_amount,total,prev_invoice_hash,is_credit_note,is_debit_note,original_invoice_number,credit_note_reason,debit_note_reason,invoice_type,is_b2b:invoice_type==="B2B",buyer_name,buyer_vat,buyer_street,buyer_building,buyer_district,buyer_city,buyer_postal_code,payMethod,discount,original_gross:parseFloat(grossInclusive.toFixed(2))};
+  const partial = {invoice_number,uuid,timestamp,icv,seller_name,seller_vat,seller_address,seller_cr,seller_city,items,subtotal,vat_amount,total,prev_invoice_hash,is_credit_note,is_debit_note,original_invoice_number,credit_note_reason,debit_note_reason,invoice_type,is_b2b:invoice_type==="B2B",buyer_name,buyer_vat,buyer_street,buyer_building,buyer_district,buyer_city,buyer_postal_code,payMethod,discount,original_gross:parseFloat(grossInclusive.toFixed(2)),tax_exemption_reason_code:(LS.get("restopos_tax_exemption_code")||""),tax_exemption_reason:(LS.get("restopos_tax_exemption_reason")||"")};
   // Hashing uses Web Crypto (needs HTTPS). If it ever fails, fall back to a
   // deterministic non-crypto hash so the invoice, QR and number STILL complete
   // and link — a missing hash must never block the QR/number from being stored.
@@ -5266,7 +5308,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     if(!priceCheck) addToCart(item);
   }
   useEffect(()=>{ if(superMode) setTimeout(()=>barcodeRef.current?.focus(),200); },[superMode]);
-  const total=cart.reduce((s,i)=>s+i.price*i.qty,0);const vat=vatFromInclusive(total);const subtotal=netFromInclusive(total);
+  const total=cart.reduce((s,i)=>s+i.price*i.qty,0);const vat=cartVat(cart).vat;const subtotal=parseFloat((total-vat).toFixed(2));
   function addToCart(item){
     // Weighed item (price is per-kg): open the weight modal. qty carries the
     // weight in kg, so line total (price*qty) stays correct; each weigh is a line.
@@ -8342,7 +8384,7 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
   function saveCategories(newList){setCategories(newList);LS.set("restopos_categories",newList);const _lic_cat=LS.get("restopos_license_v2")?.licenseKey;if(_lic_cat)debouncedSync(_lic_cat,"restopos_categories",newList);}
   function addCategory(){const trimmed=newCat.trim();if(!trimmed)return alert("Category name cannot be empty");if(categories.includes(trimmed))return alert("Category already exists");saveCategories([...categories,trimmed]);setNewCat("");}
   const [showImport,setShowImport]=useState(false);
-  const blankItem={name:"",nameAr:"",category:categories[0],price:"",cost:"",stock:"",active:true,barcode:"",weighed:false};const [itemForm,setItemForm]=useState(blankItem);
+  const blankItem={name:"",nameAr:"",category:categories[0],price:"",cost:"",stock:"",active:true,barcode:"",weighed:false,taxCategory:"S"};const [itemForm,setItemForm]=useState(blankItem);
   const allowWeighing=bizFeature("weighing"); // show the per-kg option only for types that weigh goods
   const blankPromo={code:"",type:"%",value:"",minOrder:0,active:true};const [promoForm,setPromoForm]=useState(blankPromo);const barcodeRef=useRef();
   function openItemModal(it=null){setEditItem(it);setItemForm(it?{...it}:{...blankItem,category:categories[0]});setShowItemModal(true);setTranslating(false);setTranslateError("");}
@@ -8400,6 +8442,7 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
           {itemForm.nameAr&&!translating&&<div style={{fontSize:11,color:C.success,marginTop:4,fontFamily:"'Tajawal',sans-serif",direction:"rtl",textAlign:"right"}}>✓ {itemForm.nameAr}</div>}
         </div>
         <Sel label="Category" value={itemForm.category} onChange={v=>setItemForm(f=>({...f,category:v}))} options={[...categories,...(categories.includes(OTHER_CAT)?[]:[OTHER_CAT])]}/><Inp label="Barcode" value={itemForm.barcode} onChange={v=>setItemForm(f=>({...f,barcode:v}))} placeholder="Scan or type barcode"/>
+        {taxCatsEnabled()&&<Sel label="VAT Tax Category" value={normTaxCategory(itemForm.taxCategory)} onChange={v=>setItemForm(f=>({...f,taxCategory:v}))} options={TAX_CATEGORY_CODES.map(code=>({value:code,label:TAX_CATEGORIES[code].label}))}/>}
         {allowWeighing&&<label style={{gridColumn:"1 / -1",display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:C.zatcaLight,border:`1px solid ${C.zatca}30`,borderRadius:8,cursor:"pointer"}}>
           <input type="checkbox" checked={!!itemForm.weighed} onChange={e=>setItemForm(f=>({...f,weighed:e.target.checked}))} style={{width:18,height:18,cursor:"pointer"}}/>
           <span style={{fontSize:13,fontWeight:700,color:C.text}}>⚖️ Weighed item — price is per kilogram</span>
@@ -17262,6 +17305,15 @@ function ZATCAVatEngine({lang="en"}) {
   function toggleAutoPurchaseVat() {
     setAutoPurchaseVat((v) => { const n = !v; try { LS.set("restopos_vat_autopurchase", n); } catch (e) {} return n; });
   }
+  // Zero-rated / exempt tax categories — default OFF; enabling changes the live
+  // sales VAT + ZATCA invoice XML, so it MUST be validated in ZATCA simulation first.
+  const canTaxCats = bizFeature("taxCategories");
+  const [taxCatsOn, setTaxCatsOn] = useState(() => { try { return canTaxCats && LS.get("restopos_tax_categories_enabled") === true; } catch { return false; } });
+  const [exCode, setExCode] = useState(() => { try { return LS.get("restopos_tax_exemption_code") || ""; } catch { return ""; } });
+  const [exReason, setExReason] = useState(() => { try { return LS.get("restopos_tax_exemption_reason") || ""; } catch { return ""; } });
+  function toggleTaxCats() { setTaxCatsOn((v) => { const n = !v; try { LS.set("restopos_tax_categories_enabled", n); } catch (e) {} return n; }); }
+  function saveExCode(v) { setExCode(v); try { LS.set("restopos_tax_exemption_code", v); } catch (e) {} }
+  function saveExReason(v) { setExReason(v); try { LS.set("restopos_tax_exemption_reason", v); } catch (e) {} }
   const [loading, setLoading]           = useState(true);
   const [activeTab, setActiveTab]       = useState("dashboard");
   const [showForm, setShowForm]         = useState(false);
@@ -17813,6 +17865,23 @@ ${stats.amountOwed>0?`<div class="warn"><b>⚠️ Penalty estimates if filed lat
                   ? `On — ${autoPurchaseTx.length} recoverable purchase doc${autoPurchaseTx.length===1?"":"s"} this period (${vatSar(autoPurchaseTx.reduce((s,t)=>s+t.vat,0))} input VAT). Don't also add these as manual entries — it would double-count.`
                   : "Off — input VAT comes only from manual + Add Entry items. Turn on to use your captured supplier invoices (recoverable ones) instead."}
               </span>
+            </div>
+          )}
+          {canTaxCats && (
+            <div style={{ background:"#2a1a13", border:`1px solid ${taxCatsOn?"#f59e0b":"#334155"}`, borderRadius:10, padding:"12px 16px", marginBottom:14, fontSize:13, color:"#fde68a" }}>
+              <label style={{ display:"flex", alignItems:"center", gap:8, cursor:"pointer", fontWeight:700 }}>
+                <input type="checkbox" checked={taxCatsOn} onChange={toggleTaxCats} />
+                🏷️ Enable zero-rated / exempt tax categories
+              </label>
+              <div style={{ fontSize:12, color:"#fbbf24", marginTop:6 }}>
+                ⚠️ Changes live sales VAT and the ZATCA invoice XML for tagged products. <strong>Validate in ZATCA's simulation environment before enabling in production.</strong> Off = every product is Standard 15% (unchanged).
+              </div>
+              {taxCatsOn && (
+                <div style={{ display:"flex", gap:8, marginTop:10, flexWrap:"wrap" }}>
+                  <input value={exCode} onChange={e=>saveExCode(e.target.value)} placeholder="Exemption reason code (e.g. VATEX-SA-…)" style={{ flex:"1 1 220px", padding:"8px 10px", borderRadius:8, border:"1px solid #334155", background:"#13203a", color:"#fde68a", fontSize:12.5, fontFamily:"inherit" }} />
+                  <input value={exReason} onChange={e=>saveExReason(e.target.value)} placeholder="Exemption reason text" style={{ flex:"2 1 280px", padding:"8px 10px", borderRadius:8, border:"1px solid #334155", background:"#13203a", color:"#fde68a", fontSize:12.5, fontFamily:"inherit" }} />
+                </div>
+              )}
             </div>
           )}
           {/* Daily VAT Chart */}
