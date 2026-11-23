@@ -10,7 +10,7 @@ import { fmtSAR, fmtDate } from "../lib/format.js";
 import { debouncedSync } from "../lib/sync.js";
 import { Card, Btn, Badge, Modal, DataTable } from "../components/ui.jsx";
 import { bizFeature } from "../config/businessTypes.js";
-import { computePurchaseInvoice, validatePurchaseInvoice, detectDuplicatePurchase } from "../lib/purchases.js";
+import { computePurchaseInvoice, validatePurchaseInvoice, detectDuplicatePurchase, signedAmounts, normDocType } from "../lib/purchases.js";
 import { loadPurchaseInvoices, savePurchaseInvoice, deletePurchaseInvoice } from "../lib/purchaseStore.js";
 
 export function InventoryManagement({items,setItems,lang="en"}){
@@ -32,13 +32,14 @@ export function InventoryManagement({items,setItems,lang="en"}){
   // Feature-flagged so Restaurant Mode's Inventory screen is unchanged.
   const showPurchases=bizFeature("purchasing");
   const blankLine=()=>({name:"",qty:"",unitCost:"",rate:0.15});
-  const blankPurchase=()=>({supplierId:"",supplierName:"",supplierInvoiceNo:"",invoiceDate:new Date().toISOString().slice(0,10),hasValidEInvoice:false,notes:"",lines:[blankLine()]});
+  const blankPurchase=()=>({supplierId:"",supplierName:"",docType:"invoice",supplierInvoiceNo:"",invoiceDate:new Date().toISOString().slice(0,10),hasValidEInvoice:false,notes:"",lines:[blankLine()]});
   const [purchases,setPurchases]=useState(()=>loadPurchaseInvoices());
   const [showPurchaseModal,setShowPurchaseModal]=useState(false);
   const [draft,setDraft]=useState(blankPurchase);
   const [dupWarn,setDupWarn]=useState(null); // { level:"exact"|"near", match } when a save is held
 
-  function openNewPurchase(){ setDraft(blankPurchase()); setDupWarn(null); setShowPurchaseModal(true); }
+  function openNewPurchase(docType="invoice"){ setDraft({...blankPurchase(),docType}); setDupWarn(null); setShowPurchaseModal(true); }
+  const isCN=normDocType(draft.docType)==="credit_note"; // current draft is a credit note?
   function setDraftLine(i,patch){ setDraft(d=>({...d,lines:d.lines.map((l,j)=>j===i?{...l,...patch}:l)})); setDupWarn(null); }
   function addDraftLine(){ setDraft(d=>({...d,lines:[...d.lines,blankLine()]})); }
   function removeDraftLine(i){ setDraft(d=>({...d,lines:d.lines.length>1?d.lines.filter((_,j)=>j!==i):d.lines})); setDupWarn(null); }
@@ -217,32 +218,50 @@ export function InventoryManagement({items,setItems,lang="en"}){
       {/* PURCHASES (supplier / accounts-payable invoices) */}
       {showPurchases&&tab==="purchases"&&<Card>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6,flexWrap:"wrap",gap:8}}>
-          <div style={{fontSize:14,fontWeight:800}}>🧾 {_t("Purchase Invoices")} ({purchases.length})</div>
-          <Btn size="sm" onClick={openNewPurchase}>+ {_t("New Purchase Invoice")}</Btn>
+          <div style={{fontSize:14,fontWeight:800}}>🧾 {_t("Purchase Documents")} ({purchases.length})</div>
+          <div style={{display:"flex",gap:6}}>
+            <Btn size="sm" onClick={()=>openNewPurchase("invoice")}>+ {_t("Invoice")}</Btn>
+            <Btn size="sm" variant="outline" onClick={()=>openNewPurchase("credit_note")}>+ {_t("Credit Note")}</Btn>
+          </div>
         </div>
-        <div style={{fontSize:11.5,color:C.textMid,marginBottom:12}}>{_t("Supplier invoices you receive (accounts payable). These record input VAT — they are NOT sent to ZATCA; the supplier already reported them.")}</div>
+        <div style={{fontSize:11.5,color:C.textMid,marginBottom:12}}>{_t("Supplier invoices (what you owe) and credit notes (returns / overcharges that reduce it). These record input VAT — they are NOT sent to ZATCA; the supplier already reported them.")}</div>
         {purchases.length===0?(
-          <div style={{padding:"20px",textAlign:"center",color:C.textMid,fontSize:13}}>{_t("No purchase invoices yet.")}</div>
-        ):(
-          <DataTable headers={[_t("Date"),_t("Supplier"),_t("Invoice #"),_t("Net"),_t("VAT"),_t("Total"),""]} rows={purchases.slice(0,200).map(p=>[
-            p.invoiceDate?fmtDate(p.invoiceDate):"—",
-            p.supplierName||"—",
-            p.supplierInvoiceNo||"—",
-            fmtSAR(p.subtotal),
-            fmtSAR(p.vatAmount),
-            <strong>{fmtSAR(p.total)}</strong>,
-            <Btn size="sm" variant="danger" onClick={()=>removePurchase(p.id)}>{_t("Delete")}</Btn>
-          ])}/>
-        )}
+          <div style={{padding:"20px",textAlign:"center",color:C.textMid,fontSize:13}}>{_t("No purchase documents yet.")}</div>
+        ):(<>
+          <DataTable headers={[_t("Date"),_t("Type"),_t("Supplier"),_t("Doc #"),_t("Net"),_t("VAT"),_t("Total"),""]} rows={purchases.slice(0,200).map(p=>{
+            const cn=normDocType(p.docType)==="credit_note"; const s=signedAmounts(p);
+            return [
+              p.invoiceDate?fmtDate(p.invoiceDate):"—",
+              cn?<Badge color={C.danger} bg={C.dangerLight}>{_t("Credit")}</Badge>:<Badge color={C.success} bg={C.successLight}>{_t("Invoice")}</Badge>,
+              p.supplierName||"—",
+              p.supplierInvoiceNo||"—",
+              fmtSAR(s.subtotal),
+              fmtSAR(s.vatAmount),
+              <strong style={cn?{color:C.danger}:undefined}>{fmtSAR(s.total)}</strong>,
+              <Btn size="sm" variant="danger" onClick={()=>removePurchase(p.id)}>{_t("Delete")}</Btn>
+            ];
+          })}/>
+          {(()=>{ const net=purchases.reduce((a,p)=>{const s=signedAmounts(p);return{total:a.total+s.total,vat:a.vat+s.vat};},{total:0,vat:0}); return(
+            <div style={{display:"flex",justifyContent:"flex-end",gap:18,marginTop:10,fontSize:12.5,color:C.textMid}}>
+              <span>{_t("Net input VAT")}: <strong style={{color:C.text}}>{fmtSAR(net.vat)}</strong></span>
+              <span>{_t("Net payable")}: <strong style={{color:C.text}}>{fmtSAR(net.total)}</strong></span>
+            </div>
+          );})()}
+        </>)}
       </Card>}
 
       {/* PURCHASE INVOICE MODAL */}
       {showPurchaseModal&&(()=>{ const c=computePurchaseInvoice(draft); const inSty={padding:"9px 11px",border:`1px solid ${C.border}`,borderRadius:8,fontFamily:"inherit",fontSize:13.5,background:"#fff"}; return(
-        <Modal title={"🧾 "+_t("New Purchase Invoice")} onClose={()=>{setShowPurchaseModal(false);setDupWarn(null);}} width={760}>
+        <Modal title={"🧾 "+(isCN?_t("New Credit Note"):_t("New Purchase Invoice"))} onClose={()=>{setShowPurchaseModal(false);setDupWarn(null);}} width={760}>
+          <div style={{display:"flex",gap:6,marginBottom:12}}>
+            <button onClick={()=>{setDraft(d=>({...d,docType:"invoice"}));setDupWarn(null);}} style={{flex:1,padding:"8px 10px",borderRadius:8,border:`1.5px solid ${!isCN?C.success:C.border}`,background:!isCN?C.successLight:"#fff",color:!isCN?C.success:C.textMid,fontWeight:700,fontFamily:"inherit",fontSize:12.5,cursor:"pointer"}}>🧾 {_t("Purchase Invoice")}</button>
+            <button onClick={()=>{setDraft(d=>({...d,docType:"credit_note"}));setDupWarn(null);}} style={{flex:1,padding:"8px 10px",borderRadius:8,border:`1.5px solid ${isCN?C.danger:C.border}`,background:isCN?C.dangerLight:"#fff",color:isCN?C.danger:C.textMid,fontWeight:700,fontFamily:"inherit",fontSize:12.5,cursor:"pointer"}}>↩️ {_t("Credit Note")}</button>
+          </div>
+          {isCN&&<div style={{fontSize:11.5,color:C.textMid,marginBottom:10,padding:"8px 11px",background:C.dangerLight,borderRadius:8}}>{_t("A credit note reduces what you owe this supplier and reduces recoverable input VAT (a return or overcharge correction).")}</div>}
           {dupWarn&&<div style={{padding:"12px 14px",borderRadius:10,marginBottom:14,border:`1.5px solid ${dupWarn.level==="exact"?C.danger:C.warning}`,background:dupWarn.level==="exact"?C.dangerLight:C.warningLight}}>
-            <div style={{fontSize:13,fontWeight:800,color:dupWarn.level==="exact"?C.danger:C.warning}}>{dupWarn.level==="exact"?("⛔ "+_t("Possible duplicate invoice")):("⚠️ "+_t("Looks similar to an existing invoice"))}</div>
+            <div style={{fontSize:13,fontWeight:800,color:dupWarn.level==="exact"?C.danger:C.warning}}>{dupWarn.level==="exact"?("⛔ "+_t("Possible duplicate document")):("⚠️ "+_t("Looks similar to an existing document"))}</div>
             <div style={{fontSize:12,color:C.textMid,marginTop:4}}>
-              {(dupWarn.level==="exact"?_t("This supplier and invoice number are already recorded"):_t("Same supplier, total and date as an existing invoice"))}: <strong>{dupWarn.match.supplierName} · {dupWarn.match.supplierInvoiceNo||"—"} · {fmtSAR(computePurchaseInvoice(dupWarn.match).total)}</strong>. {_t("Entering it twice double-counts input VAT.")}
+              {(dupWarn.level==="exact"?_t("This supplier and document number are already recorded"):_t("Same supplier, total and date as an existing document"))}: <strong>{dupWarn.match.supplierName} · {dupWarn.match.supplierInvoiceNo||"—"} · {fmtSAR(computePurchaseInvoice(dupWarn.match).total)}</strong>. {_t("Entering it twice double-counts input VAT.")}
             </div>
             <div style={{display:"flex",gap:8,marginTop:10}}>
               <Btn size="sm" variant="ghost" onClick={()=>setDupWarn(null)}>{_t("Go back & edit")}</Btn>
@@ -255,7 +274,7 @@ export function InventoryManagement({items,setItems,lang="en"}){
               <option value="">{_t("Select supplier")+" *"}</option>
               {suppliers.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
-            <input value={draft.supplierInvoiceNo} onChange={e=>{const v=e.target.value;setDraft(d=>({...d,supplierInvoiceNo:v}));setDupWarn(null);}} placeholder={_t("Supplier invoice #")+" *"} style={inSty}/>
+            <input value={draft.supplierInvoiceNo} onChange={e=>{const v=e.target.value;setDraft(d=>({...d,supplierInvoiceNo:v}));setDupWarn(null);}} placeholder={(isCN?_t("Credit note #"):_t("Supplier invoice #"))+" *"} style={inSty}/>
             <input type="date" value={draft.invoiceDate} onChange={e=>{const v=e.target.value;setDraft(d=>({...d,invoiceDate:v}));setDupWarn(null);}} style={inSty}/>
             <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,color:C.textMid}}>
               <input type="checkbox" checked={draft.hasValidEInvoice} onChange={e=>setDraft(d=>({...d,hasValidEInvoice:e.target.checked}))}/>
@@ -292,7 +311,7 @@ export function InventoryManagement({items,setItems,lang="en"}){
 
           <div style={{display:"flex",gap:10,marginTop:14}}>
             <Btn variant="ghost" style={{flex:1}} onClick={()=>{setShowPurchaseModal(false);setDupWarn(null);}}>{_t("Cancel")}</Btn>
-            <Btn style={{flex:1}} onClick={()=>submitPurchase(false)}>{_t("Save Purchase Invoice")}</Btn>
+            <Btn style={{flex:1}} onClick={()=>submitPurchase(false)}>{isCN?_t("Save Credit Note"):_t("Save Purchase Invoice")}</Btn>
           </div>
         </Modal>
       );})()}
