@@ -30,6 +30,7 @@ import { TODAY } from "./lib/date.js";
 import { logActivity } from "./lib/activity.js";
 import { initSync, debouncedSync, syncKeyToFirestore } from "./lib/sync.js";
 import { initCatalogueCloud, setCatalogueLicense, catalogueCloud, loadAllItems as loadCatalogueCloud, backfillCatalogue } from "./lib/catalogueCloud.js";
+import { catalogueSubEnabled, setCatalogueSubEnabled, CATALOGUE_FLAG_KEY } from "./lib/catalogueFlag.js";
 import { initPurchaseStore, setPurchaseInvoicesLocal, loadPurchaseInvoices } from "./lib/purchaseStore.js";
 import { initPOStore, setPurchaseOrdersLocal, loadPurchaseOrders } from "./lib/poStore.js";
 import { initPurchaseCloud, setPurchaseCloudLicense, purchaseDocsCloud, purchaseOrdersCloud, mergeById } from "./lib/purchaseCloud.js";
@@ -147,7 +148,8 @@ initCloudArchive({ db, doc, collection, setDoc, getDoc, getDocs, query, where, o
 // catalogue is too large for the 350 KB client_data blob. OFF by default; the
 // operator backfills and flips restopos_catalogue_subcollection during cutover.
 initCatalogueCloud({ db, doc, setDoc, deleteDoc, collection, getDocs, writeBatch });
-function catalogueSubOn(){ try{ return LS.get("restopos_catalogue_subcollection")===true; }catch(e){ return false; } }
+// Per-licence (admin/server flag) OR synced account flag OR per-device override.
+function catalogueSubOn(){ return catalogueSubEnabled(); }
 // Debounced per-key cloud backup engine (src/lib/sync.js). Inject the Firestore
 // handles the same way; must come after db exists, before any screen renders.
 initSync({ db, doc, setDoc });
@@ -1188,6 +1190,7 @@ const SYNC_KEYS=[
   "restopos_draft_format","restopos_kot_format","restopos_dashboard_config","restopos_draft_invoices","restopos_saved_invoices",
   "restopos_client_creds", // ← needed so login works on new/other devices
   "restopos_stock_movements","restopos_suppliers","restopos_low_stock_threshold", // inventory
+  "restopos_catalogue_subcollection", // R1: per-licence catalogue-subcollection enable (tiny boolean; syncs account-wide)
 ];
 
 
