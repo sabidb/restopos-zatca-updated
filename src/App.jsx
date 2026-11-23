@@ -23,6 +23,8 @@ import ImportWizard from "./components/ImportWizard.jsx";
 import { TODAY } from "./lib/date.js";
 import { logActivity } from "./lib/activity.js";
 import { initSync, debouncedSync, syncKeyToFirestore } from "./lib/sync.js";
+import { loadPurchaseInvoices } from "./lib/purchaseStore.js";
+import { purchaseDocsToVatTx } from "./lib/vatBridge.js";
 import { getLang, setLangStore, t, dir } from "./i18n/index.js";
 import { BUSINESS_TYPES, DEFAULT_BUSINESS_TYPE, getBusinessType, bizProfile, bizFeature, manualBillingEnabled, isSupermarket } from "./config/businessTypes.js";
 import { rolesForProfile, DEFAULT_PINS } from "./config/roles.js";
@@ -17190,6 +17192,16 @@ function ZATCAVatEngine({lang="en"}) {
 
   // ── State ─────────────────────────────────────────────────
   const [transactions, setTransactions] = useState([]);
+  // Opt-in (default OFF), supermarket/hypermarket only: pull RECOVERABLE input
+  // VAT from captured purchase documents into the return instead of re-keying.
+  // Default off keeps every existing return byte-for-byte unchanged.
+  const canAutoPurchaseVat = bizFeature("purchasing");
+  const [autoPurchaseVat, setAutoPurchaseVat] = useState(() => {
+    try { return canAutoPurchaseVat && LS.get("restopos_vat_autopurchase") === true; } catch { return false; }
+  });
+  function toggleAutoPurchaseVat() {
+    setAutoPurchaseVat((v) => { const n = !v; try { LS.set("restopos_vat_autopurchase", n); } catch (e) {} return n; });
+  }
   const [loading, setLoading]           = useState(true);
   const [activeTab, setActiveTab]       = useState("dashboard");
   const [showForm, setShowForm]         = useState(false);
@@ -17307,10 +17319,20 @@ function ZATCAVatEngine({lang="en"}) {
       });
   }, [period, transactions]); // transactions dep so a re-render after edits refreshes too
 
-  // Combined list = auto sales + manual entries (auto first, by date)
+  // Captured purchase documents → recoverable input-VAT entries (opt-in).
+  // Empty unless the merchant turned the toggle on, so the default return is
+  // identical to before this feature existed.
+  const autoPurchaseTx = useMemo(
+    () => (canAutoPurchaseVat && autoPurchaseVat)
+      ? purchaseDocsToVatTx(loadPurchaseInvoices(), period)
+      : [],
+    [canAutoPurchaseVat, autoPurchaseVat, period, transactions]
+  );
+
+  // Combined list = auto sales + auto purchases (opt-in) + manual entries.
   const allTx = useMemo(
-    () => [...autoSalesTx, ...transactions].sort((a,b) => a.date.localeCompare(b.date)),
-    [autoSalesTx, transactions]
+    () => [...autoSalesTx, ...autoPurchaseTx, ...transactions].sort((a,b) => a.date.localeCompare(b.date)),
+    [autoSalesTx, autoPurchaseTx, transactions]
   );
 
   // ── Computed ──────────────────────────────────────────────
@@ -17720,6 +17742,19 @@ ${stats.amountOwed>0?`<div class="warn"><b>⚠️ Penalty estimates if filed lat
             <span style={{fontSize:18}}>🔄</span>
             <span>Sales auto-update from <strong>Close Day</strong> totals — {autoSalesTx.length} day{autoSalesTx.length===1?"":"s"} pulled this month ({vatSar(autoSalesTx.reduce((s,t)=>s+t.vat,0))} output VAT). Add purchases &amp; expenses manually with <strong>+ Add Entry</strong>.</span>
           </div>
+          {canAutoPurchaseVat && (
+            <div style={{ background:"#13203a", border:`1px solid ${autoPurchaseVat?"#6366f1":"#334155"}`, borderRadius:10, padding:"12px 16px", marginBottom:14, fontSize:13, color:"#c7d2fe", display:"flex", alignItems:"center", gap:12, flexWrap:"wrap" }}>
+              <label style={{ display:"flex", alignItems:"center", gap:8, cursor:"pointer", fontWeight:700 }}>
+                <input type="checkbox" checked={autoPurchaseVat} onChange={toggleAutoPurchaseVat} />
+                📦 Pull input VAT from captured purchase documents
+              </label>
+              <span style={{ fontSize:12, color:"#94a3b8" }}>
+                {autoPurchaseVat
+                  ? `On — ${autoPurchaseTx.length} recoverable purchase doc${autoPurchaseTx.length===1?"":"s"} this period (${vatSar(autoPurchaseTx.reduce((s,t)=>s+t.vat,0))} input VAT). Don't also add these as manual entries — it would double-count.`
+                  : "Off — input VAT comes only from manual + Add Entry items. Turn on to use your captured supplier invoices (recoverable ones) instead."}
+              </span>
+            </div>
+          )}
           {/* Daily VAT Chart */}
           <div style={S.card}>
             <div style={S.cardTitle}>Daily VAT Activity — Last 14 Days</div>
