@@ -2191,15 +2191,28 @@ function getDeviceInfo(){
   const browser=ua.includes("Chrome")?"Chrome":ua.includes("Firefox")?"Firefox":ua.includes("Safari")?"Safari":ua.includes("Edge")?"Edge":"Other";
   return{brand,os,browser,userAgent:ua.slice(0,120),screenW:screen.width,screenH:screen.height};
 }
-const APP_VERSION="v29.14.10";
-const APP_VERSION_FULL="RestoPOS v29.14.10 · ZATCA Phase 2";
+const APP_VERSION="v29.14.11";
+const APP_VERSION_FULL="RestoPOS v29.14.11 · ZATCA Phase 2";
 
 // ── Changelog — add a new entry here with every release ──────────
 const CHANGELOG=[
   {
+    version:"v29.14.11",
+    date:"24 Nov 2026",
+    badge:"Latest",
+    badgeColor:"#10b981",
+    notes:[
+      "🖨️ Arabic now prints correctly through QZ Tray — receipts are rendered in the browser and sent as an image, so Arabic letters stay joined and in the right order (no more disconnected / reversed text).",
+      "🔐 QZ Tray “Allow / Block” pop-up fixed — every print request is now signed on the device itself. Install the new RestoPOS certificate once per computer (Settings → Silent Printing → Download Certificate → override.crt, then restart QZ Tray) and the pop-up never shows again.",
+      "🛒 Supermarket bills: removed the Token No line, plus the User and Payment-type lines — cleaner receipt (Date / Time kept).",
+      "🔤 Preset Bills: new “Receipt font” picker (Tahoma, Simplified Arabic, Traditional Arabic, Amiri) so you can switch fonts if one looks wrong on a printer.",
+      "🧾 Preset Bills preview now shows your registered business details instead of a sample name.",
+      "⌨️ Scan till: the scan box auto-focuses when you open the till; item name and barcode now sit in their own columns.",
+    ]
+  },
+  {
     version:"v29.14.10",
     date:"22 Jun 2026",
-    badge:"Latest",
     badgeColor:"#10b981",
     notes:[
       "📊 Report was printing too wide and clipping on the left edge — narrowed it to 40 characters per line (from 42) with proper left margin so the whole report stays on the paper. Added a “📏 Characters per line” slider in Preset Report (26–48) to fine-tune the exact width for your printer if needed.",
