@@ -5392,6 +5392,21 @@ async function translateText(text, sl, tl){
 }
 async function translateEnToAr(text){ return translateText(text,"en","ar"); }
 async function translateArToEn(text){ return translateText(text,"ar","en"); }
+// Decide what one catalogue item needs translated. Returns null (already has a
+// proper English + Arabic name) or {field,from[,keepAr]}:
+//   • Arabic sitting in the English slot (classic bad import) → make English
+//     from it and keep the Arabic in nameAr.
+//   • English only, no Arabic → fill Arabic.
+//   • Arabic only, no English → fill English.
+// Shared by the always-on background filler (App) and the manual tools so they
+// agree on what still needs work.
+function txPlan(it){
+  const en=String(it&&it.name||"").trim(), ar=String(it&&it.nameAr||"").trim();
+  if(en&&looksArabic(en)) return {field:"name", from:(ar||en), keepAr:!ar?en:null};
+  if(en&&!ar) return {field:"nameAr", from:en};
+  if(!en&&ar) return {field:"name", from:ar};
+  return null;
+}
 
 function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang="en",currentUser=null}){
   const allCats=[...new Set(items.map(i=>i.category))];
@@ -5440,6 +5455,9 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     else showN("⚠️ Couldn't auto-translate — type the Arabic name");
   }
   const posCats=(LS.get("restopos_categories")||[...new Set(items.map(i=>i.category).filter(Boolean))]);
+  // Id of the line a scan/tap last dropped into the cart. A bare number typed in
+  // the scan box (no qty-box tap) SETS this line's quantity — see submitScanBox.
+  const lastLineRef=useRef(null);
   function focusScanner(){setTimeout(()=>barcodeRef.current?.focus(),60);}
   function saveNewProduct(){
     const p=newProd; const price=parseFloat(p.price);
@@ -5473,13 +5491,16 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     if(item.weighed){ setWeighItem(item); setWeighKg(""); return; }
     // Merge only into a line at the catalogue price — a re-priced line is pinned,
     // so re-scanning the same item starts a new line (different price = new row).
-    setCart(prev=>{const ex=prev.find(c=>c.id===item.id&&!c.weighed&&!c.priceEdited);if(ex)return prev.map(c=>c===ex?{...c,qty:c.qty+1}:c);return[...prev,{...item,qty:1}];});showN("+ "+item.name);
+    setCart(prev=>{const ex=prev.find(c=>c.id===item.id&&!c.weighed&&!c.priceEdited);if(ex)return prev.map(c=>c===ex?{...c,qty:c.qty+1}:c);return[...prev,{...item,qty:1}];});lastLineRef.current=item.id;showN("+ "+item.name);
   }
   function confirmWeigh(){
     const w=parseFloat(weighKg);
     if(!(w>0)){showN("❌ Enter a valid weight");return;}
     const kg=Math.round(w*1000)/1000;
     setCart(prev=>[...prev,{...weighItem,qty:kg,weighed:true}]);
+    // A weighed line's "qty" is its weight — a typed whole number must not
+    // overwrite it, so clear the last-line pointer.
+    lastLineRef.current=null;
     showN("+ "+weighItem.name+" ("+kg+" kg)");
     setWeighItem(null);setWeighKg("");
   }
@@ -5585,6 +5606,33 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     if(item){ setScanMiss(""); setScannedItem(item); }
     else if(priceCheck){ showN("❌ No product for “"+c+"”"); focusScanner(); }
     else { setNewProd({barcode:c,name:"",price:"",category:posCats[0]||"General",weighed:false}); } // unknown → offer create
+  }
+  // What a manual Enter / keypad ↵ in the scan box does. A short, pure-number
+  // entry (1–3 digits) is read as a QUANTITY and SET on the last scanned line —
+  // so the cashier can scan an item, type "5", Enter, and the line becomes ×5
+  // without ever tapping the qty box. "0" removes the line. Anything longer (a
+  // real barcode) or anything with non-digits falls through to the normal
+  // barcode/name search, and the next scan still adds a fresh item. Disabled in
+  // price-check mode and when there is no line to adjust.
+  function submitScanBox(){
+    const raw=String(barcodeInput||"").trim();
+    if(!raw)return;
+    if(!priceCheck && /^\d{1,3}$/.test(raw) && lastLineRef.current!=null
+       && cart.some(c=>c.id===lastLineRef.current&&!c.weighed&&!c.priceEdited)){
+      const q=parseInt(raw,10);
+      const targetId=lastLineRef.current;
+      setCart(prev=>{
+        const i=prev.findIndex(c=>c.id===targetId&&!c.weighed&&!c.priceEdited);
+        if(i<0)return prev;
+        if(q<=0){lastLineRef.current=null;return prev.filter((_,x)=>x!==i);}
+        return prev.map((c,x)=>x===i?{...c,qty:q}:c);
+      });
+      setBarcodeInput("");
+      showN(q<=0?"✕ Line removed":"✎ Qty "+q);
+      focusScanner();
+      return;
+    }
+    handleBarcodeSearch(raw);
   }
   async function confirmPayment(method,given,change,promo,totalDiscountAmt,finalTotal,finalVat,printAndSave,payInfo,manualDiscountAmt,promoDiscountAmt,isDraft=false,extraData={}){
     // ── Invoice numbering ────────────────────────────────────────────
@@ -6079,7 +6127,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   const superScanBar=(
     <input ref={barcodeRef} value={barcodeInput}
       onChange={e=>setBarcodeInput(e.target.value)}
-      onKeyDown={e=>{if(e.key==="Enter"&&barcodeInput.trim())handleBarcodeSearch(barcodeInput);}}
+      onKeyDown={e=>{if(e.key==="Enter"&&barcodeInput.trim())submitScanBox();}}
       placeholder={priceCheck?"🔍 Price check — scan to view":"🔲 Scan barcode or type code…"}
       style={{flex:1,minWidth:0,padding:"12px 16px",border:`2px solid ${priceCheck?C.warning:C.primary}`,borderRadius:10,fontSize:16,fontWeight:600,fontFamily:"inherit",background:"#fff",color:C.text}}/>
   );
@@ -6153,7 +6201,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   const superKeypad=(()=>{
     const press=v=>{
       if(v==="⌫")setBarcodeInput(s=>s.slice(0,-1));
-      else if(v==="↵"){if(barcodeInput.trim())handleBarcodeSearch(barcodeInput);}
+      else if(v==="↵"){if(barcodeInput.trim())submitScanBox();}
       else setBarcodeInput(s=>s+v);
       if(v!=="↵")focusScanner(); // keep the hardware scanner live after a tap
     };
@@ -6174,7 +6222,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   // barcode rows. F1 opens the shared payment window; F2 clears the sale. ──
   const superClearAll=()=>{
     if(cart.length>=3 && !window.confirm(`Clear all ${cart.length} items from this sale?`)) return;
-    setCart([]); setSelectedRow(null); focusScanner();
+    setCart([]); setSelectedRow(null); lastLineRef.current=null; focusScanner();
   };
   const superOpenPay=()=>{ if(cart.length&&manualBillingEnabled()) setShowPayment(true); };
   const superOpenPrev=()=>{ const printed=(sales||[]).filter(s=>s.status!=="voided"); if(!printed.length){alert("No previous bills yet");return;} setPrevAllDays(false); setPrevIndex(0); setShowPrevBill(true); };
@@ -6652,7 +6700,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
       {/* LEFT — Menu */}
       <div style={{flex:1,display:"flex",flexDirection:"column",borderRight:`1px solid ${C.border}`,background:C.bg,overflow:"hidden"}}>
         <div style={{padding:"8px 12px",background:C.zatcaLight,borderBottom:`1px solid ${C.border}`,display:"flex",gap:8,alignItems:"center"}}>
-          <input ref={barcodeRef} value={barcodeInput} onChange={e=>setBarcodeInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&barcodeInput.trim())handleBarcodeSearch(barcodeInput);}} placeholder={priceCheck?"🔍 Price check — scan to view":"🔲 Scan barcode or type…"} style={{flex:1,minWidth:0,padding:"7px 12px",border:`1.5px solid ${priceCheck?C.warning:C.zatca}`,borderRadius:8,fontSize:13,fontFamily:"inherit",background:"#fff"}}/>
+          <input ref={barcodeRef} value={barcodeInput} onChange={e=>setBarcodeInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&barcodeInput.trim())submitScanBox();}} placeholder={priceCheck?"🔍 Price check — scan to view":"🔲 Scan barcode or type…"} style={{flex:1,minWidth:0,padding:"7px 12px",border:`1.5px solid ${priceCheck?C.warning:C.zatca}`,borderRadius:8,fontSize:13,fontFamily:"inherit",background:"#fff"}}/>
           <button onClick={()=>setPriceCheck(p=>!p)} title="Price check: scan to view details only, never add to cart" style={{flexShrink:0,height:34,padding:"0 11px",borderRadius:8,border:`1.5px solid ${priceCheck?C.warning:C.border}`,background:priceCheck?C.warningLight:"#fff",color:priceCheck?C.warning:C.textMid,cursor:"pointer",fontSize:12,fontWeight:800,fontFamily:"inherit"}}>🔍 {priceCheck?"Price Check ON":"Price Check"}</button>
           {!editMode
             ? <button onClick={enterEdit} title="Edit layout — reorder items & resize boxes" style={{flexShrink:0,width:38,height:36,borderRadius:8,border:`1.5px solid ${C.border}`,background:"#fff",cursor:"pointer",fontSize:17,display:"flex",alignItems:"center",justifyContent:"center"}}>✏️</button>
@@ -17491,6 +17539,48 @@ export default function App(){
   function setCompany(v){_setCompany(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_company",n);const _lic_setCompany=LS.get("restopos_license_v2")?.licenseKey;if(_lic_setCompany)debouncedSync(_lic_setCompany,"restopos_company",n);logActivity("SETTINGS_CHANGED",{after:{company:"updated"}},currentUser?.role||"System");return n;});}
   function setPins(v){_setPins(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_pins",n);const _lic_setPins=LS.get("restopos_license_v2")?.licenseKey;if(_lic_setPins)debouncedSync(_lic_setPins,"restopos_pins",n);logActivity("PINS_CHANGED",{after:{pins:"updated"}},currentUser?.role||"System");return n;});}
   function setInvoiceFormat(v){_setInvoiceFormat(p=>{const n=typeof v==="function"?v(p):v;LS.set("restopos_invoice_format",n);const _lic_setInvoiceFormat=LS.get("restopos_license_v2")?.licenseKey;if(_lic_setInvoiceFormat)debouncedSync(_lic_setInvoiceFormat,"restopos_invoice_format",n);return n;});}
+  // ── Always-on background translation ──────────────────────────────────────
+  // Quietly fills any product missing its Arabic or English name (or with Arabic
+  // stuck in the English slot from a bad import), ONE item at a time, and saves
+  // each result immediately through setItems (localStorage + cloud). It lives
+  // here on the top-level App, which never unmounts, so it keeps translating no
+  // matter which screen is open — unlike the old per-screen bulk run that stopped
+  // the moment you navigated away. A failed item backs off and retries later
+  // (the free translator rate-limits), so one bad word can't wedge the queue.
+  const _txBusy=useRef(false);
+  const _txTried=useRef(new Map()); // id -> {from, next, fails}
+  useEffect(()=>{
+    let cancelled=false;
+    const tick=async()=>{
+      if(_txBusy.current||cancelled)return;
+      const list=LS.get("restopos_items")||[];
+      let target=null,plan=null;const now=Date.now();
+      for(const it of list){
+        const p=txPlan(it); if(!p)continue;
+        const r=_txTried.current.get(it.id);
+        if(r&&r.from===p.from&&now<r.next)continue; // still in back-off for this exact text
+        target=it;plan=p;break;
+      }
+      if(!target)return;
+      _txBusy.current=true;
+      let out=""; try{ out=plan.field==="name"?await translateArToEn(plan.from):await translateEnToAr(plan.from); }catch(_){}
+      if(!cancelled&&out){
+        _txTried.current.set(target.id,{from:plan.from,next:Infinity,fails:0});
+        setItems(prev=>prev.map(i=>{
+          if(i.id!==target.id)return i;
+          const cur=txPlan(i); if(!cur||cur.field!==plan.field||cur.from!==plan.from)return i; // user edited meanwhile — don't clobber
+          const patch={[plan.field]:out}; if(plan.keepAr)patch.nameAr=plan.keepAr;
+          return {...i,...patch};
+        }));
+      }else if(!cancelled){
+        const fails=((_txTried.current.get(target.id)||{}).fails||0)+1;
+        _txTried.current.set(target.id,{from:plan.from,next:Date.now()+Math.min(300000,30000*fails),fails});
+      }
+      _txBusy.current=false;
+    };
+    const id=setInterval(tick,1800);
+    return ()=>{cancelled=true;clearInterval(id);};
+  },[]);
   const [uiScale,setUiScale]=useState(()=>{const v=parseInt(LS.get("restopos_ui_scale")||"100");return isNaN(v)?100:v;});
   function handleScaleChange(v){const s=Math.max(70,Math.min(130,parseInt(v)||100));setUiScale(s);LS.set("restopos_ui_scale",String(s));}
   useEffect(()=>{
