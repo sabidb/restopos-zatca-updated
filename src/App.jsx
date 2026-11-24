@@ -2191,15 +2191,26 @@ function getDeviceInfo(){
   const browser=ua.includes("Chrome")?"Chrome":ua.includes("Firefox")?"Firefox":ua.includes("Safari")?"Safari":ua.includes("Edge")?"Edge":"Other";
   return{brand,os,browser,userAgent:ua.slice(0,120),screenW:screen.width,screenH:screen.height};
 }
-const APP_VERSION="v29.14.14";
-const APP_VERSION_FULL="RestoPOS v29.14.14 · ZATCA Phase 2";
+const APP_VERSION="v29.14.15";
+const APP_VERSION_FULL="RestoPOS v29.14.15 · ZATCA Phase 2";
 
 // ── Changelog — add a new entry here with every release ──────────
 const CHANGELOG=[
   {
-    version:"v29.14.14",
+    version:"v29.14.15",
     date:"24 Nov 2026",
     badge:"Latest",
+    badgeColor:"#10b981",
+    notes:[
+      "🧾 Supermarket till now holds 5 parallel bills — tap Bill 1–5 to park one customer's cart and serve another, then switch back and continue exactly where you left off. (In-memory; a refresh clears them.)",
+      "🌐 Product names now translate automatically in the background — any item missing its Arabic or English name is filled and saved on its own, on any screen, and keeps running when you switch windows.",
+      "🛒 Purchases is now a top-bar tab next to Transactions on the supermarket till, for quick access to purchase invoices.",
+      "🔢 Scan box always retrieves the item by the code you scan or type — a number is treated as a barcode, never a quantity. Edit a line's quantity on the cart (tap the qty box or use + / −).",
+    ]
+  },
+  {
+    version:"v29.14.14",
+    date:"24 Nov 2026",
     badgeColor:"#10b981",
     notes:[
       "🌐 Instant “New product” on the till now has an Arabic name field with a 🌐 Auto button that auto-translates the English name to Arabic.",
@@ -5410,7 +5421,17 @@ function txPlan(it){
 
 function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang="en",currentUser=null}){
   const allCats=[...new Set(items.map(i=>i.category))];
-  const [activeCat,setActiveCat]=useState("ALL");const [cart,setCart]=useState([]);const [orderType,setOrderType]=useState("takeaway");const [selectedTable,setSelectedTable]=useState(null);const [billType,setBillType]=useState("normal");
+  const [activeCat,setActiveCat]=useState("ALL");
+  // Supermarket till holds up to 5 parked bills at once so the cashier can serve
+  // a second customer without losing the first's cart, then switch back. `cart`/
+  // `setCart` proxy the ACTIVE bill, so the whole existing checkout pipeline
+  // (totals, payment, add/remove, scan) works unchanged. In-memory only — a page
+  // refresh clears them (by design). Restaurant/other modes just use bill 1.
+  const [bills,setBills]=useState(()=>[[],[],[],[],[]]);
+  const [activeBill,setActiveBill]=useState(0);
+  const cart=bills[activeBill]||[];
+  const setCart=v=>setBills(prev=>prev.map((c,i)=>i===activeBill?(typeof v==="function"?v(c):v):c));
+  const [orderType,setOrderType]=useState("takeaway");const [selectedTable,setSelectedTable]=useState(null);const [billType,setBillType]=useState("normal");
   const [showPayment,setShowPayment]=useState(false);const [showReceipt,setShowReceipt]=useState(false);const [lastOrder,setLastOrder]=useState(null);const [lastZatcaInvoice,setLastZatcaInvoice]=useState(null);
   const [showPrevBill,setShowPrevBill]=useState(false);
   const [prevIndex,setPrevIndex]=useState(0); // index into the prev-bill list (0 = newest)
@@ -5459,6 +5480,16 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   // the scan box (no qty-box tap) SETS this line's quantity — see submitScanBox.
   const lastLineRef=useRef(null);
   function focusScanner(){setTimeout(()=>barcodeRef.current?.focus(),60);}
+  // Switch to one of the 5 parked bills. Each bill's cart already lives in
+  // `bills`, so we only clear the transient per-screen selection/edit state and
+  // move the active pointer — the parked cart reappears exactly as it was left.
+  function switchBill(i){
+    if(i===activeBill)return;
+    setEditPriceIdx(null);setEditPriceVal("");
+    setSelectedRow(null);setDescModalIdx(null);
+    setActiveBill(i);
+    focusScanner();
+  }
   function saveNewProduct(){
     const p=newProd; const price=parseFloat(p.price);
     if(!p.name.trim()){showN("❌ Enter a name");return;}
@@ -5607,32 +5638,13 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     else if(priceCheck){ showN("❌ No product for “"+c+"”"); focusScanner(); }
     else { setNewProd({barcode:c,name:"",price:"",category:posCats[0]||"General",weighed:false}); } // unknown → offer create
   }
-  // What a manual Enter / keypad ↵ in the scan box does. A short, pure-number
-  // entry (1–3 digits) is read as a QUANTITY and SET on the last scanned line —
-  // so the cashier can scan an item, type "5", Enter, and the line becomes ×5
-  // without ever tapping the qty box. "0" removes the line. Anything longer (a
-  // real barcode) or anything with non-digits falls through to the normal
-  // barcode/name search, and the next scan still adds a fresh item. Disabled in
-  // price-check mode and when there is no line to adjust.
+  // A manual Enter / keypad ↵ in the scan box ALWAYS retrieves the item by the
+  // typed code — a number is treated as a barcode, never as a quantity. Quantity
+  // is edited directly on the cart line (tap the qty box, or use + / −), so a
+  // numeric barcode is never hijacked into a quantity change.
   function submitScanBox(){
     const raw=String(barcodeInput||"").trim();
-    if(!raw)return;
-    if(!priceCheck && /^\d{1,3}$/.test(raw) && lastLineRef.current!=null
-       && cart.some(c=>c.id===lastLineRef.current&&!c.weighed&&!c.priceEdited)){
-      const q=parseInt(raw,10);
-      const targetId=lastLineRef.current;
-      setCart(prev=>{
-        const i=prev.findIndex(c=>c.id===targetId&&!c.weighed&&!c.priceEdited);
-        if(i<0)return prev;
-        if(q<=0){lastLineRef.current=null;return prev.filter((_,x)=>x!==i);}
-        return prev.map((c,x)=>x===i?{...c,qty:q}:c);
-      });
-      setBarcodeInput("");
-      showN(q<=0?"✕ Line removed":"✎ Qty "+q);
-      focusScanner();
-      return;
-    }
-    handleBarcodeSearch(raw);
+    if(raw) handleBarcodeSearch(raw);
   }
   async function confirmPayment(method,given,change,promo,totalDiscountAmt,finalTotal,finalVat,printAndSave,payInfo,manualDiscountAmt,promoDiscountAmt,isDraft=false,extraData={}){
     // ── Invoice numbering ────────────────────────────────────────────
@@ -6131,6 +6143,23 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
       placeholder={priceCheck?"🔍 Price check — scan to view":"🔲 Scan barcode or type code…"}
       style={{flex:1,minWidth:0,padding:"12px 16px",border:`2px solid ${priceCheck?C.warning:C.primary}`,borderRadius:10,fontSize:16,fontWeight:600,fontFamily:"inherit",background:"#fff",color:C.text}}/>
   );
+  // 5 parallel bill tabs — park one customer's cart and serve another, then tap
+  // back. Active tab is solid; a tab holding items is tinted so the cashier can
+  // see which bills are in progress at a glance.
+  const superBillTabs=(
+    <div style={{display:"flex",gap:6,padding:"8px 12px 0",flexShrink:0,background:C.bg}}>
+      {bills.map((b,i)=>{
+        const act=i===activeBill;
+        return(
+          <button key={i} onClick={()=>switchBill(i)} title={`Bill ${i+1}`}
+            style={{flex:"1 1 0",minWidth:56,padding:"7px 4px",borderRadius:10,border:`1.5px solid ${act?C.primary:(b.length?C.primary+"55":C.border)}`,background:act?C.primary:(b.length?C.primaryLight:"#fff"),color:act?"#fff":(b.length?C.primary:C.textMid),cursor:"pointer",fontFamily:"inherit",fontWeight:800,fontSize:12.5,display:"flex",flexDirection:"column",alignItems:"center",gap:1,lineHeight:1.1}}>
+            <span>Bill {i+1}</span>
+            <span style={{fontSize:9.5,fontWeight:700,opacity:act?0.9:0.75}}>{b.length?`${b.length} item${b.length>1?"s":""}`:"empty"}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
   const superToolBtn=(label,onClick,active=false,accent=C.primary)=>(
     <button onClick={onClick} style={{flexShrink:0,height:44,padding:"0 14px",borderRadius:10,border:`1.5px solid ${active?accent:C.border}`,background:active?accent+"18":"#fff",color:active?accent:C.textMid,cursor:"pointer",fontSize:13,fontWeight:800,fontFamily:"inherit",whiteSpace:"nowrap"}}>{label}</button>
   );
@@ -6306,8 +6335,9 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
         </div>
         <div style={{marginTop:"auto",fontSize:10.5,color:C.textLight,textAlign:"center"}}>Tap a button or press its F-key</div>
       </div>
-      {/* RIGHT — scan bar + compact rows */}
+      {/* RIGHT — bill tabs + scan bar + compact rows */}
       <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+        {superBillTabs}
         <div style={{padding:12}}>{superScanBar}</div>
         <div style={{display:"flex",alignItems:"center",padding:"6px 14px",fontSize:10.5,fontWeight:800,letterSpacing:"0.06em",color:C.textLight,borderBottom:`1px solid ${C.border}`}}>
           <span style={{flex:1}}>ITEM / BARCODE</span>
@@ -6643,7 +6673,8 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
             {superToolBtn("⚖ Weigh",()=>setWeighPick(true))}
             {superModeChip}
           </div>
-          {/* Scan bar — always the focus of the screen */}
+          {/* Bill tabs + scan bar — always the focus of the screen */}
+          {superBillTabs}
           <div style={{padding:"10px 12px",display:"flex",gap:8,background:C.bg,flexShrink:0}}>{superScanBar}</div>
           {superLayout==="B"?(
             // ── B · Scan + Keypad ──
@@ -17645,7 +17676,7 @@ export default function App(){
     ["Manage","⚙️",["shifts","advanced","settings","help"]],
   ].map(([g,ic,ids])=>[g,ic,ids.filter(id=>NAV_BY_ID[id])]).filter(([,,ids])=>ids.length);
   // Quick tabs always visible on the supermarket top bar (role-permitting).
-  const SUPER_TOP=["pos","transactions"].filter(id=>NAV_BY_ID[id]);
+  const SUPER_TOP=["pos","transactions","purchases"].filter(id=>NAV_BY_ID[id]);
   if(step==="checking")return<div style={{minHeight:"100vh",background:"#0a1628",display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{color:"#fff",fontSize:16}}>Loading…</div></div>;
   // Day 15: the trial locks, but nothing is deleted — the workspace and its
   // cloud copy both stay put, waiting for the client to register. Checked
