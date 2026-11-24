@@ -5401,6 +5401,13 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   const [weighItem,setWeighItem]=useState(null);const [weighKg,setWeighKg]=useState("");
   const [scannedItem,setScannedItem]=useState(null);const [scanMiss,setScanMiss]=useState("");
   const [priceCheck,setPriceCheck]=useState(false); // scan-to-view-only (customer-facing)
+  // Per-bill price override: tap a cart line's price to set a one-off price for
+  // THIS bill only. The edited line is "pinned" (priceEdited) so a re-scan of the
+  // same product does not merge into it — it opens a fresh line at the catalogue
+  // price, which can itself be re-priced. VAT/totals always derive from the line
+  // prices, so nothing else needs special-casing.
+  const [editPriceIdx,setEditPriceIdx]=useState(null);
+  const [editPriceVal,setEditPriceVal]=useState("");
   const [newProd,setNewProd]=useState(null); // {barcode,name,nameAr,price,category,weighed} for quick create
   const [translating,setTranslating]=useState(false);
   async function autoTranslateNewProd(){
@@ -5444,7 +5451,9 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     // Weighed item (price is per-kg): open the weight modal. qty carries the
     // weight in kg, so line total (price*qty) stays correct; each weigh is a line.
     if(item.weighed){ setWeighItem(item); setWeighKg(""); return; }
-    setCart(prev=>{const ex=prev.find(c=>c.id===item.id&&!c.weighed);if(ex)return prev.map(c=>c===ex?{...c,qty:c.qty+1}:c);return[...prev,{...item,qty:1}];});showN("+ "+item.name);
+    // Merge only into a line at the catalogue price — a re-priced line is pinned,
+    // so re-scanning the same item starts a new line (different price = new row).
+    setCart(prev=>{const ex=prev.find(c=>c.id===item.id&&!c.weighed&&!c.priceEdited);if(ex)return prev.map(c=>c===ex?{...c,qty:c.qty+1}:c);return[...prev,{...item,qty:1}];});showN("+ "+item.name);
   }
   function confirmWeigh(){
     const w=parseFloat(weighKg);
@@ -5455,6 +5464,73 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     setWeighItem(null);setWeighKg("");
   }
   function updateQty(delta){if(selectedRow===null)return;setCart(prev=>{const next=prev.map((c,i)=>i===selectedRow?{...c,qty:Math.max(0,c.qty+delta)}:c).filter(c=>c.qty>0);if(next.length<=selectedRow){setSelectedRow(null);setDescModalIdx(null);}return next;});}
+  // Per-bill price override helpers (see editPriceIdx state above).
+  function beginPriceEdit(idx){const c=cart[idx];if(!c||c.weighed)return;setEditPriceIdx(idx);setEditPriceVal(String(c.price??""));}
+  function commitPriceEdit(){setEditPriceIdx(cur=>{if(cur==null)return null;const n=parseFloat(String(editPriceVal).replace(/[^\d.]/g,""));setCart(prev=>prev.map((c,i)=>i===cur?{...c,price:(n>=0&&!Number.isNaN(n))?Math.round(n*100)/100:c.price,priceEdited:true}:c));return null;});setEditPriceVal("");}
+  function cancelPriceEdit(){setEditPriceIdx(null);setEditPriceVal("");}
+  // Resolve a scanned/typed code straight to the cart. A clean barcode hit on an
+  // active product is added immediately (the cashier wanted it in the basket);
+  // price-check, name matches, inactive items and unknown codes fall back to the
+  // normal search so their existing behaviour (card / warning / quick-create) is
+  // unchanged.
+  function scanToCart(code){
+    const c=String(code||"").trim(); if(!c)return;
+    if(priceCheck){handleBarcodeSearch(c);return;}
+    const bActive=findAllByBarcode(items,c).filter(i=>i.active!==false);
+    if(bActive.length>=1){addToCart(bActive[0]);if(bActive.length>1)showN(`⚠️ ${bActive.length} products share this barcode — added “${bActive[0].name}”`);return;}
+    handleBarcodeSearch(c); // name match / inactive warning / unknown → quick-create
+  }
+  // Keep the latest scanToCart in a ref so the document-level listener always runs
+  // the current closure (fresh items/cart) without re-subscribing on every render.
+  const scanToCartRef=useRef(scanToCart); scanToCartRef.current=scanToCart;
+  // ── Hardware-scanner interceptor (scan till) ──────────────────────────────
+  // The global popup listener is OFF on the POS, and the POS used to catch a scan
+  // only while the scan box had focus — so editing a line's quantity (or price)
+  // sent the scanned digits into that field, showing the barcode as the qty.
+  // This capture-phase listener detects a scan by keystroke speed anywhere on the
+  // till, adds the item to the cart, and keeps the fast keystrokes out of whatever
+  // field is focused. Slow (human) typing is never touched, so manual qty/price
+  // editing and typing in the scan box still work.
+  const _scanBuf=useRef({str:"",last:0});
+  useEffect(()=>{
+    // Only drive the cart directly on the scan-first (supermarket) till, and not
+    // while a blocking modal owns the keyboard.
+    const activeNow=superMode&&!showPayment&&!showPrevBill&&!weighItem&&!newProd&&!scannedItem;
+    if(!activeNow)return;
+    const INTERVAL=50; // ms between keys: slower than any scanner, faster than a human
+    const MIN=3;       // shortest string treated as a scanned code
+    const buf=_scanBuf.current;
+    function undoLeak(code){ // remove the one stray first char a scan can drop into a focused field
+      try{
+        const el=document.activeElement;
+        if(!el||(el.tagName!=="INPUT"&&el.tagName!=="TEXTAREA"))return;
+        const pos=el.selectionStart;
+        if(pos>0&&el.value[pos-1]===code[0]){
+          const proto=el.tagName==="TEXTAREA"?window.HTMLTextAreaElement.prototype:window.HTMLInputElement.prototype;
+          const setter=Object.getOwnPropertyDescriptor(proto,"value").set;
+          setter.call(el,el.value.slice(0,pos-1)+el.value.slice(pos));
+          el.dispatchEvent(new Event("input",{bubbles:true}));
+          el.selectionStart=el.selectionEnd=pos-1;
+        }
+      }catch(_){}
+    }
+    function onKey(e){
+      if(e.ctrlKey||e.metaKey||e.altKey)return;
+      const now=performance.now();
+      if(e.key==="Enter"){
+        const code=buf.str;buf.str="";
+        if(code.length>=MIN){e.preventDefault();e.stopPropagation();undoLeak(code);scanToCartRef.current(code);}
+        return;
+      }
+      if(e.key&&e.key.length===1){
+        const gap=now-buf.last;buf.last=now;
+        if(gap>INTERVAL){buf.str=e.key;}            // human keystroke — leave the field alone
+        else{buf.str+=e.key;e.preventDefault();e.stopPropagation();} // fast run = scanner; keep out of inputs
+      }
+    }
+    document.addEventListener("keydown",onKey,true);
+    return ()=>document.removeEventListener("keydown",onKey,true);
+  },[superMode,showPayment,showPrevBill,weighItem,newProd,scannedItem]);
   function showN(msg){setNotif(msg);setTimeout(()=>setNotif(null),1500);}
   function handleBarcodeSearch(code){
     const c=code.trim();
@@ -5990,7 +6066,17 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
             style={{display:"flex",alignItems:"center",gap:10,padding:"11px 14px",borderRadius:10,cursor:"pointer",background:selectedRow===idx?C.primaryLight:"#fff",border:`1.5px solid ${selectedRow===idx?C.primary:C.border}`,boxShadow:idx===0&&selectedRow==null?`0 0 0 2px ${C.primary}22`:"none"}}>
             <div style={{flex:1,minWidth:0}}>
               <div style={{fontSize:15,fontWeight:700,color:C.text}}>{item.name}</div>
-              <div style={{fontSize:12,color:C.textMid}}>{fmtSAR(item.price)}{item.weighed?"/kg":""} × {item.qty}{item.weighed?" kg":""}</div>
+              <div style={{fontSize:12,color:C.textMid}}>
+                {editPriceIdx===idx&&!item.weighed
+                  ? <input autoFocus value={editPriceVal} inputMode="decimal"
+                      onChange={e=>setEditPriceVal(e.target.value.replace(/[^\d.]/g,""))}
+                      onBlur={commitPriceEdit}
+                      onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();commitPriceEdit();}else if(e.key==="Escape"){e.preventDefault();cancelPriceEdit();}}}
+                      onClick={e=>e.stopPropagation()}
+                      style={{width:70,textAlign:"right",fontSize:12,fontWeight:700,border:`1.5px solid ${C.primary}`,borderRadius:6,padding:"2px 4px",fontFamily:"inherit",color:C.text}}/>
+                  : <span onClick={e=>{e.stopPropagation();if(!item.weighed)beginPriceEdit(idx);}} title={item.weighed?undefined:"Tap to set a one-off price for this bill"} style={{color:item.priceEdited?C.primary:C.textMid,fontWeight:item.priceEdited?800:400,cursor:item.weighed?"default":"pointer",textDecoration:item.priceEdited?"underline dotted":"none"}}>{fmtSAR(item.price)}{item.weighed?"/kg":""}{item.priceEdited?" ✎":""}</span>}
+                {" × "}{item.qty}{item.weighed?" kg":""}
+              </div>
             </div>
             <div style={{fontSize:16,fontWeight:900,color:C.primary,minWidth:70,textAlign:"right"}}>{fmtSAR(item.price*item.qty)}</div>
           </div>
@@ -6008,8 +6094,10 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   ));
   const superTotals=(
     <div style={{padding:"14px 16px",borderTop:`2px solid ${C.border}`,background:"#fff"}}>
-      <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}><span style={{fontSize:12,color:C.textMid}}>Items {cart.length} · Qty {cart.reduce((s,i)=>s+i.qty,0)}</span><span style={{fontSize:12,color:C.zatca,fontWeight:700}}>VAT 15% incl. {fmtSAR(vat)}</span></div>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,paddingTop:8,borderTop:`1px solid ${C.border}`}}><span style={{fontSize:17,fontWeight:800}}>Amount Due</span><span style={{fontSize:22,fontWeight:900,color:C.primary}}>{fmtSAR(total)}</span></div>
+      <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}><span style={{fontSize:12,color:C.textMid}}>Items {cart.length} · Qty {cart.reduce((s,i)=>s+i.qty,0)}</span></div>
+      <div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}><span style={{fontSize:12.5,color:C.textMid}}>Subtotal (excl. VAT)</span><span style={{fontSize:12.5,fontWeight:700}}>{fmtSAR(subtotal)}</span></div>
+      <div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}><span style={{fontSize:12.5,color:C.zatca}}>VAT 15%</span><span style={{fontSize:12.5,fontWeight:700,color:C.zatca}}>{fmtSAR(vat)}</span></div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,paddingTop:8,borderTop:`1px solid ${C.border}`}}><span style={{fontSize:17,fontWeight:800}}>Total (incl. VAT)</span><span style={{fontSize:22,fontWeight:900,color:C.primary}}>{fmtSAR(total)}</span></div>
       <div style={{display:"flex",gap:8}}>
         <button onClick={()=>{const printed=(sales||[]).filter(s=>s.status!=="voided");if(!printed.length){alert("No previous bills yet");return;}setPrevAllDays(false);setPrevIndex(0);setShowPrevBill(true);}}
           title="Previous bill" style={{padding:"14px 16px",background:C.primaryLight,border:`1.5px solid ${C.primary}44`,color:C.primary,borderRadius:11,fontFamily:"inherit",fontSize:13,fontWeight:800,cursor:"pointer",whiteSpace:"nowrap"}}>🕐 Prev</button>
@@ -6086,7 +6174,14 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
           <div style={{fontSize:15,fontWeight:700,color:C.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{item.name}</div>
         </div>
         <div style={{flex:1,minWidth:0,fontSize:11,fontFamily:"monospace",color:C.textLight,textAlign:"center",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",padding:"0 6px"}}>{item.barcode||"—"}</div>
-        <div style={{fontSize:11,color:C.textMid,width:74,textAlign:"right",paddingRight:8}}>{fmtSAR(item.price)}{item.weighed?"/kg":""}</div>
+        {editPriceIdx===idx&&!item.weighed
+          ? <input autoFocus value={editPriceVal} inputMode="decimal"
+              onChange={e=>setEditPriceVal(e.target.value.replace(/[^\d.]/g,""))}
+              onBlur={commitPriceEdit}
+              onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();commitPriceEdit();}else if(e.key==="Escape"){e.preventDefault();cancelPriceEdit();}}}
+              onClick={e=>e.stopPropagation()}
+              style={{width:74,textAlign:"right",fontSize:12,fontWeight:700,border:`1.5px solid ${C.primary}`,borderRadius:6,padding:"3px 4px",fontFamily:"inherit",color:C.text,boxSizing:"border-box"}}/>
+          : <div onClick={e=>{e.stopPropagation();if(!item.weighed)beginPriceEdit(idx);}} title={item.weighed?undefined:"Tap to set a one-off price for this bill"} style={{fontSize:11,color:item.priceEdited?C.primary:C.textMid,fontWeight:item.priceEdited?800:400,width:74,textAlign:"right",paddingRight:8,cursor:item.weighed?"default":"pointer",textDecoration:item.priceEdited?"underline dotted":"none"}}>{fmtSAR(item.price)}{item.weighed?"/kg":""}{item.priceEdited?" ✎":""}</div>}
         <div style={{width:118,display:"flex",alignItems:"center",justifyContent:"center",gap:4}}>
           <button onClick={dec} style={{width:28,height:28,borderRadius:8,border:`1px solid ${C.danger}44`,background:C.dangerLight,color:C.danger,fontSize:17,fontWeight:800,cursor:"pointer",fontFamily:"inherit",lineHeight:1}}>−</button>
           {item.weighed
@@ -6116,9 +6211,10 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
         <div style={{background:C.bg,borderRadius:14,border:`1px solid ${C.border}`,padding:14}}>
           <div style={{display:"flex",justifyContent:"space-between",fontSize:12.5,color:C.textMid,marginBottom:6}}><span>Items</span><span style={{fontWeight:700,color:C.text}}>{cart.length}</span></div>
           <div style={{display:"flex",justifyContent:"space-between",fontSize:12.5,color:C.textMid,marginBottom:6}}><span>Quantity</span><span style={{fontWeight:700,color:C.text}}>{cart.reduce((s,i)=>s+i.qty,0)}</span></div>
-          <div style={{display:"flex",justifyContent:"space-between",fontSize:12.5,color:C.zatca,marginBottom:10}}><span>VAT 15% incl.</span><span style={{fontWeight:700}}>{fmtSAR(vat)}</span></div>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:12.5,color:C.textMid,marginBottom:6,paddingTop:6,borderTop:`1px solid ${C.border}`}}><span>Subtotal (excl. VAT)</span><span style={{fontWeight:700,color:C.text}}>{fmtSAR(subtotal)}</span></div>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:12.5,color:C.zatca,marginBottom:10}}><span>VAT 15%</span><span style={{fontWeight:700}}>{fmtSAR(vat)}</span></div>
           <div style={{borderTop:`1px solid ${C.border}`,paddingTop:10}}>
-            <div style={{fontSize:12,color:C.textMid,fontWeight:700}}>Amount Due</div>
+            <div style={{fontSize:12,color:C.textMid,fontWeight:700}}>Total (incl. VAT)</div>
             <div style={{fontSize:30,fontWeight:900,color:C.primary,lineHeight:1.1}}>{fmtSAR(total)}</div>
           </div>
         </div>
