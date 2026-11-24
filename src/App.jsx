@@ -2191,15 +2191,25 @@ function getDeviceInfo(){
   const browser=ua.includes("Chrome")?"Chrome":ua.includes("Firefox")?"Firefox":ua.includes("Safari")?"Safari":ua.includes("Edge")?"Edge":"Other";
   return{brand,os,browser,userAgent:ua.slice(0,120),screenW:screen.width,screenH:screen.height};
 }
-const APP_VERSION="v29.14.12";
-const APP_VERSION_FULL="RestoPOS v29.14.12 · ZATCA Phase 2";
+const APP_VERSION="v29.14.13";
+const APP_VERSION_FULL="RestoPOS v29.14.13 · ZATCA Phase 2";
 
 // ── Changelog — add a new entry here with every release ──────────
 const CHANGELOG=[
   {
-    version:"v29.14.12",
+    version:"v29.14.13",
     date:"24 Nov 2026",
     badge:"Latest",
+    badgeColor:"#10b981",
+    notes:[
+      "🧾 Preset Bills preview now shows ONLY your registered business — removed the sample “Broast Al-Bahr” demo data that used to appear as a default.",
+      "📱 New “Hide phone / Tel line on the bill” toggle (Settings → Preset Bills → Layout extras) — the mobile number is now optional on printed bills. Registration is unchanged.",
+      "🏷️ Receipts no longer force the word “Restaurant” when a business has an Arabic-only name.",
+    ]
+  },
+  {
+    version:"v29.14.12",
+    date:"24 Nov 2026",
     badgeColor:"#10b981",
     notes:[
       "🧾 Bill spacing fixed — amounts and labels (Amount, GRAND TOTAL, totals) no longer break mid-word or split a number onto the next line; columns widened so everything fits the paper cleanly.",
@@ -3388,7 +3398,7 @@ function BusinessRegistration({onNext,onLogin,onTryTrial,initial}){
     if(form.crNumber.trim()&&!/^\d{7,12}$/.test(form.crNumber.trim()))return setError(tr("CR Number must be 7-12 digits (numbers only)."));
     if(form.vatNumber.trim()&&!/^3\d{14}$/.test(form.vatNumber.trim()))return setError(tr("VAT number must be 15 digits starting with 3 (or leave empty)."));
     if(!form.address.trim())return setError(tr("Address is required."));
-    // Phone/mobile is OPTIONAL — only validated if the user chooses to enter one.
+    if(!form.phone.trim())return setError(tr("Phone number is required."));
     onNext({...form,email:form.email.trim().toLowerCase(),isOwner,crFile,vatFile});
   }
   // Field layout for the form grid. `span:2` makes a field span the full row on
@@ -5015,8 +5025,10 @@ function buildPresetHTML(order,license,zatcaInvoice,fmt,qrImgSrc,opts){
   const wToken =parseInt(fmt.weightToken )||900;
   const wTotal =parseInt(fmt.weightTotal )||900;
   // identity
-  const shopEn=fmt.shopNameOverride||license?.businessName||"Restaurant";
   const shopAr=fmt.shopNameAr||license?.businessNameAr||"";
+  // Only fall back to a generic name when there is NO registered name at all
+  // (neither English nor Arabic) — never override a real Arabic-only name.
+  const shopEn=fmt.shopNameOverride||license?.businessName||(shopAr?"":"Restaurant");
   const addrEn=fmt.addressEnOverride||license?.address||"";
   const addrAr=fmt.addressAr||license?.addressAr||"";
   const extraInfo=fmt.extraInfo||"";        // optional info line (between name & tel)
@@ -5053,7 +5065,7 @@ function buildPresetHTML(order,license,zatcaInvoice,fmt,qrImgSrc,opts){
     ? `<div style="margin-top:3px">${extraInfoAr?_arBlock(extraInfoAr,bodyFont-1):""}${extraInfo?`<div style="font-size:${bodyFont-1}px;font-weight:600">${_escHTML(extraInfo)}</div>`:""}</div>`
     : "";
   const addrBlock=(addrEn||addrAr)?`<div style="margin-top:3px">${_stack(addrAr,addrEn,bodyFont-1,1)}</div>`:"";
-  const telBlock=phone?`<div style="font-size:${bodyFont-1}px;margin-top:2px">${_arSpan("هاتف")} / Tel: ${_escHTML(phone)}</div>`:"";
+  const telBlock=(phone&&!fmt.hidePhone)?`<div style="font-size:${bodyFont-1}px;margin-top:2px">${_arSpan("هاتف")} / Tel: ${_escHTML(phone)}</div>`:"";
   const vatBlock=vatNo?`<div style="font-size:${bodyFont-1}px;margin-top:2px">${_arSpan("الرقم الضريبي")} / VAT: ${_escHTML(vatNo)}</div>`:"";
   const headBlock=`${nameBlock}${extraBlock}${addrBlock}${telBlock}${vatBlock}`;
   let header="";
@@ -7119,13 +7131,14 @@ function PresetFormatTab({license,company}){
       {name:"French Fries",nameAr:"بطاطس مقلية",qty:1,price:10.00,category:"Sides"},
     ],
   };
+  // Preview uses ONLY the registered client's info — no demo/sample business.
   const prevLicense={
-    businessName:fmt.shopNameOverride||company?.businessName||license?.businessName||"Broast Al-Bahr",
-    businessNameAr:fmt.shopNameAr||license?.businessNameAr||"بروست البحر",
-    address:company?.address||license?.address||"Makkah, Al-Shoqiyah",
-    addressAr:fmt.addressAr||license?.addressAr||"مكة المكرمة - حي الشوقية",
-    phone:fmt.phoneOverride||company?.phone||license?.phone||"0500959394",
-    vatNumber:license?.vatNumber||"311459656500003",
+    businessName:fmt.shopNameOverride||company?.businessName||license?.businessName||"",
+    businessNameAr:fmt.shopNameAr||license?.businessNameAr||"",
+    address:company?.address||license?.address||"",
+    addressAr:fmt.addressAr||license?.addressAr||"",
+    phone:fmt.phoneOverride||company?.phone||license?.phone||"",
+    vatNumber:license?.vatNumber||"",
   };
   const prevZatca={invoice_number:"INV-001001",icv:1001};
   function previewHTML(){
@@ -7472,6 +7485,7 @@ body{font-family:'Courier New',monospace;font-size:${rf.rowFont}px;font-weight:$
                   ["lineAfterTitle","Divider line after “Simplified Tax Invoice”"],
                   ["lineAfterToken","Divider line after Token No"],
                   ["phoneInBox","Put “Telephone” label in a box (phone bills)"],
+                  ["hidePhone","Hide the phone / Tel line on the bill"],
                   ...(fmt.presetStyle==="s5"?[["itemDivider","Divider line between each item (Style 5)"]]:[])
                 ].map(([key,label])=>(
                   <label key={key} style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer",fontSize:12.5,color:C.textMid,fontWeight:600}}>
@@ -7624,7 +7638,9 @@ function InvoiceFormatTab({license,company,invoiceFormat,setInvoiceFormat}){
       {name:"Pepsi Can",nameAr:"بيبسي",qty:1,price:5.70,category:"Drinks"},
     ],
   };
-  const previewLicense={businessName:fmt.shopNameOverride||company?.businessName||license?.businessName||"Restaurant",address:company?.address||license?.address||"",vatNumber:license?.vatNumber||"300000000000003"};
+  // Preview uses ONLY the registered client's info — carry every field the
+  // builder reads (Arabic name, address, phone) and no demo/sample fallbacks.
+  const previewLicense={...(license||{}),businessName:fmt.shopNameOverride||company?.businessName||license?.businessName||"",businessNameAr:fmt.shopNameAr||license?.businessNameAr||"",address:company?.address||license?.address||"",addressAr:fmt.addressAr||license?.addressAr||"",phone:fmt.phoneOverride||company?.phone||license?.phone||"",vatNumber:license?.vatNumber||""};
   const previewZatca={invoice_number:"INV-001001",icv:1001};
   // Receipt preview — rendered via the unified builder inside an iframe
   const ReceiptPreview=()=>{
