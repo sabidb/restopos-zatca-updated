@@ -2191,15 +2191,24 @@ function getDeviceInfo(){
   const browser=ua.includes("Chrome")?"Chrome":ua.includes("Firefox")?"Firefox":ua.includes("Safari")?"Safari":ua.includes("Edge")?"Edge":"Other";
   return{brand,os,browser,userAgent:ua.slice(0,120),screenW:screen.width,screenH:screen.height};
 }
-const APP_VERSION="v29.14.11";
-const APP_VERSION_FULL="RestoPOS v29.14.11 · ZATCA Phase 2";
+const APP_VERSION="v29.14.12";
+const APP_VERSION_FULL="RestoPOS v29.14.12 · ZATCA Phase 2";
 
 // ── Changelog — add a new entry here with every release ──────────
 const CHANGELOG=[
   {
-    version:"v29.14.11",
+    version:"v29.14.12",
     date:"24 Nov 2026",
     badge:"Latest",
+    badgeColor:"#10b981",
+    notes:[
+      "🧾 Bill spacing fixed — amounts and labels (Amount, GRAND TOTAL, totals) no longer break mid-word or split a number onto the next line; columns widened so everything fits the paper cleanly.",
+      "📱 Mobile number is now OPTIONAL in business registration — you can finish setup without entering a phone.",
+    ]
+  },
+  {
+    version:"v29.14.11",
+    date:"24 Nov 2026",
     badgeColor:"#10b981",
     notes:[
       "🖨️ Arabic now prints correctly through QZ Tray — receipts are rendered in the browser and sent as an image, so Arabic letters stay joined and in the right order (no more disconnected / reversed text).",
@@ -3379,7 +3388,7 @@ function BusinessRegistration({onNext,onLogin,onTryTrial,initial}){
     if(form.crNumber.trim()&&!/^\d{7,12}$/.test(form.crNumber.trim()))return setError(tr("CR Number must be 7-12 digits (numbers only)."));
     if(form.vatNumber.trim()&&!/^3\d{14}$/.test(form.vatNumber.trim()))return setError(tr("VAT number must be 15 digits starting with 3 (or leave empty)."));
     if(!form.address.trim())return setError(tr("Address is required."));
-    if(!form.phone.trim())return setError(tr("Phone number is required."));
+    // Phone/mobile is OPTIONAL — only validated if the user chooses to enter one.
     onNext({...form,email:form.email.trim().toLowerCase(),isOwner,crFile,vatFile});
   }
   // Field layout for the form grid. `span:2` makes a field span the full row on
@@ -5096,7 +5105,7 @@ function buildPresetHTML(order,license,zatcaInvoice,fmt,qrImgSrc,opts){
   </div>`;
   // ── ITEMS TABLE ──
   const th=`<div style="display:flex;font-weight:900;font-size:${bodyFont}px;border-bottom:${sepLine};padding-bottom:3px;margin-bottom:3px">
-    <span style="flex:1 1 auto">ProductName</span><span style="width:34px;text-align:right">Qty</span><span style="width:44px;text-align:right">Rate</span><span style="width:54px;text-align:right">Amount</span></div>`;
+    <span style="flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">ProductName</span><span style="width:32px;text-align:right;white-space:nowrap">Qty</span><span style="width:42px;text-align:right;white-space:nowrap">Rate</span><span style="width:60px;text-align:right;white-space:nowrap">Amount</span></div>`;
   // Style 5: item name stacked Arabic-over-English, LEFT-ALIGNED, each line its own size & gap.
   // Optional thin divider between each item pair — settings toggle (fmt.itemDivider).
   const itemFontEn=parseInt(fmt.itemFontEn)||bodyFont;
@@ -5118,23 +5127,23 @@ function buildPresetHTML(order,license,zatcaInvoice,fmt,qrImgSrc,opts){
       ${ar}${en}
       <div style="display:flex;font-size:${bodyFont}px;margin-top:1px">
         <span style="flex:1 1 auto"></span>
-        <span style="width:34px;text-align:right">${(it.qty||0).toFixed(2)}</span>
-        <span style="width:44px;text-align:right">${(it.price||0).toFixed(2)}</span>
-        <span style="width:54px;text-align:right">${((it.qty||0)*(it.price||0)).toFixed(2)}</span>
+        <span style="width:32px;text-align:right;white-space:nowrap">${(it.qty||0).toFixed(2)}</span>
+        <span style="width:42px;text-align:right;white-space:nowrap">${(it.price||0).toFixed(2)}</span>
+        <span style="width:60px;text-align:right;white-space:nowrap">${((it.qty||0)*(it.price||0)).toFixed(2)}</span>
       </div></div>${divider}`;
   }).join("");
   const itemsHTML=th+rows;
   // ── TOTALS ──
   const subtotal=(order.total||0)-(order.vat||0);
   const totalsHTML=`
-    <div style="display:flex;justify-content:space-between;font-size:${bodyFont}px;font-weight:${wMeta};margin:2px 0"><span>${_arSpan("(مجموع)")} TOTAL</span><span>${subtotal.toFixed(2)}</span></div>
-    <div style="display:flex;justify-content:space-between;font-size:${bodyFont}px;font-weight:${wMeta};margin:2px 0"><span>${_arSpan("(ضريبة)")} VAT 15%</span><span>${(order.vat||0).toFixed(2)}</span></div>
-    <div style="display:flex;justify-content:space-between;font-weight:${wTotal};font-size:${totalFont}px;border-top:${style==="s4"?"3px double #000":"2px solid #000"};padding-top:4px;margin-top:3px"><span>${_arSpan("(المجموع الإجمالي)")} GRAND TOTAL</span><span>${(order.total||0).toFixed(2)}</span></div>`;
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:${bodyFont}px;font-weight:${wMeta};margin:2px 0"><span style="flex:1 1 auto;min-width:0">${_arSpan("(مجموع)")} <span style="white-space:nowrap">TOTAL</span></span><span style="flex:0 0 auto;white-space:nowrap;text-align:right">${subtotal.toFixed(2)}</span></div>
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:${bodyFont}px;font-weight:${wMeta};margin:2px 0"><span style="flex:1 1 auto;min-width:0">${_arSpan("(ضريبة)")} <span style="white-space:nowrap">VAT 15%</span></span><span style="flex:0 0 auto;white-space:nowrap;text-align:right">${(order.vat||0).toFixed(2)}</span></div>
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-weight:${wTotal};font-size:${totalFont}px;border-top:${style==="s4"?"3px double #000":"2px solid #000"};padding-top:4px;margin-top:3px"><span style="flex:1 1 auto;min-width:0">${_arSpan("(المجموع الإجمالي)")} <span style="white-space:nowrap">GRAND TOTAL</span></span><span style="flex:0 0 auto;white-space:nowrap;text-align:right">${(order.total||0).toFixed(2)}</span></div>`;
   // ── AMOUNT IN WORDS + RECEIVED/BALANCE ──
   const wordsHTML=`<div style="font-size:${bodyFont-1}px;font-style:italic;margin:5px 0;word-break:break-word">Amount in Words: ${_amountWords(order.total||0)}</div>`;
   const payHTML=`
-    <div style="display:flex;justify-content:space-between;font-size:${bodyFont-1}px"><span>Received by ${_escHTML(order.payMethod||"Cash")} ${_arSpan("(تلقى النقدية)")}</span><span>${(order.given||order.total||0).toFixed(2)}</span></div>
-    <div style="display:flex;justify-content:space-between;font-size:${bodyFont-1}px"><span>Balance ${_arSpan("(توازن)")}</span><span>${(order.change||0).toFixed(2)}</span></div>`;
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:${bodyFont-1}px"><span style="flex:1 1 auto;min-width:0">Received by ${_escHTML(order.payMethod||"Cash")} ${_arSpan("(تلقى النقدية)")}</span><span style="flex:0 0 auto;white-space:nowrap;text-align:right">${(order.given||order.total||0).toFixed(2)}</span></div>
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:${bodyFont-1}px"><span style="flex:1 1 auto;min-width:0">Balance ${_arSpan("(توازن)")}</span><span style="flex:0 0 auto;white-space:nowrap;text-align:right">${(order.change||0).toFixed(2)}</span></div>`;
   // ── ZATCA QR (not on draft) ──
   const qrBlock=(!isDraft&&qrImgSrc)
     ? `<div style="text-align:center;margin:8px 0"><img src="${qrImgSrc}" style="width:${qrSize}px;height:${qrSize}px;max-width:100%;display:block;margin:4px auto"/>${zatcaInvoice?.invoice_number?`<div style="font-size:${bodyFont-3}px;color:#000">Invoice: ${_escHTML(zatcaInvoice.invoice_number)}${zatcaInvoice.icv?" · ICV: "+_escHTML(zatcaInvoice.icv):""}</div>`:""}<div style="font-size:${bodyFont-4}px;color:#000">ZATCA Phase 2 · Scan to verify</div></div>`
@@ -5150,7 +5159,7 @@ function buildPresetHTML(order,license,zatcaInvoice,fmt,qrImgSrc,opts){
 @page{size:${paperWidth} auto;margin:0}
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{max-width:${paperWidth};overflow-x:hidden}
-body{font-family:${bodyFamily};font-size:${bodyFont}px;width:${paperWidth};padding:4mm;color:#000;background:#fff;line-height:1.4;word-break:break-word;overflow-wrap:anywhere;font-weight:600;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+body{font-family:${bodyFamily};font-size:${bodyFont}px;width:${paperWidth};padding:4mm;color:#000;background:#fff;line-height:1.4;font-weight:600;-webkit-print-color-adjust:exact;print-color-adjust:exact}
 *{color:#000 !important}
 .s2head, .s2head *{color:#fff !important}
 img{max-width:100%}
