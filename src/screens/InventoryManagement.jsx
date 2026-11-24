@@ -18,10 +18,11 @@ import { catalogueSubEnabled, setCatalogueSubEnabled } from "../lib/catalogueFla
 import { computePO, matchThreeWay, addReceipt } from "../lib/purchaseOrders.js";
 import { postReceiptToStock } from "../lib/costing.js";
 import { loadPurchaseOrders, savePurchaseOrder, deletePurchaseOrder } from "../lib/poStore.js";
+import { findByBarcode } from "../lib/barcode.js";
 
-export function InventoryManagement({items,setItems,lang="en"}){
+export function InventoryManagement({items,setItems,lang="en",initialTab="overview"}){
   const _t=s=>t(s,lang);
-  const [tab,setTab]=useState("overview");
+  const [tab,setTab]=useState(initialTab);
   const [search,setSearch]=useState("");
   const [lowThreshold,setLowThreshold]=useState(()=>parseInt(localStorage.getItem("restopos_low_stock_threshold")||"10"));
   const [movements,setMovements]=useState(()=>LS.get("restopos_stock_movements")||[]);
@@ -66,7 +67,13 @@ export function InventoryManagement({items,setItems,lang="en"}){
       if(j!==i)return l;
       const nl={...l,...patch};
       if("name" in patch){
-        const m=items.find(it=>String(it.name||"").trim().toLowerCase()===String(patch.name||"").trim().toLowerCase());
+        // Resolve a scanned barcode OR an exact product name to a catalogue item.
+        // A barcode match wins (so scanning a code pulls up the product by name),
+        // then an exact case-insensitive name match. On a barcode hit the typed
+        // code is replaced with the product's own name, so the line reads the item.
+        const typed=String(patch.name||"").trim();
+        const m=findByBarcode(items,typed)||items.find(it=>String(it.name||"").trim().toLowerCase()===typed.toLowerCase());
+        if(m)nl.name=m.name;
         nl.itemId=m?m.id:undefined;
         if(m&&(nl.unitCost===""||nl.unitCost==null))nl.unitCost=m.cost!=null?String(m.cost):nl.unitCost;
       }
@@ -100,7 +107,28 @@ export function InventoryManagement({items,setItems,lang="en"}){
 
   function openNewPurchase(docType="invoice"){ setDraft({...blankPurchase(),docType}); setDupWarn(null); setShowPurchaseModal(true); }
   const isCN=normDocType(draft.docType)==="credit_note"; // current draft is a credit note?
-  function setDraftLine(i,patch){ setDraft(d=>({...d,lines:d.lines.map((l,j)=>j===i?{...l,...patch}:l)})); setDupWarn(null); }
+  function setDraftLine(i,patch){
+    setDraft(d=>({...d,lines:d.lines.map((l,j)=>{
+      if(j!==i)return l;
+      const nl={...l,...patch};
+      if("name" in patch){
+        // Scanning a barcode here used to just dump the raw digits into the line.
+        // Resolve it (barcode first, then exact name) to the catalogue item so the
+        // line shows the product and pre-fills its cost — the code becomes the name.
+        const typed=String(patch.name||"").trim();
+        const m=findByBarcode(items,typed)||items.find(it=>String(it.name||"").trim().toLowerCase()===typed.toLowerCase());
+        if(m){
+          nl.name=m.name;
+          nl.itemId=m.id;
+          if(nl.unitCost===""||nl.unitCost==null)nl.unitCost=m.cost!=null?String(m.cost):nl.unitCost;
+        }else{
+          nl.itemId=undefined;
+        }
+      }
+      return nl;
+    })}));
+    setDupWarn(null);
+  }
   function addDraftLine(){ setDraft(d=>({...d,lines:[...d.lines,blankLine()]})); }
   function removeDraftLine(i){ setDraft(d=>({...d,lines:d.lines.length>1?d.lines.filter((_,j)=>j!==i):d.lines})); setDupWarn(null); }
   function onPickSupplier(id){ const s=suppliers.find(x=>x.id===id); setDraft(d=>({...d,supplierId:id,supplierName:s?s.name:""})); setDupWarn(null); }

@@ -4768,6 +4768,7 @@ function buildReceiptHTML(order,license,zatcaInvoice,fmt,qrImgSrc){
   const showCustomer=show("showCustomer",true);
   const showOrderType=show("showOrderType",true);
   const showArabicName=show("showArabicName",true);
+  const hideEnglishName=show("hideEnglishName",false); // Arabic-only receipt when on
   const boldItems=!!fmt.boldItems;
   const totalSize=fmt.totalSize==="xl"?fontSize+6:fmt.totalSize==="small"?fontSize:fontSize+3;
   // Client-adjustable sizes (with safe defaults). logoSize px, qrSize px.
@@ -4798,7 +4799,11 @@ function buildReceiptHTML(order,license,zatcaInvoice,fmt,qrImgSrc){
   // Long names wrap; price stays right-aligned and never overflows.
   function lineHTML(it){
     const arTop=(showArabicName&&it.nameAr)?`<div style="direction:rtl;font-family:'Tahoma','Arial','Times New Roman',serif;font-size:${fontSize}px;font-weight:700;word-break:break-word;margin-bottom:${nameGap}px">${_escHTML(it.nameAr)}</div>`:"";
-    return `<div style="display:flex;justify-content:space-between;align-items:flex-start;margin:3px 0;gap:6px${boldItems?";font-weight:700":""}"><span style="flex:1 1 auto;min-width:0;padding-right:4px;word-break:break-word;overflow-wrap:anywhere">${arTop}<span style="display:block">${_escHTML(it.name)}<span style="color:#777"> x${it.qty}</span></span></span><span style="flex:0 0 auto;white-space:nowrap;text-align:right">SAR ${(it.qty*it.price).toFixed(2)}</span></div>`;
+    // Arabic-only mode: drop the English name when the item has Arabic; keep
+    // English as a fallback so an Arabic-less item never prints a blank line.
+    const enLine=(hideEnglishName&&it.nameAr)?"":`<span style="display:block">${_escHTML(it.name)}<span style="color:#777"> x${it.qty}</span></span>`;
+    const qtyOnly=(hideEnglishName&&it.nameAr)?`<span style="display:block;color:#777;font-size:${fontSize-2}px"> x${it.qty}</span>`:"";
+    return `<div style="display:flex;justify-content:space-between;align-items:flex-start;margin:3px 0;gap:6px${boldItems?";font-weight:700":""}"><span style="flex:1 1 auto;min-width:0;padding-right:4px;word-break:break-word;overflow-wrap:anywhere">${arTop}${enLine}${qtyOnly}</span><span style="flex:0 0 auto;white-space:nowrap;text-align:right">SAR ${(it.qty*it.price).toFixed(2)}</span></div>`;
   }
   let itemsHTML="";
   if(showCategories){
@@ -5137,14 +5142,18 @@ function buildPresetHTML(order,license,zatcaInvoice,fmt,qrImgSrc,opts){
   // (minimal margin) so items stay close together.
   const itemDividerOn=!!fmt.itemDivider;
   const itemDividerHTML=`<div style="border-top:1px dashed #000;margin:2px 0"></div>`;
+  const _hideEn=!!fmt.hideEnglishName; // Arabic-only receipt
   const rows=items.map((it,idx)=>{
     let ar="",en="";
+    // Arabic-only mode drops the English name when the item has Arabic; English
+    // is kept as a fallback when there is no Arabic, so a line is never blank.
+    const skipEn=_hideEn&&!!it.nameAr;
     if(style==="s5"){
       ar=it.nameAr?`<div style="text-align:left;direction:rtl;font-family:${_AR_FONT};font-weight:bold;font-size:${itemFontAr}px;word-break:break-word;line-height:1.4">${_escHTML(it.nameAr)}</div>`:"";
-      en=`<div style="text-align:left;font-size:${itemFontEn}px;font-weight:700;word-break:break-word;margin-top:${itemNameGap}px">${_escHTML(it.name)}</div>`;
+      en=skipEn?"":`<div style="text-align:left;font-size:${itemFontEn}px;font-weight:700;word-break:break-word;margin-top:${itemNameGap}px">${_escHTML(it.name)}</div>`;
     }else{
       ar=it.nameAr?_arBlock(it.nameAr,bodyFont,"word-break:break-word"):"";
-      en=`<div style="font-size:${bodyFont}px;word-break:break-word">${_escHTML(it.name)}</div>`;
+      en=skipEn?"":`<div style="font-size:${bodyFont}px;word-break:break-word">${_escHTML(it.name)}</div>`;
     }
     const divider=(itemDividerOn&&idx<items.length-1)?itemDividerHTML:"";
     return `<div style="margin:${lineGap}px 0;font-weight:${wItems}">
@@ -5159,15 +5168,18 @@ function buildPresetHTML(order,license,zatcaInvoice,fmt,qrImgSrc,opts){
   const itemsHTML=th+rows;
   // ── TOTALS ──
   const subtotal=(order.total||0)-(order.vat||0);
+  // Label helper: bilingual normally; Arabic-only when the receipt is set to hide
+  // English. `arParen` is the Arabic shown in parens today; `en` the English word.
+  const _lbl=(arParen,en)=>_hideEn?_arSpan(arParen):`${_arSpan(arParen)} <span style="white-space:nowrap">${en}</span>`;
   const totalsHTML=`
-    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:${bodyFont}px;font-weight:${wMeta};margin:2px 0"><span style="flex:1 1 auto;min-width:0">${_arSpan("(مجموع)")} <span style="white-space:nowrap">TOTAL</span></span><span style="flex:0 0 auto;white-space:nowrap;text-align:right">${subtotal.toFixed(2)}</span></div>
-    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:${bodyFont}px;font-weight:${wMeta};margin:2px 0"><span style="flex:1 1 auto;min-width:0">${_arSpan("(ضريبة)")} <span style="white-space:nowrap">VAT 15%</span></span><span style="flex:0 0 auto;white-space:nowrap;text-align:right">${(order.vat||0).toFixed(2)}</span></div>
-    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-weight:${wTotal};font-size:${totalFont}px;border-top:${style==="s4"?"3px double #000":"2px solid #000"};padding-top:4px;margin-top:3px"><span style="flex:1 1 auto;min-width:0">${_arSpan("(المجموع الإجمالي)")} <span style="white-space:nowrap">GRAND TOTAL</span></span><span style="flex:0 0 auto;white-space:nowrap;text-align:right">${(order.total||0).toFixed(2)}</span></div>`;
-  // ── AMOUNT IN WORDS + RECEIVED/BALANCE ──
-  const wordsHTML=`<div style="font-size:${bodyFont-1}px;font-style:italic;margin:5px 0;word-break:break-word">Amount in Words: ${_amountWords(order.total||0)}</div>`;
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:${bodyFont}px;font-weight:${wMeta};margin:2px 0"><span style="flex:1 1 auto;min-width:0">${_lbl("(مجموع)","TOTAL")}</span><span style="flex:0 0 auto;white-space:nowrap;text-align:right">${subtotal.toFixed(2)}</span></div>
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:${bodyFont}px;font-weight:${wMeta};margin:2px 0"><span style="flex:1 1 auto;min-width:0">${_lbl("(ضريبة)","VAT 15%")}</span><span style="flex:0 0 auto;white-space:nowrap;text-align:right">${(order.vat||0).toFixed(2)}</span></div>
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-weight:${wTotal};font-size:${totalFont}px;border-top:${style==="s4"?"3px double #000":"2px solid #000"};padding-top:4px;margin-top:3px"><span style="flex:1 1 auto;min-width:0">${_lbl("(المجموع الإجمالي)","GRAND TOTAL")}</span><span style="flex:0 0 auto;white-space:nowrap;text-align:right">${(order.total||0).toFixed(2)}</span></div>`;
+  // ── AMOUNT IN WORDS + RECEIVED/BALANCE ── (words line is English-only, so drop it in Arabic-only mode)
+  const wordsHTML=_hideEn?"":`<div style="font-size:${bodyFont-1}px;font-style:italic;margin:5px 0;word-break:break-word">Amount in Words: ${_amountWords(order.total||0)}</div>`;
   const payHTML=`
-    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:${bodyFont-1}px"><span style="flex:1 1 auto;min-width:0">Received by ${_escHTML(order.payMethod||"Cash")} ${_arSpan("(تلقى النقدية)")}</span><span style="flex:0 0 auto;white-space:nowrap;text-align:right">${(order.given||order.total||0).toFixed(2)}</span></div>
-    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:${bodyFont-1}px"><span style="flex:1 1 auto;min-width:0">Balance ${_arSpan("(توازن)")}</span><span style="flex:0 0 auto;white-space:nowrap;text-align:right">${(order.change||0).toFixed(2)}</span></div>`;
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:${bodyFont-1}px"><span style="flex:1 1 auto;min-width:0">${_hideEn?`${_arSpan("(تلقى النقدية)")} ${_escHTML(order.payMethod||"Cash")}`:`Received by ${_escHTML(order.payMethod||"Cash")} ${_arSpan("(تلقى النقدية)")}`}</span><span style="flex:0 0 auto;white-space:nowrap;text-align:right">${(order.given||order.total||0).toFixed(2)}</span></div>
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:${bodyFont-1}px"><span style="flex:1 1 auto;min-width:0">${_hideEn?_arSpan("(توازن)"):`Balance ${_arSpan("(توازن)")}`}</span><span style="flex:0 0 auto;white-space:nowrap;text-align:right">${(order.change||0).toFixed(2)}</span></div>`;
   // ── ZATCA QR (not on draft) ──
   const qrBlock=(!isDraft&&qrImgSrc)
     ? `<div style="text-align:center;margin:8px 0"><img src="${qrImgSrc}" style="width:${qrSize}px;height:${qrSize}px;max-width:100%;display:block;margin:4px auto"/>${zatcaInvoice?.invoice_number?`<div style="font-size:${bodyFont-3}px;color:#000">Invoice: ${_escHTML(zatcaInvoice.invoice_number)}${zatcaInvoice.icv?" · ICV: "+_escHTML(zatcaInvoice.icv):""}</div>`:""}<div style="font-size:${bodyFont-4}px;color:#000">ZATCA Phase 2 · Scan to verify</div></div>`
@@ -5359,19 +5371,27 @@ function printDraftReceipt(order,license){
 // Auto-translate English → Arabic for quick product entry. Uses free public
 // endpoints from the client's browser (Google first, MyMemory as fallback);
 // returns "" if both fail so the cashier can type the Arabic name by hand.
-async function translateEnToAr(text){
+// True when the text contains Arabic letters — used to auto-pick the translation
+// direction (translate to whichever side is missing).
+function looksArabic(text){ return /[؀-ۿ]/.test(String(text||"")); }
+// Translate `text` from `sl` to `tl` (ISO codes, e.g. "en"→"ar"). Google's free
+// gtx endpoint first, MyMemory as a fallback; returns "" on failure so callers
+// never overwrite a name with an error string.
+async function translateText(text, sl, tl){
   const q=String(text||"").trim();
   if(!q) return "";
   try{
-    const r=await fetch("https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=ar&dt=t&q="+encodeURIComponent(q));
+    const r=await fetch(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=${sl}&tl=${tl}&dt=t&q=`+encodeURIComponent(q));
     if(r.ok){ const d=await r.json(); const t=((d&&d[0])||[]).map(x=>x&&x[0]).filter(Boolean).join(""); if(t) return t; }
   }catch(_e){}
   try{
-    const r=await fetch("https://api.mymemory.translated.net/get?q="+encodeURIComponent(q)+"&langpair=en|ar");
+    const r=await fetch(`https://api.mymemory.translated.net/get?q=`+encodeURIComponent(q)+`&langpair=${sl}|${tl}`);
     if(r.ok){ const d=await r.json(); const t=d&&d.responseData&&d.responseData.translatedText; if(t&&!/^MYMEMORY/i.test(t)) return t; }
   }catch(_e){}
   return "";
 }
+async function translateEnToAr(text){ return translateText(text,"en","ar"); }
+async function translateArToEn(text){ return translateText(text,"ar","en"); }
 
 function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang="en",currentUser=null}){
   const allCats=[...new Set(items.map(i=>i.category))];
@@ -5401,6 +5421,13 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   const [weighItem,setWeighItem]=useState(null);const [weighKg,setWeighKg]=useState("");
   const [scannedItem,setScannedItem]=useState(null);const [scanMiss,setScanMiss]=useState("");
   const [priceCheck,setPriceCheck]=useState(false); // scan-to-view-only (customer-facing)
+  // Per-bill price override: tap a cart line's price to set a one-off price for
+  // THIS bill only. The edited line is "pinned" (priceEdited) so a re-scan of the
+  // same product does not merge into it — it opens a fresh line at the catalogue
+  // price, which can itself be re-priced. VAT/totals always derive from the line
+  // prices, so nothing else needs special-casing.
+  const [editPriceIdx,setEditPriceIdx]=useState(null);
+  const [editPriceVal,setEditPriceVal]=useState("");
   const [newProd,setNewProd]=useState(null); // {barcode,name,nameAr,price,category,weighed} for quick create
   const [translating,setTranslating]=useState(false);
   async function autoTranslateNewProd(){
@@ -5444,7 +5471,9 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     // Weighed item (price is per-kg): open the weight modal. qty carries the
     // weight in kg, so line total (price*qty) stays correct; each weigh is a line.
     if(item.weighed){ setWeighItem(item); setWeighKg(""); return; }
-    setCart(prev=>{const ex=prev.find(c=>c.id===item.id&&!c.weighed);if(ex)return prev.map(c=>c===ex?{...c,qty:c.qty+1}:c);return[...prev,{...item,qty:1}];});showN("+ "+item.name);
+    // Merge only into a line at the catalogue price — a re-priced line is pinned,
+    // so re-scanning the same item starts a new line (different price = new row).
+    setCart(prev=>{const ex=prev.find(c=>c.id===item.id&&!c.weighed&&!c.priceEdited);if(ex)return prev.map(c=>c===ex?{...c,qty:c.qty+1}:c);return[...prev,{...item,qty:1}];});showN("+ "+item.name);
   }
   function confirmWeigh(){
     const w=parseFloat(weighKg);
@@ -5455,6 +5484,82 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     setWeighItem(null);setWeighKg("");
   }
   function updateQty(delta){if(selectedRow===null)return;setCart(prev=>{const next=prev.map((c,i)=>i===selectedRow?{...c,qty:Math.max(0,c.qty+delta)}:c).filter(c=>c.qty>0);if(next.length<=selectedRow){setSelectedRow(null);setDescModalIdx(null);}return next;});}
+  // Per-bill price override helpers (see editPriceIdx state above).
+  function beginPriceEdit(idx){const c=cart[idx];if(!c||c.weighed)return;setEditPriceIdx(idx);setEditPriceVal(String(c.price??""));}
+  function commitPriceEdit(){setEditPriceIdx(cur=>{if(cur==null)return null;const n=parseFloat(String(editPriceVal).replace(/[^\d.]/g,""));setCart(prev=>prev.map((c,i)=>i===cur?{...c,price:(n>=0&&!Number.isNaN(n))?Math.round(n*100)/100:c.price,priceEdited:true}:c));return null;});setEditPriceVal("");}
+  function cancelPriceEdit(){setEditPriceIdx(null);setEditPriceVal("");}
+  // Resolve a scanned/typed code straight to the cart. A clean barcode hit on an
+  // active product is added immediately (the cashier wanted it in the basket);
+  // price-check, name matches, inactive items and unknown codes fall back to the
+  // normal search so their existing behaviour (card / warning / quick-create) is
+  // unchanged.
+  function scanToCart(code){
+    const c=String(code||"").trim(); if(!c)return;
+    if(priceCheck){handleBarcodeSearch(c);return;}
+    const bActive=findAllByBarcode(items,c).filter(i=>i.active!==false);
+    if(bActive.length>=1){addToCart(bActive[0]);if(bActive.length>1)showN(`⚠️ ${bActive.length} products share this barcode — added “${bActive[0].name}”`);return;}
+    handleBarcodeSearch(c); // name match / inactive warning / unknown → quick-create
+  }
+  // Keep the latest scanToCart in a ref so the document-level listener always runs
+  // the current closure (fresh items/cart) without re-subscribing on every render.
+  const scanToCartRef=useRef(scanToCart); scanToCartRef.current=scanToCart;
+  // ── Hardware-scanner interceptor (scan till) ──────────────────────────────
+  // The global popup listener is OFF on the POS, and the POS used to catch a scan
+  // only while the scan box had focus — so editing a line's quantity (or price)
+  // sent the scanned digits into that field, showing the barcode as the qty.
+  // This capture-phase listener detects a scan by keystroke speed anywhere on the
+  // till, adds the item to the cart, and keeps the fast keystrokes out of whatever
+  // field is focused. Slow (human) typing is never touched, so manual qty/price
+  // editing and typing in the scan box still work.
+  const _scanBuf=useRef({str:"",last:0,snapEl:null,snapVal:null});
+  useEffect(()=>{
+    // Only drive the cart directly on the scan-first (supermarket) till, and not
+    // while a blocking modal owns the keyboard.
+    const activeNow=superMode&&!showPayment&&!showPrevBill&&!weighItem&&!newProd&&!scannedItem;
+    if(!activeNow)return;
+    const INTERVAL=50; // ms between keys: slower than any scanner, faster than a human
+    const MIN=3;       // shortest string treated as a scanned code
+    const buf=_scanBuf.current;
+    // At the start of a burst we snapshot the focused field's exact value. If the
+    // burst turns out to be a scan, we put that value back verbatim — so a line's
+    // quantity that was being edited (e.g. 7) stays 7 after a scan, instead of
+    // being clobbered by the stray first digit the scanner drops in.
+    function snapshotField(){
+      try{
+        const el=document.activeElement;
+        if(el&&(el.tagName==="INPUT"||el.tagName==="TEXTAREA")){buf.snapEl=el;buf.snapVal=el.value;}
+        else{buf.snapEl=null;buf.snapVal=null;}
+      }catch(_){buf.snapEl=null;buf.snapVal=null;}
+    }
+    function restoreField(){ // confirmed scan → undo any leak, leaving the field exactly as it was
+      try{
+        const el=buf.snapEl;
+        if(el&&buf.snapVal!=null&&el.isConnected&&el.value!==buf.snapVal){
+          const proto=el.tagName==="TEXTAREA"?window.HTMLTextAreaElement.prototype:window.HTMLInputElement.prototype;
+          const setter=Object.getOwnPropertyDescriptor(proto,"value").set;
+          setter.call(el,buf.snapVal);
+          el.dispatchEvent(new Event("input",{bubbles:true})); // let React restore the state value
+        }
+      }catch(_){}
+      buf.snapEl=null;buf.snapVal=null;
+    }
+    function onKey(e){
+      if(e.ctrlKey||e.metaKey||e.altKey)return;
+      const now=performance.now();
+      if(e.key==="Enter"){
+        const code=buf.str;buf.str="";
+        if(code.length>=MIN){e.preventDefault();e.stopPropagation();restoreField();scanToCartRef.current(code);}
+        return;
+      }
+      if(e.key&&e.key.length===1){
+        const gap=now-buf.last;buf.last=now;
+        if(gap>INTERVAL){buf.str=e.key;snapshotField();} // burst start (human keystroke OR first scan char)
+        else{buf.str+=e.key;e.preventDefault();e.stopPropagation();} // fast run = scanner; keep out of inputs
+      }
+    }
+    document.addEventListener("keydown",onKey,true);
+    return ()=>document.removeEventListener("keydown",onKey,true);
+  },[superMode,showPayment,showPrevBill,weighItem,newProd,scannedItem]);
   function showN(msg){setNotif(msg);setTimeout(()=>setNotif(null),1500);}
   function handleBarcodeSearch(code){
     const c=code.trim();
@@ -5990,7 +6095,17 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
             style={{display:"flex",alignItems:"center",gap:10,padding:"11px 14px",borderRadius:10,cursor:"pointer",background:selectedRow===idx?C.primaryLight:"#fff",border:`1.5px solid ${selectedRow===idx?C.primary:C.border}`,boxShadow:idx===0&&selectedRow==null?`0 0 0 2px ${C.primary}22`:"none"}}>
             <div style={{flex:1,minWidth:0}}>
               <div style={{fontSize:15,fontWeight:700,color:C.text}}>{item.name}</div>
-              <div style={{fontSize:12,color:C.textMid}}>{fmtSAR(item.price)}{item.weighed?"/kg":""} × {item.qty}{item.weighed?" kg":""}</div>
+              <div style={{fontSize:12,color:C.textMid}}>
+                {editPriceIdx===idx&&!item.weighed
+                  ? <input autoFocus value={editPriceVal} inputMode="decimal"
+                      onChange={e=>setEditPriceVal(e.target.value.replace(/[^\d.]/g,""))}
+                      onBlur={commitPriceEdit}
+                      onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();commitPriceEdit();}else if(e.key==="Escape"){e.preventDefault();cancelPriceEdit();}}}
+                      onClick={e=>e.stopPropagation()}
+                      style={{width:70,textAlign:"right",fontSize:12,fontWeight:700,border:`1.5px solid ${C.primary}`,borderRadius:6,padding:"2px 4px",fontFamily:"inherit",color:C.text}}/>
+                  : <span onClick={e=>{e.stopPropagation();if(!item.weighed)beginPriceEdit(idx);}} title={item.weighed?undefined:"Tap to set a one-off price for this bill"} style={{color:item.priceEdited?C.primary:C.textMid,fontWeight:item.priceEdited?800:400,cursor:item.weighed?"default":"pointer",textDecoration:item.priceEdited?"underline dotted":"none"}}>{fmtSAR(item.price)}{item.weighed?"/kg":""}{item.priceEdited?" ✎":""}</span>}
+                {" × "}{item.qty}{item.weighed?" kg":""}
+              </div>
             </div>
             <div style={{fontSize:16,fontWeight:900,color:C.primary,minWidth:70,textAlign:"right"}}>{fmtSAR(item.price*item.qty)}</div>
           </div>
@@ -6008,8 +6123,10 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   ));
   const superTotals=(
     <div style={{padding:"14px 16px",borderTop:`2px solid ${C.border}`,background:"#fff"}}>
-      <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}><span style={{fontSize:12,color:C.textMid}}>Items {cart.length} · Qty {cart.reduce((s,i)=>s+i.qty,0)}</span><span style={{fontSize:12,color:C.zatca,fontWeight:700}}>VAT 15% incl. {fmtSAR(vat)}</span></div>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,paddingTop:8,borderTop:`1px solid ${C.border}`}}><span style={{fontSize:17,fontWeight:800}}>Amount Due</span><span style={{fontSize:22,fontWeight:900,color:C.primary}}>{fmtSAR(total)}</span></div>
+      <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}><span style={{fontSize:12,color:C.textMid}}>Items {cart.length} · Qty {cart.reduce((s,i)=>s+i.qty,0)}</span></div>
+      <div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}><span style={{fontSize:12.5,color:C.textMid}}>Subtotal (excl. VAT)</span><span style={{fontSize:12.5,fontWeight:700}}>{fmtSAR(subtotal)}</span></div>
+      <div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}><span style={{fontSize:12.5,color:C.zatca}}>VAT 15%</span><span style={{fontSize:12.5,fontWeight:700,color:C.zatca}}>{fmtSAR(vat)}</span></div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,paddingTop:8,borderTop:`1px solid ${C.border}`}}><span style={{fontSize:17,fontWeight:800}}>Total (incl. VAT)</span><span style={{fontSize:22,fontWeight:900,color:C.primary}}>{fmtSAR(total)}</span></div>
       <div style={{display:"flex",gap:8}}>
         <button onClick={()=>{const printed=(sales||[]).filter(s=>s.status!=="voided");if(!printed.length){alert("No previous bills yet");return;}setPrevAllDays(false);setPrevIndex(0);setShowPrevBill(true);}}
           title="Previous bill" style={{padding:"14px 16px",background:C.primaryLight,border:`1.5px solid ${C.primary}44`,color:C.primary,borderRadius:11,fontFamily:"inherit",fontSize:13,fontWeight:800,cursor:"pointer",whiteSpace:"nowrap"}}>🕐 Prev</button>
@@ -6086,7 +6203,14 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
           <div style={{fontSize:15,fontWeight:700,color:C.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{item.name}</div>
         </div>
         <div style={{flex:1,minWidth:0,fontSize:11,fontFamily:"monospace",color:C.textLight,textAlign:"center",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",padding:"0 6px"}}>{item.barcode||"—"}</div>
-        <div style={{fontSize:11,color:C.textMid,width:74,textAlign:"right",paddingRight:8}}>{fmtSAR(item.price)}{item.weighed?"/kg":""}</div>
+        {editPriceIdx===idx&&!item.weighed
+          ? <input autoFocus value={editPriceVal} inputMode="decimal"
+              onChange={e=>setEditPriceVal(e.target.value.replace(/[^\d.]/g,""))}
+              onBlur={commitPriceEdit}
+              onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();commitPriceEdit();}else if(e.key==="Escape"){e.preventDefault();cancelPriceEdit();}}}
+              onClick={e=>e.stopPropagation()}
+              style={{width:74,textAlign:"right",fontSize:12,fontWeight:700,border:`1.5px solid ${C.primary}`,borderRadius:6,padding:"3px 4px",fontFamily:"inherit",color:C.text,boxSizing:"border-box"}}/>
+          : <div onClick={e=>{e.stopPropagation();if(!item.weighed)beginPriceEdit(idx);}} title={item.weighed?undefined:"Tap to set a one-off price for this bill"} style={{fontSize:11,color:item.priceEdited?C.primary:C.textMid,fontWeight:item.priceEdited?800:400,width:74,textAlign:"right",paddingRight:8,cursor:item.weighed?"default":"pointer",textDecoration:item.priceEdited?"underline dotted":"none"}}>{fmtSAR(item.price)}{item.weighed?"/kg":""}{item.priceEdited?" ✎":""}</div>}
         <div style={{width:118,display:"flex",alignItems:"center",justifyContent:"center",gap:4}}>
           <button onClick={dec} style={{width:28,height:28,borderRadius:8,border:`1px solid ${C.danger}44`,background:C.dangerLight,color:C.danger,fontSize:17,fontWeight:800,cursor:"pointer",fontFamily:"inherit",lineHeight:1}}>−</button>
           {item.weighed
@@ -6116,9 +6240,10 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
         <div style={{background:C.bg,borderRadius:14,border:`1px solid ${C.border}`,padding:14}}>
           <div style={{display:"flex",justifyContent:"space-between",fontSize:12.5,color:C.textMid,marginBottom:6}}><span>Items</span><span style={{fontWeight:700,color:C.text}}>{cart.length}</span></div>
           <div style={{display:"flex",justifyContent:"space-between",fontSize:12.5,color:C.textMid,marginBottom:6}}><span>Quantity</span><span style={{fontWeight:700,color:C.text}}>{cart.reduce((s,i)=>s+i.qty,0)}</span></div>
-          <div style={{display:"flex",justifyContent:"space-between",fontSize:12.5,color:C.zatca,marginBottom:10}}><span>VAT 15% incl.</span><span style={{fontWeight:700}}>{fmtSAR(vat)}</span></div>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:12.5,color:C.textMid,marginBottom:6,paddingTop:6,borderTop:`1px solid ${C.border}`}}><span>Subtotal (excl. VAT)</span><span style={{fontWeight:700,color:C.text}}>{fmtSAR(subtotal)}</span></div>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:12.5,color:C.zatca,marginBottom:10}}><span>VAT 15%</span><span style={{fontWeight:700}}>{fmtSAR(vat)}</span></div>
           <div style={{borderTop:`1px solid ${C.border}`,paddingTop:10}}>
-            <div style={{fontSize:12,color:C.textMid,fontWeight:700}}>Amount Due</div>
+            <div style={{fontSize:12,color:C.textMid,fontWeight:700}}>Total (incl. VAT)</div>
             <div style={{fontSize:30,fontWeight:900,color:C.primary,lineHeight:1.1}}>{fmtSAR(total)}</div>
           </div>
         </div>
@@ -7635,7 +7760,7 @@ function InvoiceFormatTab({license,company,invoiceFormat,setInvoiceFormat}){
     website:"",social:"",tagline:"",logoUrl:"",
     template:"modern",headerColor:"#1A6B4A",paperWidth:"80mm",
     showVat:true,showCategories:true,showCustomer:true,showOrderType:true,
-    showArabicName:true,totalSize:"large",separator:"dashed",boldItems:false,
+    showArabicName:true,hideEnglishName:false,totalSize:"large",separator:"dashed",boldItems:false,
     logoSize:46,qrSize:120,
     // KOT settings
     kotTitle:"KOT",kotTitleAr:"طلب المطبخ",kotShowArabic:true,
@@ -8050,6 +8175,7 @@ function InvoiceFormatTab({license,company,invoiceFormat,setInvoiceFormat}){
               ["showCustomer","Customer name"],
               ["showOrderType","Order type (Dine-in/Takeaway)"],
               ["showArabicName","Arabic item names"],
+              ["hideEnglishName","Print Arabic only (hide English on the receipt)"],
               ["boldItems","Bold item names"],
             ].map(([k,label])=>(
               <label key={k} style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"}}>
@@ -8704,6 +8830,7 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
   function saveCategories(newList){setCategories(newList);LS.set("restopos_categories",newList);const _lic_cat=LS.get("restopos_license_v2")?.licenseKey;if(_lic_cat)debouncedSync(_lic_cat,"restopos_categories",newList);}
   function addCategory(){const trimmed=newCat.trim();if(!trimmed)return alert("Category name cannot be empty");if(categories.includes(trimmed))return alert("Category already exists");saveCategories([...categories,trimmed]);setNewCat("");}
   const [showImport,setShowImport]=useState(false);
+  const [bulkTx,setBulkTx]=useState(null); // bulk-translate progress {running,done,total,filled,failed}
   const blankItem={name:"",nameAr:"",category:categories[0],price:"",cost:"",stock:"",active:true,barcode:"",weighed:false,taxCategory:"S"};const [itemForm,setItemForm]=useState(blankItem);
   const allowWeighing=bizFeature("weighing"); // show the per-kg option only for types that weigh goods
   const blankPromo={code:"",type:"%",value:"",minOrder:0,active:true};const [promoForm,setPromoForm]=useState(blankPromo);const barcodeRef=useRef();
@@ -8719,21 +8846,60 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
     const matchCat=itemCatFilter==="All"||it.category===itemCatFilter;
     return matchQ&&matchCat;
   });
-  async function autoTranslate(){
-    if(!itemForm.name.trim()){setTranslateError("Enter item name first.");return;}
+  // Translate one direction and fill the matching field. dir "toAr" = English→Arabic,
+  // "toEn" = Arabic→English. Either name may be the source, so neither is mandatory.
+  async function translateItemField(dir){
+    const src=dir==="toAr"?itemForm.name:itemForm.nameAr;
+    if(!String(src||"").trim()){setTranslateError(dir==="toAr"?"Type the English name first.":"Type the Arabic name first.");return;}
     setTranslating(true);setTranslateError("");
-    try{
-      const res=await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(itemForm.name.trim())}&langpair=en|ar`);
-      const data=await res.json();
-      if(data.responseStatus===200&&data.responseData?.translatedText){
-        setItemForm(f=>({...f,nameAr:data.responseData.translatedText}));
-      }else{
-        setTranslateError("Could not translate. Please type manually.");
-      }
-    }catch(e){setTranslateError("Translation failed. Check your connection.");}
+    const out=await(dir==="toAr"?translateEnToAr(src):translateArToEn(src));
     setTranslating(false);
+    if(out)setItemForm(f=>dir==="toAr"?{...f,nameAr:out}:{...f,name:out});
+    else setTranslateError("Could not translate — type it manually.");
   }
-  function saveItem(){if(!itemForm.name||!itemForm.price)return alert("Name and price required");const item={...itemForm,price:parseFloat(itemForm.price),cost:parseFloat(itemForm.cost||0),stock:parseInt(itemForm.stock||0),id:editItem?editItem.id:Date.now()};setItems(prev=>editItem?prev.map(i=>i.id===editItem.id?item:i):[...prev,item]);setShowItemModal(false);}
+  function saveItem(){
+    // At least one name (English OR Arabic) plus a price. English is no longer
+    // mandatory — an Arabic-only item is valid and can be auto-translated later.
+    if((!itemForm.name||!itemForm.name.trim())&&(!itemForm.nameAr||!itemForm.nameAr.trim()))return alert("Enter an English or Arabic name");
+    if(!itemForm.price)return alert("Price is required");
+    const item={...itemForm,name:(itemForm.name||"").trim(),nameAr:(itemForm.nameAr||"").trim(),price:parseFloat(itemForm.price),cost:parseFloat(itemForm.cost||0),stock:parseInt(itemForm.stock||0),id:editItem?editItem.id:Date.now()};
+    setItems(prev=>editItem?prev.map(i=>i.id===editItem.id?item:i):[...prev,item]);setShowItemModal(false);
+  }
+  // Decide what one item needs. Returns null (nothing) or {field,from} where
+  // `field` is the field to (re)write and `from` the source text to translate.
+  //  • English field holds Arabic (the classic bad import) → translate it to
+  //    English and REPLACE the English field; the real Arabic stays in nameAr.
+  //  • English only, no Arabic → fill Arabic.
+  //  • Arabic only, no English → fill English.
+  function _txPlan(it){
+    const en=String(it.name||"").trim(), ar=String(it.nameAr||"").trim();
+    if(en&&looksArabic(en)) return {field:"name", from:(ar||en), keepAr:!ar?en:null}; // Arabic in the EN slot → make English from the Arabic
+    if(en&&!ar) return {field:"nameAr", from:en};   // fill missing Arabic
+    if(!en&&ar) return {field:"name", from:ar};     // fill missing English
+    return null;
+  }
+  // Bulk auto-translate across the catalogue. Fills a missing side AND fixes the
+  // common bad import where Arabic was saved in BOTH name slots: it replaces the
+  // English field with a real English translation while keeping the Arabic in
+  // nameAr. A name that is already correct (proper English + proper Arabic) is
+  // left untouched, so re-running is safe. Throttled; saved when done.
+  async function runBulkTranslate(){
+    if(bulkTx&&bulkTx.running)return;
+    const targets=items.filter(it=>!!_txPlan(it));
+    if(targets.length===0){alert("Nothing to translate — every item already has a proper English and Arabic name.");return;}
+    if(!window.confirm(`Auto-translate ${targets.length} item(s)?\n\nThis fills a missing English/Arabic name, and where Arabic was saved in the English field it replaces that with a real English translation (the Arabic name is kept). Names that are already correct are left alone.\n\nIt uses an online translator, so it needs internet and may take a while for a large list. You can keep working; changes save when it finishes.`))return;
+    setBulkTx({running:true,done:0,total:targets.length,filled:0,failed:0});
+    const updates=new Map(); let done=0,filled=0,failed=0;
+    for(const it of targets){
+      const plan=_txPlan(it);
+      let out=""; try{ out=plan.field==="name"?await translateArToEn(plan.from):await translateEnToAr(plan.from); }catch(_){}
+      if(out){const patch={[plan.field]:out};if(plan.keepAr)patch.nameAr=plan.keepAr;updates.set(it.id,patch);filled++;}else failed++;
+      done++; setBulkTx({running:true,done,total:targets.length,filled,failed});
+      await new Promise(r=>setTimeout(r,250)); // be gentle on the free endpoint
+    }
+    if(updates.size)setItems(prev=>prev.map(i=>updates.has(i.id)?{...i,...updates.get(i.id)}:i));
+    setBulkTx({running:false,done,total:targets.length,filled,failed});
+  }
   function openBarcodeModal(it){setBarcodeItem(it);setBarcodeInput(productBarcodes(it).join(", "));setShowBarcodeModal(true);setTimeout(()=>barcodeRef.current?.focus(),100);}
   function saveBarcode(){const {primary,extra}=parseBarcodeInput(barcodeInput);setItems(prev=>prev.map(i=>i.id===barcodeItem.id?{...i,barcode:primary,barcodes:extra}:i));setShowBarcodeModal(false);alert("Barcode saved!");}
   function openPromoModal(p=null){setEditPromo(p);setPromoForm(p?{...p}:{...blankPromo});setShowPromoModal(true);}
@@ -8749,13 +8915,21 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
   return(<div>
     {showItemModal&&<Modal title={editItem?"Edit Item":"New Menu Item"} onClose={()=>setShowItemModal(false)}>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-        <Inp label="Item Name (English) *" value={itemForm.name} onChange={v=>setItemForm(f=>({...f,name:v}))} placeholder="Chicken Burger"/>
+        <div>
+          <label style={{fontSize:12,fontWeight:600,color:C.textMid,display:"block",marginBottom:4}}>Item Name (English)</label>
+          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+            <input value={itemForm.name} onChange={e=>setItemForm(f=>({...f,name:e.target.value}))} placeholder="Chicken Burger" style={{flex:1,padding:"9px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontSize:13,fontFamily:"inherit",color:C.text,background:"#fff"}}/>
+            <button onClick={()=>translateItemField("toEn")} disabled={translating||!itemForm.nameAr.trim()} title="Translate from Arabic" style={{padding:"9px 12px",background:translating?"#e0e0e0":C.primaryLight,border:`1px solid ${C.primary}44`,borderRadius:8,cursor:(translating||!itemForm.nameAr.trim())?"not-allowed":"pointer",fontSize:13,color:C.primary,fontWeight:700,whiteSpace:"nowrap",flexShrink:0}}>
+              {translating?"⏳":"🌐 EN"}
+            </button>
+          </div>
+        </div>
         <div>
           <label style={{fontSize:12,fontWeight:600,color:C.textMid,display:"block",marginBottom:4}}>Arabic Name</label>
           <div style={{display:"flex",gap:6,alignItems:"center"}}>
             <input value={itemForm.nameAr} onChange={e=>setItemForm(f=>({...f,nameAr:e.target.value}))} placeholder="سيُترجم تلقائياً أو اكتب يدوياً" dir="rtl" style={{flex:1,padding:"9px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontSize:13,fontFamily:"'Tajawal',sans-serif",color:C.text,background:"#fff",direction:"rtl",textAlign:"right"}}/>
-            <button onClick={autoTranslate} disabled={translating||!itemForm.name.trim()} title="Auto-translate from English" style={{padding:"9px 12px",background:translating?"#e0e0e0":C.primaryLight,border:`1px solid ${C.primary}44`,borderRadius:8,cursor:translating||!itemForm.name.trim()?"not-allowed":"pointer",fontSize:13,color:C.primary,fontWeight:700,whiteSpace:"nowrap",flexShrink:0}}>
-              {translating?"⏳":"🌐 ترجم"}
+            <button onClick={()=>translateItemField("toAr")} disabled={translating||!itemForm.name.trim()} title="Translate from English" style={{padding:"9px 12px",background:translating?"#e0e0e0":C.primaryLight,border:`1px solid ${C.primary}44`,borderRadius:8,cursor:translating||!itemForm.name.trim()?"not-allowed":"pointer",fontSize:13,color:C.primary,fontWeight:700,whiteSpace:"nowrap",flexShrink:0}}>
+              {translating?"⏳":"🌐 ع"}
             </button>
           </div>
           {translateError&&<div style={{fontSize:11,color:C.danger,marginTop:4}}>{translateError}</div>}
@@ -8798,7 +8972,7 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
       onClose={()=>setShowImport(false)}
     />}
     <div style={{display:"flex",gap:8,marginBottom:20}}>{[[`items`,`🍔 ${_t("Items")}`],[`categories`,`📂 ${_t("Categories")}`],[`promos`,`🏷️ ${_t("Promo Codes")}`]].map(([id,label])=><button key={id} onClick={()=>setTab(id)} style={{padding:"8px 16px",borderRadius:8,border:`1.5px solid ${tab===id?C.primary:C.border}`,background:tab===id?C.primaryLight:"#fff",color:tab===id?C.primary:C.textMid,fontFamily:"inherit",fontSize:13,fontWeight:600,cursor:"pointer"}}>{label}</button>)}</div>
-    {tab==="items"&&<Card><div style={{display:"flex",justifyContent:"space-between",marginBottom:16,gap:8,flexWrap:"wrap"}}><div style={{fontSize:15,fontWeight:700}}>{_t("Menu Items")} ({filteredItems.length}{filteredItems.length!==items.length?`/${items.length}`:""})</div><div style={{display:"flex",gap:8}}><Btn size="sm" variant="outline" onClick={()=>setShowImport(true)}>📥 {_t("Import")}</Btn><Btn size="sm" onClick={()=>openItemModal()}>+ {_t("New")}</Btn></div></div>
+    {tab==="items"&&<Card><div style={{display:"flex",justifyContent:"space-between",marginBottom:16,gap:8,flexWrap:"wrap"}}><div style={{fontSize:15,fontWeight:700}}>{_t("Menu Items")} ({filteredItems.length}{filteredItems.length!==items.length?`/${items.length}`:""})</div><div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>{bulkTx&&(bulkTx.running?<span style={{fontSize:11,color:C.textMid,fontWeight:600}}>🌐 {bulkTx.done}/{bulkTx.total}…</span>:<span style={{fontSize:11,color:C.success,fontWeight:600}}>✓ {bulkTx.filled} filled{bulkTx.failed?` · ${bulkTx.failed} failed`:""}</span>)}<Btn size="sm" variant="outline" onClick={runBulkTranslate} disabled={!!(bulkTx&&bulkTx.running)} title="Fill missing English/Arabic names automatically">🌐 {_t("Translate")}</Btn><Btn size="sm" variant="outline" onClick={()=>setShowImport(true)}>📥 {_t("Import")}</Btn><Btn size="sm" onClick={()=>openItemModal()}>+ {_t("New")}</Btn></div></div>
       <div style={{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap"}}>
         <div style={{flex:1,minWidth:180,position:"relative"}}>
           <span style={{position:"absolute",left:12,top:"50%",transform:"translateY(-50%)",fontSize:14,color:C.textLight}}>🔍</span>
@@ -17296,7 +17470,7 @@ export default function App(){
   }
   function handleClearLicense(){LS.del("restopos_license_v2");LS.del("restopos_pins");setLicense(null);setCurrentUser(null);setStep("register");}
   function handleSwitchAccount(){LS.del("restopos_license_v2");LS.del("restopos_client_creds");setLicense(null);setCurrentUser(null);setStep("register");}
-  const ALL_NAV=[["dashboard","📊","Dashboard",["Admin","Manager"]],["pos","🖥️","POS",["Admin","Manager","Cashier"]],["settings","⚙️","Settings",["Admin"]],["create","➕","Create",["Admin","Manager"]],["transactions","💳","Transactions",["Admin","Manager"]],["financials","🏦","Financials",["Admin","Manager"]],["customers","👥","CRM",["Admin","Manager"]],["reports","📋","Reports",["Admin","Manager"]],["advanced","⚡","Advanced",["Admin","Manager"]],["inventory","📦","Inventory",["Admin","Manager"]],["vat","🧾","VAT",["Admin","Manager"]],["shifts","🔄","Shifts",["Admin","Manager"]],["help","❓","Help",["Admin","Manager","Cashier"]]];
+  const ALL_NAV=[["dashboard","📊","Dashboard",["Admin","Manager"]],["pos","🖥️","POS",["Admin","Manager","Cashier"]],["settings","⚙️","Settings",["Admin"]],["create","➕","Create",["Admin","Manager"]],["transactions","💳","Transactions",["Admin","Manager"]],["purchases","🧾","Purchases",["Admin","Manager"]],["financials","🏦","Financials",["Admin","Manager"]],["customers","👥","CRM",["Admin","Manager"]],["reports","📋","Reports",["Admin","Manager"]],["advanced","⚡","Advanced",["Admin","Manager"]],["inventory","📦","Inventory",["Admin","Manager"]],["vat","🧾","VAT",["Admin","Manager"]],["shifts","🔄","Shifts",["Admin","Manager"]],["help","❓","Help",["Admin","Manager","Cashier"]]];
   const NAV=ALL_NAV.filter(([,,,roles])=>currentUser&&roles.includes(currentUser.role));
   const biz=bizProfile(license);
   const superMode=biz.nav==="sidebar"; // sidebar-style types get the ☰ drawer + quick tabs
@@ -17307,7 +17481,8 @@ export default function App(){
   const SUPER_LABELS=biz.navLabels||{}; // per-type wording overrides (e.g. supermarket: Create → Products)
   const SUPER_GROUPS=[
     ["Sell","🛒",["pos","transactions"]],
-    ["Catalogue","🏷️",["create","inventory"]],
+    ["Buy","🧾",["purchases","inventory"]],
+    ["Catalogue","🏷️",["create"]],
     ["Reports","📈",["dashboard","reports","financials","vat"]],
     ["Customers","👥",["customers"]],
     ["Manage","⚙️",["shifts","advanced","settings","help"]],
@@ -17571,6 +17746,9 @@ export default function App(){
         {screen==="inventory"&&(canUse(license,"inventory")
           ?<InventoryManagement items={items} setItems={setItems} lang={lang}/>
           :<UpgradeWall feature="Inventory Management" requiredPlanName={SUBSCRIPTION_PLANS[reqPlanFor("inventory")]?.name||"Professional"} planColor={SUBSCRIPTION_PLANS[reqPlanFor("inventory")]?.color} note="Inventory tracking, stock alerts and supplier management come with the Professional plan. Upgrade anytime from Help → Support — it switches on instantly." onUpgrade={()=>setScreen("help")}/>)}
+        {screen==="purchases"&&(canUse(license,"inventory")
+          ?<InventoryManagement items={items} setItems={setItems} lang={lang} initialTab="purchases"/>
+          :<UpgradeWall feature="Purchases" requiredPlanName={SUBSCRIPTION_PLANS[reqPlanFor("inventory")]?.name||"Professional"} planColor={SUBSCRIPTION_PLANS[reqPlanFor("inventory")]?.color} note="Purchase invoices, suppliers and goods receipt come with the Professional plan. Upgrade anytime from Help → Support — it switches on instantly." onUpgrade={()=>setScreen("help")}/>)}
         {screen==="vat"&&<ZATCAVatEngine lang={lang}/>}
         {/* Backup moved into Settings → Backup tab; Users moved into Advanced → Users tab */}
         {screen==="shifts"&&<ShiftManager sales={allSales} currentUser={currentUser} lang={lang}/>}
