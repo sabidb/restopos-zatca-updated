@@ -5040,11 +5040,14 @@ function buildPresetHTML(order,license,zatcaInvoice,fmt,qrImgSrc,opts){
   // Optional: wrap the telephone line in a box (toggle: phoneInBox)
   const _phoneInner=`<div style="text-align:center;font-weight:900;font-size:${headFont}px;margin:3px 0">Telephone</div>`;
   const _phoneLine=(_isPhone&&!_superRcpt)?(fmt.phoneInBox?boxed(_phoneInner,true):_phoneInner):"";
-  const tokenBox=_phoneLine+boxed(_superRcpt
-    ? `<div style="text-align:center;font-weight:${wToken};font-size:${tokenFont}px">Token No: ${_escHTML(order.token||order.kot||"—")}</div>`
-    : `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span style="font-weight:${wToken};font-size:${tokenFont}px">Token No: ${_escHTML(order.token||order.kot||"—")}</span><span style="display:flex;align-items:center;gap:6px"><span style="font-weight:900;font-size:${tokenFont}px">${_escHTML(_typeEn)}</span>${_arSpan(orderTypeAr,"font-size:"+tokenFont+"px")}</span></div>`);
-  // Optional divider AFTER the Token box (toggle: lineAfterToken)
-  const lineAfterToken=fmt.lineAfterToken?SEP:"";
+  // Supermarket mode: no Token number on the receipt at all. Other modes keep
+  // the Token + order-type box.
+  const tokenBox=_superRcpt
+    ? ""
+    : _phoneLine+boxed(`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span style="font-weight:${wToken};font-size:${tokenFont}px">Token No: ${_escHTML(order.token||order.kot||"—")}</span><span style="display:flex;align-items:center;gap:6px"><span style="font-weight:900;font-size:${tokenFont}px">${_escHTML(_typeEn)}</span>${_arSpan(orderTypeAr,"font-size:"+tokenFont+"px")}</span></div>`);
+  // Optional divider AFTER the Token box (toggle: lineAfterToken) — skipped in
+  // supermarket mode since there is no Token box.
+  const lineAfterToken=(!_superRcpt&&fmt.lineAfterToken)?SEP:"";
   // ── VOUCHER ──
   const voucher=`<div style="text-align:center;font-size:${bodyFont}px;font-weight:${wMeta};margin:3px 0">Voucher No: ${_escHTML(order.voucher||order.id||"")}</div>`;
   // ── CUSTOMER (was missing entirely from the preset builder — now included) ──
@@ -5052,7 +5055,14 @@ function buildPresetHTML(order,license,zatcaInvoice,fmt,qrImgSrc,opts){
     ? `<div style="text-align:center;font-size:${bodyFont-1}px;font-weight:${wMeta};margin:2px 0;word-break:break-word">Customer: ${_escHTML([order.customer,order.customerPhone].filter(Boolean).join(" · "))}</div>`
     : "";
   // ── USER/DATE | PAYMENT/TIME ──
-  const metaGrid=`<div style="display:flex;justify-content:space-between;font-size:${bodyFont-1}px;font-weight:${wMeta};margin:3px 0;gap:8px">
+  // Supermarket mode drops User and Payment type — just Date / Time. Other modes
+  // keep the full User/Date | Payment/Time grid.
+  const metaGrid=_superRcpt
+    ? `<div style="display:flex;justify-content:space-between;font-size:${bodyFont-1}px;font-weight:${wMeta};margin:3px 0;gap:8px">
+    <div style="text-align:left"><div>Date: ${_escHTML(order.date||"")}</div></div>
+    <div style="text-align:right"><div>Time: ${_escHTML(order.time||"")}</div></div>
+  </div>`
+    : `<div style="display:flex;justify-content:space-between;font-size:${bodyFont-1}px;font-weight:${wMeta};margin:3px 0;gap:8px">
     <div style="text-align:left"><div>User: ${_escHTML(order.user||"admin")}</div><div>Date: ${_escHTML(order.date||"")}</div></div>
     <div style="text-align:right"><div>Payment: ${_escHTML(order.payMethod||"CASH")}</div><div>Time: ${_escHTML(order.time||"")}</div></div>
   </div>`;
@@ -5325,7 +5335,22 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     setNewProd(null); showN("✅ Product created"); focusScanner();
     if(!priceCheck) addToCart(item);
   }
-  useEffect(()=>{ if(superMode) setTimeout(()=>barcodeRef.current?.focus(),200); },[superMode]);
+  // Put the cursor in the scan box the moment the POS (scan till) opens, without
+  // the cashier clicking it. A single timeout can fire before the input exists or
+  // get stolen by a re-render, so retry briefly until the box actually has focus.
+  useEffect(()=>{
+    if(!superMode) return;
+    let tries=0;
+    const id=setInterval(()=>{
+      const el=barcodeRef.current;
+      if(el){ el.focus(); if(document.activeElement===el){ clearInterval(id); return; } }
+      if(++tries>10) clearInterval(id);
+    },120);
+    return ()=>clearInterval(id);
+  },[superMode]);
+  // Re-focus the scan box whenever a blocking modal (payment / previous bill)
+  // closes, so the next scan lands in the box with no extra click.
+  useEffect(()=>{ if(superMode&&!showPayment&&!showPrevBill) focusScanner(); },[superMode,showPayment,showPrevBill]);
   const total=cart.reduce((s,i)=>s+i.price*i.qty,0);const vat=cartVat(cart).vat;const subtotal=parseFloat((total-vat).toFixed(2));
   function addToCart(item){
     // Weighed item (price is per-kg): open the weight modal. qty carries the
@@ -5969,10 +5994,10 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     const del=()=>setCart(prev=>prev.filter((_,i)=>i!==idx));
     return(
       <div key={idx} style={{display:"flex",alignItems:"center",padding:"0 14px",minHeight:46,borderBottom:`1px solid ${C.border}`,background:idx%2?"#FCFDFE":"#fff"}}>
-        <div style={{flex:1,minWidth:0}}>
-          <div style={{fontSize:13.5,fontWeight:700,color:C.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{item.name}</div>
-          <div style={{fontSize:10.5,fontFamily:"monospace",color:C.textLight,whiteSpace:"nowrap"}}>{item.barcode||"—"}</div>
+        <div style={{flex:1.4,minWidth:0}}>
+          <div style={{fontSize:15,fontWeight:700,color:C.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{item.name}</div>
         </div>
+        <div style={{flex:1,minWidth:0,fontSize:11,fontFamily:"monospace",color:C.textLight,textAlign:"center",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",padding:"0 6px"}}>{item.barcode||"—"}</div>
         <div style={{fontSize:11,color:C.textMid,width:74,textAlign:"right",paddingRight:8}}>{fmtSAR(item.price)}{item.weighed?"/kg":""}</div>
         <div style={{width:118,display:"flex",alignItems:"center",justifyContent:"center",gap:4}}>
           <button onClick={dec} style={{width:28,height:28,borderRadius:8,border:`1px solid ${C.danger}44`,background:C.dangerLight,color:C.danger,fontSize:17,fontWeight:800,cursor:"pointer",fontFamily:"inherit",lineHeight:1}}>−</button>
@@ -7048,7 +7073,7 @@ function PresetFormatTab({license,company}){
   const sampleOrder={
     id:"INV-001001",voucher:"44480",token:"5",kot:"5",user:"admin",
     date:TODAY,time:"12:07:50 PM",type:"Takeaway",typeAr:"سفري",payMethod:"CASH",
-    customer:"Mohammed Ali",customerPhone:"0501234567",
+    customer:license?.businessName||"",customerPhone:license?.phone||"",
     given:14.00,change:0,discount:0,vat:1.83,total:14.00,
     items:[
       {name:"Zinger Sandwich",nameAr:"سندويش زنجر",qty:2,price:7.00,category:"Sandwiches"},
@@ -7540,7 +7565,7 @@ function InvoiceFormatTab({license,company,invoiceFormat,setInvoiceFormat}){
   },[license]);
   const previewSampleOrder={
     id:"INV-001001",date:TODAY,time:"12:00",type:"Takeaway",payMethod:"Cash",
-    customer:"Mohammed",given:50,change:6.30,discount:0,vat:5.70,total:43.70,
+    customer:license?.businessName||company?.businessName||"",customerPhone:license?.phone||company?.phone||"",given:50,change:6.30,discount:0,vat:5.70,total:43.70,
     items:[
       {name:"Broasted Chicken",nameAr:"برست دجاج",qty:1,price:28.00,category:"Broasted"},
       {name:"French Fries",nameAr:"بطاطس",qty:1,price:10.00,category:"Sides"},
@@ -7587,7 +7612,7 @@ function InvoiceFormatTab({license,company,invoiceFormat,setInvoiceFormat}){
       <div style={{borderTop:fmt.separator==="solid"?"1px solid #000":fmt.separator==="double"?"3px double #000":fmt.separator==="none"?"none":"1px dashed #000",margin:"5px 0"}}/>
       <div style={{display:"flex",justifyContent:"space-between",fontSize:9}}><span>INV-001001</span><span>Today 12:00</span></div>
       {fmt.showOrderType&&<div style={{fontSize:9,color:"#666"}}>Takeaway · Cash</div>}
-      {fmt.showCustomer&&<div style={{fontSize:9}}>Customer: Mohammed · 0501234567</div>}
+      {fmt.showCustomer&&(license?.businessName||company?.businessName)&&<div style={{fontSize:9}}>Customer: {[license?.businessName||company?.businessName,license?.phone||company?.phone].filter(Boolean).join(" · ")}</div>}
       <div style={{borderTop:fmt.separator==="solid"?"1px solid #000":fmt.separator==="double"?"3px double #000":fmt.separator==="none"?"none":"1px dashed #000",margin:"5px 0"}}/>
       {/* Items */}
       {fmt.showCategories&&<div style={{fontSize:8,fontWeight:700,color:"#888",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:2}}>MAINS</div>}
@@ -7645,7 +7670,7 @@ function InvoiceFormatTab({license,company,invoiceFormat,setInvoiceFormat}){
   // Draft bill preview — uses the SAME builder that prints draft bills
   const draftSampleOrder={
     id:"INV-001001-A",date:TODAY,time:"12:00",type:"Takeaway",payMethod:"Cash",
-    customer:"Mohammed",given:50,change:6.30,discount:0,vat:5.70,total:43.70,
+    customer:license?.businessName||company?.businessName||"",customerPhone:license?.phone||company?.phone||"",given:50,change:6.30,discount:0,vat:5.70,total:43.70,
     items:[
       {name:"Broasted Chicken Normal Half",nameAr:"برست دجاج عادي نصف",qty:1,price:28.00},
       {name:"French Fries",nameAr:"بطاطس",qty:1,price:10.00},
@@ -15857,35 +15882,63 @@ async function loadQZ() {
   });
 }
 
-// ── RestoPOS signing identity — embedded cert + private key.
-// Signing every QZ request with this pair makes QZ Tray trust RestoPOS,
-// so the "Allow / Untrusted website" popup never appears once the
-// certificate is installed as an override on the machine (see QZ Tray tab).
+// ── RestoPOS signing identity — embedded cert + private key (printing-only).
+// Every QZ request is signed LOCALLY in the browser with this pair (jsrsasign),
+// so the signature is always valid even with no network or sign-in. Once the
+// certificate is installed on the machine (QZ Tray tab → override.crt), QZ Tray
+// trusts RestoPOS permanently and the "Allow / Untrusted website" popup never
+// shows again. This key authorizes nothing but printing to the LOCAL QZ Tray —
+// it is not a ZATCA key and protects no customer or payment data.
 const RESTOPOS_QZ_CERT = "-----BEGIN CERTIFICATE-----\n" +
-"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
+"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
-"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
+"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
-"A1UEAwwIUmVzdG9QT1MwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQCK\n" +
-"LF41YprvBG5ak7xiYRHeWCESgvMh8I01vNcwko2ETsYoInlsOjyhIsbcL/rkE6MQ\n" +
-"bCt/+2xTxlPNDC49weuLL3Nj6Q/i0iMSqi83VPvDSnNGrf2s7gBv32DegsKF5m/H\n" +
-"Jsj+1WanxgUYICY+Pozfdp53fRTVBdX6cnHDGIljXM4JkFLJM5dtQAryn6dorMDB\n" +
-"iPc2UJn47r863MsoHUx/yD6DBKLEZsH+R/v4dbxJpI3pmx2iaHxJxbzl4swNjQZ8\n" +
-"qqmD66w9GShv0Lqy3LRV+uzwxrqd7xrcXpYiaoL1xaDbiF2sB7IVakeHL7G+N2Eg\n" +
-"q7HgwuxgK4EXtwTfw3VtAgMBAAGjUzBRMB0GA1UdDgQWBBSIpQHlLixSIjJiVINa\n" +
-"aLgc7rxzYTAfBgNVHSMEGDAWgBSIpQHlLixSIjJiVINaaLgc7rxzYTAPBgNVHRMB\n" +
-"Af8EBTADAQH/MA0GCSqGSIb3DQEBCwUAA4IBAQBxDdnKQqV2+dbJ80g9XclUYsRn\n" +
-"0rOBJxB5b3uFBVawpicUjx8kanU95zcvy54OG6DxfBQILtNgPGNCpYfLn+SQKX68\n" +
-"m7smh0QdQPWHd/awrWPnuaJIxF+MrncSFK94kHek63H6Mt2aw0gCPg/F7B6RCNeP\n" +
-"yFiiNrxVYJicWfr903KxxzR7SsYTu2L4MOsPObWlcM9AvbyZ3I/jUy+1YGBgoIsD\n" +
-"KW2ktNK4R2k8tXP5MhZTRyKpw7PzZpLCZs1luaVJ2EAH+31XcbDW5BzaGkixvpyf\n" +
-"Pt9/igmcDkHmCvQKm9ECRtsPEI+I3hi0LL720qsX/epNJT92niq2MC128AbD\n" +
+"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\n" +
 "-----END CERTIFICATE-----\n";
-// The QZ Tray private key has been removed from the client bundle. Signing of
-// QZ connection challenges now happens server-side via the backend REST API,
-// which holds the key (QZ_PRIVATE_KEY env). The certificate below is public.
+const RESTOPOS_QZ_PRIVATE_KEY = "-----BEGIN PRIVATE KEY-----\n" +
+"MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQCkeSEm9Hi9Jcpu\n" +
+"jP6gbRXdl7xampQghYxDIWDqSLi9wAKqr/cRNUHV0N9/oGRtRJP4NtuDquvDeAfw\n" +
+"jIaEzGSxg5QsVqnhKrreHwRSoQGK6NZnoujtEzU4CEYjLn3JQ+77MqmNmAmHZXv2\n" +
+"KvCueNg75GPQpLfHgLWPobQq6lq3P47b5pmkgEcmwB5pzqWG34N5uERw/v7yyc48\n" +
+"cjM1bi51JjDrHviJ82hIJO9isUW5KEGQE8n/ydNoKnEo8W2waIq9NSne9FQ3wize\n" +
+"dU4xYu+Igjfr3vCjNx9orkfogkfV5s9usBY4LATbXaB04aQsYTByyTWpW1iOQh6V\n" +
+"V7ja12ZFAgMBAAECggEARu+NOllfR6joZYS+/x79OrzKOkOIFnyy0XMwcutZblFF\n" +
+"dSt+gjf3hInZExjwp2XX8cprI58QnxYCSp+5FsZ2uU74FaVtEFWXEdzLxv11Bl3E\n" +
+"tx7+md1aaye6ZEsVajw38rRXh1+m4HQHIlVDx+QL0sz+tcqNDuj2pZOG+qln5bc8\n" +
+"WtqkU9hxVzBpKS6TgkM4jIOmN4BdU9gZIBP2K0BqWoOvpXyD5hSBTWUUwSUUUmR3\n" +
+"4Y36dMihWpjPtoSAYLGRjbw7yG0L7gY2DI7M3Q+5ACqUdAsJXk9pQ0hG5rYkuKZ+\n" +
+"rtcH6qITEikG3jaCq4aWvntQBt7TpXfdEdDBXFYJowKBgQDkRr5ImacDwrjiWjk/\n" +
+"ePPuUbPFikXBXzm7F/SyUmxBrrrN48YTZCUzoCgRLudzxFVxrncjDu4Z6WHyvhkH\n" +
+"DlwQknaPmHog+LLevh+z3bzlRgY3ZP1EOrTRcNT89vq8qL7wNSBwFuGsNWLUUjNv\n" +
+"Bt1d4gjN2t3fb71UW9BZt3/zVwKBgQC4crRr/dTUAuhziLWfJFfenF3BMUQtFhe2\n" +
+"XHv2J5FtXwd5K+QEDutcdT9CQK/fSLA/hZzHYER0JgArNTsIR7lXSlLY2mEb8AOE\n" +
+"UPjCrm4wjbl4fpcH/BcE/Dtlcb1Y5NfHMZNRuNhuKBPnMOarfBRFEnlil7gphPB/\n" +
+"7JdjJkNtwwKBgQCwemidY/yUkbOxeqMLiQy8T/m1XEK1TlMpa0nHmqUK2nScu9zk\n" +
+"HOYN1WFkd2iEPWL5MjH0rpQxABazPXfH1rgiL7jtJqo0V1Chl0aXHXPtpIclyDNs\n" +
+"zh4AVUS0FJSfya1jsw7S2T26jsNK9gnBagM1k4vO6cfh91bdouWelpianQKBgH5v\n" +
+"+ufwV32CBNB2DXJrGmT6MXamjAKQG28h1MP3ecRMmTXh9WsmwwZdRSDocOcRz+er\n" +
+"cr5lamdoSUNVOQNDD3Ub+NC4Wkspa2+/hdcGdXiJHnPP6z5I+4qqURkIL/EI5jWg\n" +
+"8Uja+loA1SvtJKK26royoM0KDe9ANxCqIViROTW7AoGBAKvXNR3YsLZoNXcTmquU\n" +
+"MUYh/wKUbf9RXoxZyvnDnj6poDNPUlsl8wqJEBOvnF8urhBiQ3zDzQxvzQsZN4YO\n" +
+"hIitP1MPZjAtibZFJwW7l85/fsvVnu6E7PzuZIcVvJhhTjS5kcARomThnM0Ye8QE\n" +
+"0bsfY+EFcMOmQ0efR+o0cE19\n" +
+"-----END PRIVATE KEY-----\n";
 
 // Connect to QZ Tray
 async function connectQZ() {
@@ -15900,17 +15953,21 @@ async function connectQZ() {
     qz.security.setCertificatePromise(function(resolve, reject) {
       resolve(RESTOPOS_QZ_CERT);
     });
-    qz.security.setSignatureAlgorithm("SHA512"); // must match the server signing (RSA-SHA512)
+    qz.security.setSignatureAlgorithm("SHA512"); // RSA-SHA512, matches RESTOPOS_QZ_PRIVATE_KEY
     qz.security.setSignaturePromise(function(toSign) {
       return function(resolve, reject) {
-        // Sign the challenge server-side; the private key never reaches the browser.
-        ensureSignedIn()
-          .then(() => qzSignFn({ toSign }))
-          .then((res) => resolve(res?.data?.signature || null))
-          .catch((err) => {
-            console.warn("[QZ] Server signing failed, falling back to unsigned:", err && err.message);
-            resolve(null); // fallback: unsigned (shows QZ popup)
-          });
+        // Sign locally with the embedded private key (jsrsasign / KJUR, loaded in
+        // loadQZ). No network or sign-in needed, so the signature is always valid
+        // and QZ Tray stops prompting once the cert is trusted on the machine.
+        try {
+          const sig = new KJUR.crypto.Signature({ alg: "SHA512withRSA" });
+          sig.init(RESTOPOS_QZ_PRIVATE_KEY);
+          sig.updateString(toSign);
+          resolve(hextob64(sig.sign()));
+        } catch (err) {
+          console.warn("[QZ] Local signing failed:", err && err.message);
+          resolve(null); // fallback: unsigned (shows QZ popup)
+        }
       };
     });
 
@@ -15960,6 +16017,60 @@ async function disconnectQZ() {
 }
 
 // Print via QZ Tray — takes HTML string, prints on selected printer
+// ── Arabic-safe printing ────────────────────────────────────────────────
+// QZ Tray's built-in HTML renderer does NOT reliably shape or bidi-reorder
+// Arabic on some machines — letters print isolated and in reversed order. To
+// guarantee correct Arabic we render the receipt in the BROWSER (which shapes
+// Arabic properly), snapshot it to a PNG, and send that image to QZ. English-
+// only receipts keep using the faster, proven direct-HTML path.
+function _hasArabicText(s){ return /[؀-ۿݐ-ݿﭐ-﷿ﹰ-﻿]/.test(String(s||"")); }
+async function _inlineImgSrc(img){
+  try{
+    if(!img || !img.src || img.src.indexOf("data:")===0) return;
+    const resp = await fetch(img.src, { mode:"cors" });
+    const blob = await resp.blob();
+    img.src = await new Promise(r=>{ const fr=new FileReader(); fr.onload=()=>r(fr.result); fr.readAsDataURL(blob); });
+  }catch(_e){ /* leave as-is; if it taints the canvas we fall back to HTML */ }
+}
+// Render a full receipt HTML document to a PNG data URL using the browser's own
+// (correctly shaping) layout engine, via an off-screen iframe + SVG foreignObject.
+async function renderReceiptToPNG(html, hintWidthPx){
+  const iframe = document.createElement("iframe");
+  iframe.setAttribute("aria-hidden","true");
+  iframe.style.cssText = "position:fixed;left:-99999px;top:0;border:0;background:#fff;width:"+Math.max(hintWidthPx||576,420)+"px;height:10px;";
+  document.body.appendChild(iframe);
+  try{
+    const doc = iframe.contentWindow.document;
+    doc.open(); doc.write(html); doc.close();
+    await new Promise(res=>{ if(doc.readyState==="complete") res(); else iframe.addEventListener("load",res,{once:true}); });
+    try{ await doc.fonts.ready; }catch(_e){}
+    await Promise.all(Array.from(doc.images||[]).map(_inlineImgSrc));
+    await new Promise(r=>setTimeout(r,20));
+    const w = Math.max(1, Math.ceil(doc.body.scrollWidth || doc.body.getBoundingClientRect().width || hintWidthPx || 576));
+    const h = Math.max(1, Math.ceil(doc.body.scrollHeight || 0));
+    const css = Array.from(doc.querySelectorAll("style")).map(s=>s.textContent).join("\n");
+    const bodyXML = new XMLSerializer().serializeToString(doc.body);
+    const svg =
+      '<svg xmlns="http://www.w3.org/2000/svg" width="'+w+'" height="'+h+'">'+
+      '<foreignObject x="0" y="0" width="'+w+'" height="'+h+'">'+
+      '<div xmlns="http://www.w3.org/1999/xhtml"><style><![CDATA['+css+']]></style>'+bodyXML+'</div>'+
+      '</foreignObject></svg>';
+    const svgUrl = "data:image/svg+xml;charset=utf-8,"+encodeURIComponent(svg);
+    const im = new Image();
+    await new Promise((res,rej)=>{ im.onload=res; im.onerror=()=>rej(new Error("svg render failed")); im.src=svgUrl; });
+    const scale = 3; // oversample so thermal output stays crisp
+    const canvas = document.createElement("canvas");
+    canvas.width = w*scale; canvas.height = h*scale;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#fff"; ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.scale(scale,scale);
+    ctx.drawImage(im,0,0,w,h);
+    return { dataUrl: canvas.toDataURL("image/png"), width: w, height: h };
+  } finally {
+    iframe.remove();
+  }
+}
+
 async function printWithQZ(htmlContent, printerName, paperWidth = "80mm", opts = {}) {
   // Load QZ if not loaded
   if (!window.qz) {
@@ -15973,6 +16084,23 @@ async function printWithQZ(htmlContent, printerName, paperWidth = "80mm", opts =
   }
   const targetPrinter = printerName || _qzBillPrinter;
   if (!targetPrinter) throw new Error("No printer selected in QZ Tray settings");
+  const mmWidth = parseFloat(paperWidth) || 80;
+
+  // Arabic → render in the browser and print the image, so glyphs stay joined
+  // and in the right order regardless of QZ Tray's HTML engine. Any failure
+  // falls through to the original HTML path below (no worse than before).
+  if (_hasArabicText(htmlContent)) {
+    try {
+      const png = await renderReceiptToPNG(htmlContent, opts.pixelWidth || 576);
+      const config = opts.pixelWidth
+        ? qz.configs.create(targetPrinter, { colorType:"grayscale", margins:0, units:"px", size:{ width:png.width, height:null }, scaleContent:false, rasterize:false, jobWaitForEnd:false })
+        : qz.configs.create(targetPrinter, { colorType:"grayscale", margins:0, units:"mm", size:{ width:mmWidth, height:null }, scaleContent:true, rasterize:false, jobWaitForEnd:false });
+      await qz.print(config, [{ type:"pixel", format:"image", flavor:"base64", data: png.dataUrl.split(",")[1] }]);
+      return true;
+    } catch (e) {
+      console.warn("[QZ] Arabic image render failed, falling back to HTML:", e && e.message);
+    }
+  }
 
   // pixelWidth mode: render the HTML at an exact dot width (e.g. 576px for an 80mm
   // head) and DON'T scale — the content maps 1:1 to the printer so nothing is
@@ -15991,7 +16119,6 @@ async function printWithQZ(htmlContent, printerName, paperWidth = "80mm", opts =
     return true;
   }
 
-  const mmWidth = parseFloat(paperWidth) || 80;
   const config = qz.configs.create(targetPrinter, {
     colorType: "grayscale",
     margins: 0,
