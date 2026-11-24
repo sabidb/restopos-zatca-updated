@@ -32,7 +32,7 @@ export function InventoryManagement({items,setItems,lang="en",initialTab="overvi
   const [adjType,setAdjType]=useState("in"); // in | out
   const [adjReason,setAdjReason]=useState("");
   const [adjSupplier,setAdjSupplier]=useState("");
-  const [newSupplier,setNewSupplier]=useState({name:"",phone:"",email:"",notes:""});
+  const [newSupplier,setNewSupplier]=useState({name:"",vatNumber:"",crNumber:"",phone:"",email:"",address:"",notes:""});
   const [showSupplierModal,setShowSupplierModal]=useState(false);
 
   // ── Purchases (supplier/AP invoices) — Supermarket/Hypermarket only ─────────
@@ -192,8 +192,10 @@ export function InventoryManagement({items,setItems,lang="en",initialTab="overvi
 
   function addSupplier(){
     if(!newSupplier.name.trim())return alert("Supplier name required.");
-    saveSuppliers([{id:"SUP-"+Date.now(),...newSupplier},...suppliers]);
-    setNewSupplier({name:"",phone:"",email:"",notes:""});setShowSupplierModal(false);
+    const vn=String(newSupplier.vatNumber||"").replace(/\s/g,"");
+    if(vn&&!/^\d{15}$/.test(vn))return alert("A Saudi VAT number is 15 digits. Leave it blank if the supplier isn't VAT-registered.");
+    saveSuppliers([{id:"SUP-"+Date.now(),...newSupplier,vatNumber:vn},...suppliers]);
+    setNewSupplier({name:"",vatNumber:"",crNumber:"",phone:"",email:"",address:"",notes:""});setShowSupplierModal(false);
   }
 
   const tabs=[["overview","📊 "+_t("Overview")],["stock","📦 "+_t("Stock Levels")],["movements","🔄 "+_t("Movements")],["suppliers","🏭 "+_t("Suppliers")],...(showPurchases?[["orders","📋 "+_t("Orders")],["purchases","🧾 "+_t("Purchases")],["preports","📈 "+_t("Purchase Reports")],["synchealth","☁️ "+_t("Sync Health")]]:[])];
@@ -296,8 +298,8 @@ export function InventoryManagement({items,setItems,lang="en",initialTab="overvi
         {suppliers.length===0?(
           <div style={{padding:"20px",textAlign:"center",color:C.textMid,fontSize:13}}>{_t("No suppliers yet.")}</div>
         ):(
-          <DataTable headers={[_t("Name"),_t("Phone"),_t("Email"),_t("Notes"),_t("Actions")]} rows={suppliers.map(s=>[
-            <strong>{s.name}</strong>,s.phone||"—",s.email||"—",s.notes||"—",
+          <DataTable headers={[_t("Name"),_t("VAT No."),_t("CR No."),_t("Phone"),_t("Email"),_t("Notes"),_t("Actions")]} rows={suppliers.map(s=>[
+            <strong>{s.name}</strong>,<span style={{fontFamily:"monospace"}}>{s.vatNumber||"—"}</span>,<span style={{fontFamily:"monospace"}}>{s.crNumber||"—"}</span>,s.phone||"—",s.email||"—",s.notes||"—",
             <Btn size="sm" variant="danger" onClick={()=>{if(confirm(_t("Delete supplier")+"?"))saveSuppliers(suppliers.filter(x=>x.id!==s.id));}}>{_t("Delete")}</Btn>
           ])}/>
         )}
@@ -622,10 +624,13 @@ export function InventoryManagement({items,setItems,lang="en",initialTab="overvi
           </div>}
 
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
-            <select value={draft.supplierId} onChange={e=>onPickSupplier(e.target.value)} style={inSty}>
-              <option value="">{_t("Select supplier")+" *"}</option>
-              {suppliers.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
-            </select>
+            <div>
+              <select value={draft.supplierId} onChange={e=>onPickSupplier(e.target.value)} style={{...inSty,width:"100%"}}>
+                <option value="">{_t("Select supplier")+" *"}</option>
+                {suppliers.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+              {(()=>{const sel=suppliers.find(x=>x.id===draft.supplierId);return sel?(<div style={{fontSize:11,color:C.textMid,marginTop:4}}>{_t("VAT")}: <span style={{fontFamily:"monospace",color:sel.vatNumber?C.text:C.danger}}>{sel.vatNumber||_t("not set")}</span>{sel.crNumber?" · "+_t("CR")+" "+sel.crNumber:""}</div>):null;})()}
+            </div>
             <input value={draft.supplierInvoiceNo} onChange={e=>{const v=e.target.value;setDraft(d=>({...d,supplierInvoiceNo:v}));setDupWarn(null);}} placeholder={(isCN?_t("Credit note #"):_t("Supplier invoice #"))+" *"} style={inSty}/>
             <input type="date" value={draft.invoiceDate} onChange={e=>{const v=e.target.value;setDraft(d=>({...d,invoiceDate:v}));setDupWarn(null);}} style={inSty}/>
             <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,color:C.textMid}}>
@@ -694,8 +699,15 @@ export function InventoryManagement({items,setItems,lang="en",initialTab="overvi
       {showSupplierModal&&<Modal title={"🏭 "+_t("New Supplier")} onClose={()=>setShowSupplierModal(false)} width={420}>
         <div style={{display:"flex",flexDirection:"column",gap:10}}>
           <input value={newSupplier.name} onChange={e=>setNewSupplier(s=>({...s,name:e.target.value}))} placeholder={_t("Supplier name")+" *"} style={{padding:"10px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontFamily:"inherit",fontSize:14}}/>
-          <input value={newSupplier.phone} onChange={e=>setNewSupplier(s=>({...s,phone:e.target.value}))} placeholder={_t("Phone")} style={{padding:"10px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontFamily:"inherit",fontSize:14}}/>
-          <input value={newSupplier.email} onChange={e=>setNewSupplier(s=>({...s,email:e.target.value}))} placeholder={_t("Email")} style={{padding:"10px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontFamily:"inherit",fontSize:14}}/>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+            <input value={newSupplier.vatNumber} onChange={e=>setNewSupplier(s=>({...s,vatNumber:e.target.value.replace(/\D/g,"").slice(0,15)}))} inputMode="numeric" placeholder={_t("VAT number (15 digits)")} style={{padding:"10px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontFamily:"monospace",fontSize:14}}/>
+            <input value={newSupplier.crNumber} onChange={e=>setNewSupplier(s=>({...s,crNumber:e.target.value}))} placeholder={_t("CR number")} style={{padding:"10px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontFamily:"monospace",fontSize:14}}/>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+            <input value={newSupplier.phone} onChange={e=>setNewSupplier(s=>({...s,phone:e.target.value}))} placeholder={_t("Phone")} style={{padding:"10px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontFamily:"inherit",fontSize:14}}/>
+            <input value={newSupplier.email} onChange={e=>setNewSupplier(s=>({...s,email:e.target.value}))} placeholder={_t("Email")} style={{padding:"10px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontFamily:"inherit",fontSize:14}}/>
+          </div>
+          <input value={newSupplier.address} onChange={e=>setNewSupplier(s=>({...s,address:e.target.value}))} placeholder={_t("Address")} style={{padding:"10px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontFamily:"inherit",fontSize:14}}/>
           <input value={newSupplier.notes} onChange={e=>setNewSupplier(s=>({...s,notes:e.target.value}))} placeholder={_t("Notes")} style={{padding:"10px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontFamily:"inherit",fontSize:14}}/>
         </div>
         <div style={{display:"flex",gap:10,marginTop:16}}>

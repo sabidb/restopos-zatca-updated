@@ -2191,15 +2191,23 @@ function getDeviceInfo(){
   const browser=ua.includes("Chrome")?"Chrome":ua.includes("Firefox")?"Firefox":ua.includes("Safari")?"Safari":ua.includes("Edge")?"Edge":"Other";
   return{brand,os,browser,userAgent:ua.slice(0,120),screenW:screen.width,screenH:screen.height};
 }
-const APP_VERSION="v29.14.15";
-const APP_VERSION_FULL="RestoPOS v29.14.15 · ZATCA Phase 2";
+const APP_VERSION="v29.14.16";
+const APP_VERSION_FULL="RestoPOS v29.14.16 · ZATCA Phase 2";
 
 // ── Changelog — add a new entry here with every release ──────────
 const CHANGELOG=[
   {
-    version:"v29.14.15",
+    version:"v29.14.16",
     date:"24 Nov 2026",
     badge:"Latest",
+    badgeColor:"#10b981",
+    notes:[
+      "🏭 Suppliers now capture a VAT number (15-digit, validated), CR number and address — shown in the Suppliers list and when recording a purchase invoice, so your input-VAT records carry the supplier's tax details.",
+    ]
+  },
+  {
+    version:"v29.14.15",
+    date:"24 Nov 2026",
     badgeColor:"#10b981",
     notes:[
       "🧾 Supermarket till now holds 5 parallel bills — tap Bill 1–5 to park one customer's cart and serve another, then switch back and continue exactly where you left off. (In-memory; a refresh clears them.)",
