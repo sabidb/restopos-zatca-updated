@@ -74,22 +74,59 @@ test("validate: a complete invoice is valid", () => {
   assert.deepEqual(r.errors, []);
 });
 
-test("validate: flags missing supplier / number / date / lines", () => {
+test("validate: flags missing supplier and missing money; number/date optional", () => {
   const r = validatePurchaseInvoice({ lines: [] });
   assert.ok(r.errors.includes("supplier-required"));
-  assert.ok(r.errors.includes("invoice-number-required"));
-  assert.ok(r.errors.includes("invoice-date-required"));
-  assert.ok(r.errors.includes("no-lines"));
+  assert.ok(r.errors.includes("no-amount"));
+  // invoice number & date are no longer required
+  assert.ok(!r.errors.includes("invoice-number-required"));
+  assert.ok(!r.errors.includes("invoice-date-required"));
   assert.equal(r.valid, false);
 });
 
-test("validate: a line with qty 0 does not count; negatives are rejected", () => {
+test("validate: supplier + lump-sum amount is valid with no lines, number or date", () => {
+  const r = validatePurchaseInvoice({ supplierName: "Al Noor", totalAmount: 115 });
+  assert.equal(r.valid, true);
+  assert.deepEqual(r.errors, []);
+});
+
+test("validate: a line with qty 0 does not count; needs amount; negatives rejected", () => {
   const r = validatePurchaseInvoice({
     supplierName: "X", supplierInvoiceNo: "1", invoiceDate: "2026-11-01",
     lines: [{ qty: 0, unitCost: 5 }, { qty: -1, unitCost: 5 }],
   });
-  assert.ok(r.errors.includes("no-lines"));
+  assert.ok(r.errors.includes("no-amount"));
   assert.ok(r.errors.includes("negative-qty"));
+});
+
+// ── amount-only quick entry (no line items) ───────────────────────────────
+test("amount-only: VAT-inclusive total is split 15/115", () => {
+  const inv = computePurchaseInvoice({ supplierName: "Al Noor", totalAmount: 115 });
+  assert.equal(inv.total, 115);
+  assert.equal(inv.vatAmount, 15);     // 115 × 15/115
+  assert.equal(inv.subtotal, 100);
+  assert.deepEqual(inv.lines, []);
+});
+
+test("amount-only: VAT-exclusive amount adds VAT on top", () => {
+  const inv = computePurchaseInvoice({ supplierName: "Al Noor", totalAmount: 100, amountInclVat: false });
+  assert.equal(inv.subtotal, 100);
+  assert.equal(inv.vatAmount, 15);
+  assert.equal(inv.total, 115);
+});
+
+test("amount-only: zero-rated amount yields no VAT", () => {
+  const inv = computePurchaseInvoice({ supplierName: "Al Noor", totalAmount: 100, amountRate: 0 });
+  assert.equal(inv.vatAmount, 0);
+  assert.equal(inv.total, 100);
+  assert.equal(inv.subtotal, 100);
+});
+
+test("amount-only: priced lines take precedence over a stray amount", () => {
+  const inv = computePurchaseInvoice({ supplierName: "X", totalAmount: 999, lines: [{ qty: 1, unitCost: 10 }] });
+  assert.equal(inv.subtotal, 10);
+  assert.equal(inv.vatAmount, 1.5);
+  assert.equal(inv.total, 11.5);
 });
 
 // ── duplicate detection ──────────────────────────────────────────────────

@@ -8297,8 +8297,7 @@ function InvoiceFormatTab({license,company,invoiceFormat,setInvoiceFormat}){
               ["showCategories","Group items by category"],
               ["showCustomer","Customer name"],
               ["showOrderType","Order type (Dine-in/Takeaway)"],
-              ["showArabicName","Arabic item names"],
-              ["hideEnglishName","Print Arabic only (hide English on the receipt)"],
+              ["showArabicName","Print Arabic item names"],
               ["boldItems","Bold item names"],
             ].map(([k,label])=>(
               <label key={k} style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"}}>
@@ -8312,6 +8311,22 @@ function InvoiceFormatTab({license,company,invoiceFormat,setInvoiceFormat}){
                 </div>
               </label>
             ))}
+            {/* English item names — stored as the inverse flag `hideEnglishName`,
+               shown here as a plain positive on/off so it's unmistakable. When
+               OFF, items with an Arabic name print Arabic only; an item that has
+               NO Arabic name still prints its English name (never blank). */}
+            {(()=>{const engOn=!fmt.hideEnglishName;return(
+              <label style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"}}>
+                <span style={{fontSize:12,color:C.text}}>Print English item names <span style={{fontSize:10,color:C.textLight}}>(off = Arabic only)</span></span>
+                <div onClick={()=>update("hideEnglishName",!fmt.hideEnglishName)}
+                  style={{width:40,height:22,borderRadius:11,background:engOn?C.primary:"#CBD5E0",
+                    position:"relative",transition:"background 0.2s",cursor:"pointer",flexShrink:0}}>
+                  <div style={{position:"absolute",top:2,left:engOn?20:2,width:18,height:18,
+                    borderRadius:"50%",background:"#fff",transition:"left 0.2s",
+                    boxShadow:"0 1px 3px rgba(0,0,0,0.2)"}}/>
+                </div>
+              </label>
+            );})()}
           </div>
         </Card>
 
@@ -9044,6 +9059,33 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
     const blob=new Blob(['﻿'+csv],{type:"text/csv;charset=utf-8"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="products-import-template.csv";a.click();
   }
 
+  // ── Duplicate products: same NAME + BARCODE + PRICE ─────────────────────
+  // Repeated imports / re-adds leave exact duplicate items. Group the catalogue
+  // by the three fields the user asked for so duplicates can be removed either
+  // one at a time or in bulk (keeping a single copy of each). Name is trimmed +
+  // case-insensitive; barcode trimmed; price numeric. A blank barcode still
+  // groups (both blank = "same barcode").
+  const [showDupes,setShowDupes]=useState(false);
+  const _dupKey=(it)=>`${String(it.name||"").trim().toLowerCase()}|${String(it.barcode||"").trim()}|${Number(it.price)||0}`;
+  const dupGroups=useMemo(()=>{
+    const map=new Map();
+    for(const it of items){const k=_dupKey(it);if(!map.has(k))map.set(k,[]);map.get(k).push(it);}
+    return [...map.values()].filter(g=>g.length>1);
+  },[items]);
+  const dupRemovable=dupGroups.reduce((s,g)=>s+g.length-1,0);
+  // Within a group, KEEP the copy with the most stock (so inventory isn't lost),
+  // tie-broken on the oldest id. Everything else in the group can be removed.
+  const _dupKeep=(g)=>[...g].sort((a,b)=>((Number(b.stock)||0)-(Number(a.stock)||0))||(String(a.id)<String(b.id)?-1:1))[0];
+  function deleteOneItem(id){setItems(prev=>prev.filter(i=>i.id!==id));}
+  function deleteAllDuplicates(){
+    const remove=new Set();
+    for(const g of dupGroups){const keep=_dupKeep(g);for(const it of g)if(it.id!==keep.id)remove.add(it.id);}
+    if(remove.size===0){alert(_t("No duplicate products found."));return;}
+    if(!window.confirm(`${_t("Delete")} ${remove.size} ${_t("duplicate item(s), keeping one copy of each? This cannot be undone.")}`))return;
+    setItems(prev=>prev.filter(i=>!remove.has(i.id)));
+    setShowDupes(false);
+  }
+
   return(<div>
     {showItemModal&&<Modal title={editItem?"Edit Item":"New Menu Item"} onClose={()=>setShowItemModal(false)}>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
@@ -9103,8 +9145,40 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
       onTemplate={downloadTemplate}
       onClose={()=>setShowImport(false)}
     />}
+    {showDupes&&<Modal title={"🧹 "+_t("Remove Duplicate Products")} onClose={()=>setShowDupes(false)} width={620}>
+      {dupGroups.length===0
+        ?<div style={{padding:"26px 8px",textAlign:"center",color:C.textMid,fontSize:14}}>✅ {_t("No duplicate products found.")}</div>
+        :<div>
+          <div style={{fontSize:12.5,color:C.textMid,marginBottom:12,lineHeight:1.6}}>
+            {dupGroups.length} {_t("group(s) of duplicates")} · {dupRemovable} {_t("item(s) can be removed")}. {_t("Matched by same name, barcode and price. Bulk delete keeps the copy with the most stock; or delete any single copy below.")}
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:12,maxHeight:"46vh",overflowY:"auto"}}>
+            {dupGroups.map((g,gi)=>{const keep=_dupKeep(g);return(
+              <div key={gi} style={{border:`1px solid ${C.border}`,borderRadius:10,padding:"10px 12px"}}>
+                <div style={{fontSize:13,fontWeight:800,color:C.text,marginBottom:2}}>{g[0].name||g[0].nameAr||"—"} <span style={{fontWeight:600,color:C.textLight,fontSize:11}}>× {g.length}</span></div>
+                <div style={{fontSize:11,color:C.textMid,marginBottom:8}}>{_t("Barcode")}: <span style={{fontFamily:"monospace"}}>{g[0].barcode||"—"}</span> · {_t("Price")}: {fmtSAR(g[0].price)}</div>
+                <div style={{display:"flex",flexDirection:"column",gap:5}}>
+                  {g.map(it=>(
+                    <div key={it.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,padding:"5px 8px",borderRadius:7,background:it.id===keep.id?C.successLight:C.bg}}>
+                      <span style={{fontSize:11.5,color:C.textMid}}>
+                        {it.id===keep.id&&<strong style={{color:C.success}}>✅ {_t("Keep")} · </strong>}
+                        {_t("Category")}: {it.category||"—"} · {_t("Stock")}: {it.stock!=null?it.stock:"—"} · {it.active===false?_t("Off"):_t("Active")}
+                      </span>
+                      <Btn size="sm" variant="danger" onClick={()=>deleteOneItem(it.id)}>🗑 {_t("Delete")}</Btn>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );})}
+          </div>
+          <div style={{display:"flex",gap:10,marginTop:16}}>
+            <Btn variant="ghost" onClick={()=>setShowDupes(false)} style={{flex:1}}>{_t("Close")}</Btn>
+            <Btn variant="danger" onClick={deleteAllDuplicates} style={{flex:1}}>🧹 {_t("Delete all duplicates (keep one each)")}</Btn>
+          </div>
+        </div>}
+    </Modal>}
     <div style={{display:"flex",gap:8,marginBottom:20}}>{[[`items`,`🍔 ${_t("Items")}`],[`categories`,`📂 ${_t("Categories")}`],[`promos`,`🏷️ ${_t("Promo Codes")}`]].map(([id,label])=><button key={id} onClick={()=>setTab(id)} style={{padding:"8px 16px",borderRadius:8,border:`1.5px solid ${tab===id?C.primary:C.border}`,background:tab===id?C.primaryLight:"#fff",color:tab===id?C.primary:C.textMid,fontFamily:"inherit",fontSize:13,fontWeight:600,cursor:"pointer"}}>{label}</button>)}</div>
-    {tab==="items"&&<Card><div style={{display:"flex",justifyContent:"space-between",marginBottom:16,gap:8,flexWrap:"wrap"}}><div style={{fontSize:15,fontWeight:700}}>{_t("Menu Items")} ({filteredItems.length}{filteredItems.length!==items.length?`/${items.length}`:""})</div><div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>{bulkTx&&(bulkTx.running?<span style={{fontSize:11,color:C.textMid,fontWeight:600}}>🌐 {bulkTx.done}/{bulkTx.total}…</span>:<span style={{fontSize:11,color:C.success,fontWeight:600}}>✓ {bulkTx.filled} filled{bulkTx.failed?` · ${bulkTx.failed} failed`:""}</span>)}<Btn size="sm" variant="outline" onClick={runBulkTranslate} disabled={!!(bulkTx&&bulkTx.running)} title="Fill missing English/Arabic names automatically">🌐 {_t("Translate")}</Btn><Btn size="sm" variant="outline" onClick={()=>setShowImport(true)}>📥 {_t("Import")}</Btn><Btn size="sm" onClick={()=>openItemModal()}>+ {_t("New")}</Btn></div></div>
+    {tab==="items"&&<Card><div style={{display:"flex",justifyContent:"space-between",marginBottom:16,gap:8,flexWrap:"wrap"}}><div style={{fontSize:15,fontWeight:700}}>{_t("Menu Items")} ({filteredItems.length}{filteredItems.length!==items.length?`/${items.length}`:""})</div><div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>{bulkTx&&(bulkTx.running?<span style={{fontSize:11,color:C.textMid,fontWeight:600}}>🌐 {bulkTx.done}/{bulkTx.total}…</span>:<span style={{fontSize:11,color:C.success,fontWeight:600}}>✓ {bulkTx.filled} filled{bulkTx.failed?` · ${bulkTx.failed} failed`:""}</span>)}<Btn size="sm" variant="outline" onClick={runBulkTranslate} disabled={!!(bulkTx&&bulkTx.running)} title="Fill missing English/Arabic names automatically">🌐 {_t("Translate")}</Btn><Btn size="sm" variant="outline" onClick={()=>setShowImport(true)}>📥 {_t("Import")}</Btn>{dupRemovable>0&&<Btn size="sm" variant="outline" onClick={()=>setShowDupes(true)} title={_t("Find and remove duplicate products (same name, barcode & price)")}>🧹 {_t("Duplicates")} ({dupRemovable})</Btn>}<Btn size="sm" onClick={()=>openItemModal()}>+ {_t("New")}</Btn></div></div>
       <div style={{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap"}}>
         <div style={{flex:1,minWidth:180,position:"relative"}}>
           <span style={{position:"absolute",left:12,top:"50%",transform:"translateY(-50%)",fontSize:14,color:C.textLight}}>🔍</span>
@@ -16507,7 +16581,11 @@ async function renderReceiptToPNG(html, hintWidthPx){
     const svgUrl = "data:image/svg+xml;charset=utf-8,"+encodeURIComponent(svg);
     const im = new Image();
     await new Promise((res,rej)=>{ im.onload=res; im.onerror=()=>rej(new Error("svg render failed")); im.src=svgUrl; });
-    const scale = 3; // oversample so thermal output stays crisp
+    // The image is downscaled by QZ to the ~576-dot 80mm head regardless, so
+    // oversampling past ~2x only inflates the PNG encode + websocket transfer
+    // (the main source of slow printing) with no gain in printed sharpness.
+    // Was 3; drop to 2 for a much faster encode. Use 1 for maximum speed.
+    const scale = 2; // render near head resolution — fast encode, same print quality
     const canvas = document.createElement("canvas");
     canvas.width = w*scale; canvas.height = h*scale;
     const ctx = canvas.getContext("2d");
@@ -18290,9 +18368,11 @@ function ZATCAVatEngine({lang="en"}) {
   const autoSalesTx = useMemo(() => {
     let closed = [];
     try { closed = (typeof LS!=="undefined" && LS.get && LS.get("restopos_closed_days")) || []; } catch(_) {}
-    return closed
+    const closedDates = new Set();
+    const fromClosed = closed
       .filter(d => d && typeof d.date === "string" && d.date.slice(0,7) === period) // YYYY-MM match
       .map(d => {
+        closedDates.add(d.date);
         const gross = Number(d.revenue) || 0;     // total incl. VAT
         const vat   = Number(d.vat) || 0;          // VAT collected that day
         const net   = vatR2(gross - vat);
@@ -18309,6 +18389,44 @@ function ZATCAVatEngine({lang="en"}) {
           addedAt   : d.closedAt || d.closeTime || new Date().toISOString(),
         };
       });
+
+    // Live daily sales for days NOT yet formally closed, so the VAT estimate
+    // reflects real takings even before a Close Day is run (previously output VAT
+    // was zero until the day was closed, which made the return look like a refund).
+    // ZATCA output VAT = VAT on taxable SUPPLIES: only COMPLETED sales count — a
+    // voided sale never happened, and a refunded sale's VAT is reversed by its
+    // credit note, so both are excluded (figure is net of same-period refunds).
+    let sales = [];
+    try { sales = (typeof LS!=="undefined" && LS.get && LS.get("restopos_sales")) || []; } catch(_) {}
+    const byDate = {};
+    for (const s of sales) {
+      if (!s || typeof s.date !== "string") continue;
+      if (s.date.slice(0,7) !== period) continue;         // same month
+      if (closedDates.has(s.date)) continue;              // Close-Day snapshot wins (no double count)
+      if (s.status && s.status !== "completed") continue; // skip voided / refunded
+      const g = Number(s.total) || 0, v = Number(s.vat) || 0;
+      const o = byDate[s.date] || (byDate[s.date] = { gross:0, vat:0, n:0 });
+      o.gross += g; o.vat += v; o.n += 1;
+    }
+    const fromLive = Object.keys(byDate).map(date => {
+      const o = byDate[date];
+      return {
+        id        : `live-${date}`,
+        date,
+        type      : "SALE",
+        category  : "STANDARD",
+        description: `Daily sales (live) — ${o.n} order${o.n===1?"":"s"}`,
+        net       : vatR2(o.gross - o.vat),
+        vat       : vatR2(o.vat),
+        gross     : vatR2(o.gross),
+        inclVAT   : true,
+        invoiceRef: "LIVE",
+        auto      : true,
+        addedAt   : new Date().toISOString(),
+      };
+    });
+
+    return [...fromClosed, ...fromLive];
   }, [period, transactions]); // transactions dep so a re-render after edits refreshes too
 
   // Captured purchase documents → recoverable input-VAT entries (opt-in).

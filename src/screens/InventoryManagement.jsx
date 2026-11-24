@@ -41,7 +41,7 @@ export function InventoryManagement({items,setItems,lang="en",initialTab="overvi
   // Feature-flagged so Restaurant Mode's Inventory screen is unchanged.
   const showPurchases=bizFeature("purchasing");
   const blankLine=()=>({name:"",qty:"",unitCost:"",rate:0.15});
-  const blankPurchase=()=>({supplierId:"",supplierName:"",supplierVatNumber:"",supplierCrNumber:"",docType:"invoice",supplierInvoiceNo:"",invoiceDate:new Date().toISOString().slice(0,10),hasValidEInvoice:false,notes:"",lines:[blankLine()]});
+  const blankPurchase=()=>({supplierId:"",supplierName:"",supplierVatNumber:"",supplierCrNumber:"",docType:"invoice",supplierInvoiceNo:"",invoiceDate:new Date().toISOString().slice(0,10),hasValidEInvoice:false,notes:"",totalAmount:"",amountInclVat:true,lines:[blankLine()]});
   const [purchases,setPurchases]=useState(()=>loadPurchaseInvoices());
   const [showPurchaseModal,setShowPurchaseModal]=useState(false);
   const [draft,setDraft]=useState(blankPurchase);
@@ -139,17 +139,15 @@ export function InventoryManagement({items,setItems,lang="en",initialTab="overvi
   // supplier + invoice number) and a NEAR duplicate (same supplier + total +
   // date) hold the save behind an explicit "save anyway" so the same supplier
   // invoice can't be entered twice by accident (which would double-count input VAT).
-  function submitPurchase(force){
+  function submitPurchase(){
     const v=validatePurchaseInvoice(draft);
     if(!v.valid){
-      const msg={"supplier-required":_t("Choose a supplier."),"invoice-number-required":_t("Enter the supplier's invoice number."),"invoice-date-required":_t("Enter the invoice date."),"no-lines":_t("Add at least one line with a quantity."),"negative-qty":_t("Quantity can't be negative."),"negative-cost":_t("Cost can't be negative.")};
+      const msg={"supplier-required":_t("Choose a supplier."),"no-amount":_t("Enter a total amount, or add at least one line with a quantity."),"negative-qty":_t("Quantity can't be negative."),"negative-cost":_t("Cost can't be negative."),"negative-amount":_t("Amount can't be negative.")};
       alert(v.errors.map(e=>msg[e]||e).join("\n"));
       return;
     }
-    if(!force){
-      const dup=detectDuplicatePurchase(draft,purchases);
-      if(dup.duplicate){ setDupWarn(dup); return; }
-    }
+    // Duplicate detection is NON-BLOCKING: the live banner in the modal already
+    // warned, so a one-click save always goes through (the merchant decides).
     savePurchaseInvoice(draft);
     setPurchases(loadPurchaseInvoices());
     setShowPurchaseModal(false); setDupWarn(null);
@@ -616,21 +614,17 @@ export function InventoryManagement({items,setItems,lang="en",initialTab="overvi
       })()}
 
       {/* PURCHASE INVOICE MODAL */}
-      {showPurchaseModal&&(()=>{ const c=computePurchaseInvoice(draft); const inSty={padding:"9px 11px",border:`1px solid ${C.border}`,borderRadius:8,fontFamily:"inherit",fontSize:13.5,background:"#fff"}; return(
+      {showPurchaseModal&&(()=>{ const c=computePurchaseInvoice(draft); const inSty={padding:"9px 11px",border:`1px solid ${C.border}`,borderRadius:8,fontFamily:"inherit",fontSize:13.5,background:"#fff"}; const hasSup=!!(draft.supplierId||String(draft.supplierName||"").trim()); const dup=hasSup?detectDuplicatePurchase(draft,purchases):null; const amtOnly=parseFloat(draft.totalAmount)>0&&!c.lines.some(l=>l.qty>0); return(
         <Modal title={"🧾 "+(isCN?_t("New Credit Note"):_t("New Purchase Invoice"))} onClose={()=>{setShowPurchaseModal(false);setDupWarn(null);}} width={760}>
           <div style={{display:"flex",gap:6,marginBottom:12}}>
             <button onClick={()=>{setDraft(d=>({...d,docType:"invoice"}));setDupWarn(null);}} style={{flex:1,padding:"8px 10px",borderRadius:8,border:`1.5px solid ${!isCN?C.success:C.border}`,background:!isCN?C.successLight:"#fff",color:!isCN?C.success:C.textMid,fontWeight:700,fontFamily:"inherit",fontSize:12.5,cursor:"pointer"}}>🧾 {_t("Purchase Invoice")}</button>
             <button onClick={()=>{setDraft(d=>({...d,docType:"credit_note"}));setDupWarn(null);}} style={{flex:1,padding:"8px 10px",borderRadius:8,border:`1.5px solid ${isCN?C.danger:C.border}`,background:isCN?C.dangerLight:"#fff",color:isCN?C.danger:C.textMid,fontWeight:700,fontFamily:"inherit",fontSize:12.5,cursor:"pointer"}}>↩️ {_t("Credit Note")}</button>
           </div>
           {isCN&&<div style={{fontSize:11.5,color:C.textMid,marginBottom:10,padding:"8px 11px",background:C.dangerLight,borderRadius:8}}>{_t("A credit note reduces what you owe this supplier and reduces recoverable input VAT (a return or overcharge correction).")}</div>}
-          {dupWarn&&<div style={{padding:"12px 14px",borderRadius:10,marginBottom:14,border:`1.5px solid ${dupWarn.level==="exact"?C.danger:C.warning}`,background:dupWarn.level==="exact"?C.dangerLight:C.warningLight}}>
-            <div style={{fontSize:13,fontWeight:800,color:dupWarn.level==="exact"?C.danger:C.warning}}>{dupWarn.level==="exact"?("⛔ "+_t("Possible duplicate document")):("⚠️ "+_t("Looks similar to an existing document"))}</div>
+          {dup&&dup.duplicate&&<div style={{padding:"12px 14px",borderRadius:10,marginBottom:14,border:`1.5px solid ${dup.level==="exact"?C.danger:C.warning}`,background:dup.level==="exact"?C.dangerLight:C.warningLight}}>
+            <div style={{fontSize:13,fontWeight:800,color:dup.level==="exact"?C.danger:C.warning}}>{dup.level==="exact"?("⛔ "+_t("Possible duplicate document")):("⚠️ "+_t("Looks similar to an existing document"))}</div>
             <div style={{fontSize:12,color:C.textMid,marginTop:4}}>
-              {(dupWarn.level==="exact"?_t("This supplier and document number are already recorded"):_t("Same supplier, total and date as an existing document"))}: <strong>{dupWarn.match.supplierName} · {dupWarn.match.supplierInvoiceNo||"—"} · {fmtSAR(computePurchaseInvoice(dupWarn.match).total)}</strong>. {_t("Entering it twice double-counts input VAT.")}
-            </div>
-            <div style={{display:"flex",gap:8,marginTop:10}}>
-              <Btn size="sm" variant="ghost" onClick={()=>setDupWarn(null)}>{_t("Go back & edit")}</Btn>
-              <Btn size="sm" variant="danger" onClick={()=>submitPurchase(true)}>{_t("Save anyway")}</Btn>
+              {(dup.level==="exact"?_t("This supplier and document number are already recorded"):_t("Same supplier, total and date as an existing document"))}: <strong>{dup.match.supplierName} · {dup.match.supplierInvoiceNo||"—"} · {fmtSAR(computePurchaseInvoice(dup.match).total)}</strong>. {_t("Entering it twice double-counts input VAT — save only if this is genuinely a new document.")}
             </div>
           </div>}
 
@@ -651,7 +645,17 @@ export function InventoryManagement({items,setItems,lang="en",initialTab="overvi
           </div>
           {suppliers.length===0&&<div style={{fontSize:12,color:C.warning,marginBottom:10}}>{_t("Add a supplier first on the Suppliers tab.")}</div>}
 
-          <div style={{fontSize:12.5,fontWeight:800,margin:"6px 0 8px"}}>{_t("Lines")} <span style={{fontWeight:500,color:C.textLight,fontSize:11}}>· {_t("unit cost is ex-VAT; VAT is added on top")}</span></div>
+          {/* QUICK AMOUNT — save a purchase with just supplier + a total, no line items. */}
+          <div style={{display:"grid",gridTemplateColumns:"1.4fr 0.9fr",gap:10,marginBottom:6,alignItems:"center"}}>
+            <input type="number" value={draft.totalAmount} min={0} onChange={e=>{const v=e.target.value;setDraft(d=>({...d,totalAmount:v}));}} placeholder={_t("Quick total amount (no line items)")} style={{...inSty,fontWeight:700}}/>
+            <select value={draft.amountInclVat===false?"excl":"incl"} onChange={e=>setDraft(d=>({...d,amountInclVat:e.target.value!=="excl"}))} style={inSty}>
+              <option value="incl">{_t("VAT included")}</option>
+              <option value="excl">{_t("+ VAT on top")}</option>
+            </select>
+          </div>
+          {amtOnly&&<div style={{fontSize:11.5,color:C.textMid,marginBottom:10,padding:"6px 10px",background:C.bg,borderRadius:8}}>{_t("Amount-only entry")} — {_t("Net")}: <strong>{fmtSAR(c.subtotal)}</strong> · {_t("Input VAT")}: <strong>{fmtSAR(c.vatAmount)}</strong> · {_t("Total")}: <strong>{fmtSAR(c.total)}</strong>. {_t("Leave the lines below empty, or fill them to itemise instead.")}</div>}
+
+          <div style={{fontSize:12.5,fontWeight:800,margin:"6px 0 8px"}}>{_t("Lines")} <span style={{fontWeight:500,color:C.textLight,fontSize:11}}>· {_t("optional — unit cost is ex-VAT; VAT is added on top")}</span></div>
           <div style={{display:"flex",flexDirection:"column",gap:7,marginBottom:10}}>
             {draft.lines.map((l,i)=>{ const cl=c.lines[i]||{}; return(
               <div key={i} style={{display:"grid",gridTemplateColumns:"2fr 0.8fr 1fr 0.9fr 1fr auto",gap:6,alignItems:"center"}}>
@@ -679,7 +683,7 @@ export function InventoryManagement({items,setItems,lang="en",initialTab="overvi
 
           <div style={{display:"flex",gap:10,marginTop:14}}>
             <Btn variant="ghost" style={{flex:1}} onClick={()=>{setShowPurchaseModal(false);setDupWarn(null);}}>{_t("Cancel")}</Btn>
-            <Btn style={{flex:1}} onClick={()=>submitPurchase(false)}>{isCN?_t("Save Credit Note"):_t("Save Purchase Invoice")}</Btn>
+            <Btn style={{flex:1}} onClick={()=>submitPurchase()}>{isCN?_t("Save Credit Note"):_t("Save Purchase Invoice")}</Btn>
           </div>
         </Modal>
       );})()}

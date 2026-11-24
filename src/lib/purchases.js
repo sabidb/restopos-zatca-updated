@@ -77,12 +77,41 @@ export function computeLine(line = {}) {
  */
 export function computePurchaseInvoice(inv = {}) {
   const lines = (Array.isArray(inv.lines) ? inv.lines : []).map(computeLine);
-  const subtotal = zr2(lines.reduce((s, l) => s + l.net, 0));
-  const vatAmount = zr2(lines.reduce((s, l) => s + l.vat, 0));
-  const total = zr2(subtotal + vatAmount);
+  const hasLines = lines.some((l) => l.qty > 0 || l.net > 0 || l.vat > 0);
+
+  // AMOUNT-ONLY quick entry: when there are no priced lines but the merchant
+  // typed a single lump-sum amount (supplier total), derive the VAT from it so
+  // the document is still a usable input-VAT record without line items.
+  //   • amountInclVat !== false → the amount is the VAT-INCLUSIVE grand total
+  //     (what the supplier printed); VAT is extracted with rate/(1+rate).
+  //   • amountInclVat === false → the amount is net (ex-VAT); VAT is added on top.
+  // rate defaults to the standard KSA rate; pass 0 for a zero-rated purchase.
+  const amount = num(inv.totalAmount, 0);
+  const amountRate = (inv.amountRate === 0 || inv.amountRate === "0") ? 0 : num(inv.amountRate, VAT_RATE);
+  let subtotal, vatAmount, total;
+  if (!hasLines && amount > 0) {
+    if (inv.amountInclVat === false) {
+      subtotal = zr2(amount);
+      vatAmount = zr2(amount * amountRate);
+      total = zr2(subtotal + vatAmount);
+    } else {
+      total = zr2(amount);
+      vatAmount = zr2(total * amountRate / (1 + amountRate));
+      subtotal = zr2(total - vatAmount);
+    }
+  } else {
+    // Totals SUM the already-rounded line figures (no penny drift).
+    subtotal = zr2(lines.reduce((s, l) => s + l.net, 0));
+    vatAmount = zr2(lines.reduce((s, l) => s + l.vat, 0));
+    total = zr2(subtotal + vatAmount);
+  }
   return {
     ...inv,
     docType: normDocType(inv.docType),
+    // Amount-only quick-entry fields (null/defaults when a line-item invoice).
+    totalAmount: amount > 0 ? zr2(amount) : null,
+    amountInclVat: inv.amountInclVat !== false,
+    amountRate,
     supplierId: inv.supplierId ?? null,
     supplierName: String(inv.supplierName ?? "").trim(),
     // Supplier tax identity captured at entry time — kept on the document so the
@@ -124,14 +153,18 @@ export function validatePurchaseInvoice(inv = {}) {
   const hasSupplier = (inv.supplierId != null && inv.supplierId !== "") ||
     String(inv.supplierName ?? "").trim() !== "";
   if (!hasSupplier) errors.push("supplier-required");
-  if (String(inv.supplierInvoiceNo ?? "").trim() === "") errors.push("invoice-number-required");
-  if (!inv.invoiceDate) errors.push("invoice-date-required");
 
+  // The supplier's invoice number and date are KEPT if typed (and used for
+  // duplicate detection), but are NOT required — a merchant can save a quick
+  // amount-only purchase with just a supplier and an amount.
   const lines = Array.isArray(inv.lines) ? inv.lines : [];
   const usable = lines.filter((l) => num(l.qty, 0) > 0);
-  if (usable.length === 0) errors.push("no-lines");
+  const hasAmount = num(inv.totalAmount, 0) > 0;
+  // A usable document needs SOME money: either priced lines, or a lump-sum amount.
+  if (usable.length === 0 && !hasAmount) errors.push("no-amount");
   if (lines.some((l) => num(l.qty, 0) < 0)) errors.push("negative-qty");
   if (lines.some((l) => num(l.unitCost, 0) < 0)) errors.push("negative-cost");
+  if (num(inv.totalAmount, 0) < 0) errors.push("negative-amount");
 
   return { valid: errors.length === 0, errors };
 }
