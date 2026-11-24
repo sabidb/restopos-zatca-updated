@@ -2204,7 +2204,8 @@ const CHANGELOG=[
     notes:[
       "🧾 Supermarket till now holds 5 parallel bills — tap Bill 1–5 to park one customer's cart and serve another, then switch back and continue exactly where you left off. (In-memory; a refresh clears them.)",
       "🌐 Product names now translate automatically in the background — any item missing its Arabic or English name is filled and saved on its own, on any screen, and keeps running when you switch windows.",
-      "🔢 On the scan till, after scanning an item just type a number and press Enter to set its quantity — no need to tap the qty box; the next scan adds the next item.",
+      "🛒 Purchases is now a top-bar tab next to Transactions on the supermarket till, for quick access to purchase invoices.",
+      "🔢 Scan box always retrieves the item by the code you scan or type — a number is treated as a barcode, never a quantity. Edit a line's quantity on the cart (tap the qty box or use + / −).",
     ]
   },
   {
@@ -5475,9 +5476,6 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     else showN("⚠️ Couldn't auto-translate — type the Arabic name");
   }
   const posCats=(LS.get("restopos_categories")||[...new Set(items.map(i=>i.category).filter(Boolean))]);
-  // Id of the line a scan/tap last dropped into the cart. A bare number typed in
-  // the scan box (no qty-box tap) SETS this line's quantity — see submitScanBox.
-  const lastLineRef=useRef(null);
   function focusScanner(){setTimeout(()=>barcodeRef.current?.focus(),60);}
   // Switch to one of the 5 parked bills. Each bill's cart already lives in
   // `bills`, so we only clear the transient per-screen selection/edit state and
@@ -5486,7 +5484,6 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     if(i===activeBill)return;
     setEditPriceIdx(null);setEditPriceVal("");
     setSelectedRow(null);setDescModalIdx(null);
-    lastLineRef.current=null;
     setActiveBill(i);
     focusScanner();
   }
@@ -5522,16 +5519,13 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     if(item.weighed){ setWeighItem(item); setWeighKg(""); return; }
     // Merge only into a line at the catalogue price — a re-priced line is pinned,
     // so re-scanning the same item starts a new line (different price = new row).
-    setCart(prev=>{const ex=prev.find(c=>c.id===item.id&&!c.weighed&&!c.priceEdited);if(ex)return prev.map(c=>c===ex?{...c,qty:c.qty+1}:c);return[...prev,{...item,qty:1}];});lastLineRef.current=item.id;showN("+ "+item.name);
+    setCart(prev=>{const ex=prev.find(c=>c.id===item.id&&!c.weighed&&!c.priceEdited);if(ex)return prev.map(c=>c===ex?{...c,qty:c.qty+1}:c);return[...prev,{...item,qty:1}];});showN("+ "+item.name);
   }
   function confirmWeigh(){
     const w=parseFloat(weighKg);
     if(!(w>0)){showN("❌ Enter a valid weight");return;}
     const kg=Math.round(w*1000)/1000;
     setCart(prev=>[...prev,{...weighItem,qty:kg,weighed:true}]);
-    // A weighed line's "qty" is its weight — a typed whole number must not
-    // overwrite it, so clear the last-line pointer.
-    lastLineRef.current=null;
     showN("+ "+weighItem.name+" ("+kg+" kg)");
     setWeighItem(null);setWeighKg("");
   }
@@ -5638,32 +5632,13 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     else if(priceCheck){ showN("❌ No product for “"+c+"”"); focusScanner(); }
     else { setNewProd({barcode:c,name:"",price:"",category:posCats[0]||"General",weighed:false}); } // unknown → offer create
   }
-  // What a manual Enter / keypad ↵ in the scan box does. A short, pure-number
-  // entry (1–3 digits) is read as a QUANTITY and SET on the last scanned line —
-  // so the cashier can scan an item, type "5", Enter, and the line becomes ×5
-  // without ever tapping the qty box. "0" removes the line. Anything longer (a
-  // real barcode) or anything with non-digits falls through to the normal
-  // barcode/name search, and the next scan still adds a fresh item. Disabled in
-  // price-check mode and when there is no line to adjust.
+  // A manual Enter / keypad ↵ in the scan box ALWAYS retrieves the item by the
+  // typed code — a number is treated as a barcode, never as a quantity. Quantity
+  // is edited directly on the cart line (tap the qty box, or use + / −), so a
+  // numeric barcode is never hijacked into a quantity change.
   function submitScanBox(){
     const raw=String(barcodeInput||"").trim();
-    if(!raw)return;
-    if(!priceCheck && /^\d{1,3}$/.test(raw) && lastLineRef.current!=null
-       && cart.some(c=>c.id===lastLineRef.current&&!c.weighed&&!c.priceEdited)){
-      const q=parseInt(raw,10);
-      const targetId=lastLineRef.current;
-      setCart(prev=>{
-        const i=prev.findIndex(c=>c.id===targetId&&!c.weighed&&!c.priceEdited);
-        if(i<0)return prev;
-        if(q<=0){lastLineRef.current=null;return prev.filter((_,x)=>x!==i);}
-        return prev.map((c,x)=>x===i?{...c,qty:q}:c);
-      });
-      setBarcodeInput("");
-      showN(q<=0?"✕ Line removed":"✎ Qty "+q);
-      focusScanner();
-      return;
-    }
-    handleBarcodeSearch(raw);
+    if(raw) handleBarcodeSearch(raw);
   }
   async function confirmPayment(method,given,change,promo,totalDiscountAmt,finalTotal,finalVat,printAndSave,payInfo,manualDiscountAmt,promoDiscountAmt,isDraft=false,extraData={}){
     // ── Invoice numbering ────────────────────────────────────────────
@@ -6270,7 +6245,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   // barcode rows. F1 opens the shared payment window; F2 clears the sale. ──
   const superClearAll=()=>{
     if(cart.length>=3 && !window.confirm(`Clear all ${cart.length} items from this sale?`)) return;
-    setCart([]); setSelectedRow(null); lastLineRef.current=null; focusScanner();
+    setCart([]); setSelectedRow(null); focusScanner();
   };
   const superOpenPay=()=>{ if(cart.length&&manualBillingEnabled()) setShowPayment(true); };
   const superOpenPrev=()=>{ const printed=(sales||[]).filter(s=>s.status!=="voided"); if(!printed.length){alert("No previous bills yet");return;} setPrevAllDays(false); setPrevIndex(0); setShowPrevBill(true); };
@@ -17695,7 +17670,7 @@ export default function App(){
     ["Manage","⚙️",["shifts","advanced","settings","help"]],
   ].map(([g,ic,ids])=>[g,ic,ids.filter(id=>NAV_BY_ID[id])]).filter(([,,ids])=>ids.length);
   // Quick tabs always visible on the supermarket top bar (role-permitting).
-  const SUPER_TOP=["pos","transactions"].filter(id=>NAV_BY_ID[id]);
+  const SUPER_TOP=["pos","transactions","purchases"].filter(id=>NAV_BY_ID[id]);
   if(step==="checking")return<div style={{minHeight:"100vh",background:"#0a1628",display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{color:"#fff",fontSize:16}}>Loading…</div></div>;
   // Day 15: the trial locks, but nothing is deleted — the workspace and its
   // cloud copy both stay put, waiting for the client to register. Checked
