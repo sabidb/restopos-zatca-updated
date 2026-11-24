@@ -17118,6 +17118,37 @@ export default function App(){
     },11000);
   },[]);
 
+  // ── Automatic catalogue cloud-sync ──────────────────────────────────────────
+  // A large catalogue (e.g. a supermarket) overflows the 350 KB client_data blob,
+  // so the product list must live in the per-product catalogue subcollection.
+  // Switch that mode on automatically once the catalogue is sizeable, push the
+  // full list once, then re-check every few minutes and push again whenever the
+  // catalogue has changed — so a bulk import/delete is backed up without anyone
+  // tapping "Sync Now". (Single product edits already persist live via setItems
+  // when the mode is on; this is the auto-enable plus the periodic safety net.)
+  useEffect(()=>{
+    const lic=LS.get("restopos_license_v2")?.licenseKey;
+    if(!lic)return;
+    setCatalogueLicense(lic);
+    const ENABLE_AT_BYTES=250*1024; // switch on before the ~350 KB per-key cap bites
+    async function autoCatalogueSync(){
+      try{
+        const list=LS.get("restopos_items")||[];
+        const bytes=JSON.stringify(list).length;
+        if(!catalogueSubOn()&&bytes>ENABLE_AT_BYTES)setCatalogueSubEnabled(true);
+        if(!catalogueSubOn())return;                         // small catalogue still fits the blob
+        const sig=list.length+":"+bytes;                     // cheap change-detector
+        if(sig===LS.get("restopos_catalogue_synced_sig"))return; // nothing pending since last push
+        await backfillCatalogue(list);
+        LS.set("restopos_catalogue_synced_sig",sig);
+        console.log("[Catalogue] auto-sync pushed",list.length,"products");
+      }catch(e){console.warn("[Catalogue] auto-sync failed:",e.message);}
+    }
+    const t=setTimeout(autoCatalogueSync,15000);             // once, after restore/boot settles
+    const id=setInterval(autoCatalogueSync,3*60*1000);       // then every 3 minutes
+    return ()=>{clearTimeout(t);clearInterval(id);};
+  },[]);
+
   // REAL-TIME KILL-SWITCH WATCHDOG
   //
   // Two different documents can switch a till off, and the admin panel writes
