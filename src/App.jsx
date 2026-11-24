@@ -5040,11 +5040,14 @@ function buildPresetHTML(order,license,zatcaInvoice,fmt,qrImgSrc,opts){
   // Optional: wrap the telephone line in a box (toggle: phoneInBox)
   const _phoneInner=`<div style="text-align:center;font-weight:900;font-size:${headFont}px;margin:3px 0">Telephone</div>`;
   const _phoneLine=(_isPhone&&!_superRcpt)?(fmt.phoneInBox?boxed(_phoneInner,true):_phoneInner):"";
-  const tokenBox=_phoneLine+boxed(_superRcpt
-    ? `<div style="text-align:center;font-weight:${wToken};font-size:${tokenFont}px">Token No: ${_escHTML(order.token||order.kot||"—")}</div>`
-    : `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span style="font-weight:${wToken};font-size:${tokenFont}px">Token No: ${_escHTML(order.token||order.kot||"—")}</span><span style="display:flex;align-items:center;gap:6px"><span style="font-weight:900;font-size:${tokenFont}px">${_escHTML(_typeEn)}</span>${_arSpan(orderTypeAr,"font-size:"+tokenFont+"px")}</span></div>`);
-  // Optional divider AFTER the Token box (toggle: lineAfterToken)
-  const lineAfterToken=fmt.lineAfterToken?SEP:"";
+  // Supermarket mode: no Token number on the receipt at all. Other modes keep
+  // the Token + order-type box.
+  const tokenBox=_superRcpt
+    ? ""
+    : _phoneLine+boxed(`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span style="font-weight:${wToken};font-size:${tokenFont}px">Token No: ${_escHTML(order.token||order.kot||"—")}</span><span style="display:flex;align-items:center;gap:6px"><span style="font-weight:900;font-size:${tokenFont}px">${_escHTML(_typeEn)}</span>${_arSpan(orderTypeAr,"font-size:"+tokenFont+"px")}</span></div>`);
+  // Optional divider AFTER the Token box (toggle: lineAfterToken) — skipped in
+  // supermarket mode since there is no Token box.
+  const lineAfterToken=(!_superRcpt&&fmt.lineAfterToken)?SEP:"";
   // ── VOUCHER ──
   const voucher=`<div style="text-align:center;font-size:${bodyFont}px;font-weight:${wMeta};margin:3px 0">Voucher No: ${_escHTML(order.voucher||order.id||"")}</div>`;
   // ── CUSTOMER (was missing entirely from the preset builder — now included) ──
@@ -5052,7 +5055,14 @@ function buildPresetHTML(order,license,zatcaInvoice,fmt,qrImgSrc,opts){
     ? `<div style="text-align:center;font-size:${bodyFont-1}px;font-weight:${wMeta};margin:2px 0;word-break:break-word">Customer: ${_escHTML([order.customer,order.customerPhone].filter(Boolean).join(" · "))}</div>`
     : "";
   // ── USER/DATE | PAYMENT/TIME ──
-  const metaGrid=`<div style="display:flex;justify-content:space-between;font-size:${bodyFont-1}px;font-weight:${wMeta};margin:3px 0;gap:8px">
+  // Supermarket mode drops User and Payment type — just Date / Time. Other modes
+  // keep the full User/Date | Payment/Time grid.
+  const metaGrid=_superRcpt
+    ? `<div style="display:flex;justify-content:space-between;font-size:${bodyFont-1}px;font-weight:${wMeta};margin:3px 0;gap:8px">
+    <div style="text-align:left"><div>Date: ${_escHTML(order.date||"")}</div></div>
+    <div style="text-align:right"><div>Time: ${_escHTML(order.time||"")}</div></div>
+  </div>`
+    : `<div style="display:flex;justify-content:space-between;font-size:${bodyFont-1}px;font-weight:${wMeta};margin:3px 0;gap:8px">
     <div style="text-align:left"><div>User: ${_escHTML(order.user||"admin")}</div><div>Date: ${_escHTML(order.date||"")}</div></div>
     <div style="text-align:right"><div>Payment: ${_escHTML(order.payMethod||"CASH")}</div><div>Time: ${_escHTML(order.time||"")}</div></div>
   </div>`;
