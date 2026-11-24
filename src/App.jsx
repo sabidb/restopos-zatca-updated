@@ -8297,8 +8297,7 @@ function InvoiceFormatTab({license,company,invoiceFormat,setInvoiceFormat}){
               ["showCategories","Group items by category"],
               ["showCustomer","Customer name"],
               ["showOrderType","Order type (Dine-in/Takeaway)"],
-              ["showArabicName","Arabic item names"],
-              ["hideEnglishName","Print Arabic only (hide English on the receipt)"],
+              ["showArabicName","Print Arabic item names"],
               ["boldItems","Bold item names"],
             ].map(([k,label])=>(
               <label key={k} style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"}}>
@@ -8312,6 +8311,22 @@ function InvoiceFormatTab({license,company,invoiceFormat,setInvoiceFormat}){
                 </div>
               </label>
             ))}
+            {/* English item names — stored as the inverse flag `hideEnglishName`,
+               shown here as a plain positive on/off so it's unmistakable. When
+               OFF, items with an Arabic name print Arabic only; an item that has
+               NO Arabic name still prints its English name (never blank). */}
+            {(()=>{const engOn=!fmt.hideEnglishName;return(
+              <label style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"}}>
+                <span style={{fontSize:12,color:C.text}}>Print English item names <span style={{fontSize:10,color:C.textLight}}>(off = Arabic only)</span></span>
+                <div onClick={()=>update("hideEnglishName",!fmt.hideEnglishName)}
+                  style={{width:40,height:22,borderRadius:11,background:engOn?C.primary:"#CBD5E0",
+                    position:"relative",transition:"background 0.2s",cursor:"pointer",flexShrink:0}}>
+                  <div style={{position:"absolute",top:2,left:engOn?20:2,width:18,height:18,
+                    borderRadius:"50%",background:"#fff",transition:"left 0.2s",
+                    boxShadow:"0 1px 3px rgba(0,0,0,0.2)"}}/>
+                </div>
+              </label>
+            );})()}
           </div>
         </Card>
 
@@ -18294,9 +18309,11 @@ function ZATCAVatEngine({lang="en"}) {
   const autoSalesTx = useMemo(() => {
     let closed = [];
     try { closed = (typeof LS!=="undefined" && LS.get && LS.get("restopos_closed_days")) || []; } catch(_) {}
-    return closed
+    const closedDates = new Set();
+    const fromClosed = closed
       .filter(d => d && typeof d.date === "string" && d.date.slice(0,7) === period) // YYYY-MM match
       .map(d => {
+        closedDates.add(d.date);
         const gross = Number(d.revenue) || 0;     // total incl. VAT
         const vat   = Number(d.vat) || 0;          // VAT collected that day
         const net   = vatR2(gross - vat);
@@ -18313,6 +18330,44 @@ function ZATCAVatEngine({lang="en"}) {
           addedAt   : d.closedAt || d.closeTime || new Date().toISOString(),
         };
       });
+
+    // Live daily sales for days NOT yet formally closed, so the VAT estimate
+    // reflects real takings even before a Close Day is run (previously output VAT
+    // was zero until the day was closed, which made the return look like a refund).
+    // ZATCA output VAT = VAT on taxable SUPPLIES: only COMPLETED sales count — a
+    // voided sale never happened, and a refunded sale's VAT is reversed by its
+    // credit note, so both are excluded (figure is net of same-period refunds).
+    let sales = [];
+    try { sales = (typeof LS!=="undefined" && LS.get && LS.get("restopos_sales")) || []; } catch(_) {}
+    const byDate = {};
+    for (const s of sales) {
+      if (!s || typeof s.date !== "string") continue;
+      if (s.date.slice(0,7) !== period) continue;         // same month
+      if (closedDates.has(s.date)) continue;              // Close-Day snapshot wins (no double count)
+      if (s.status && s.status !== "completed") continue; // skip voided / refunded
+      const g = Number(s.total) || 0, v = Number(s.vat) || 0;
+      const o = byDate[s.date] || (byDate[s.date] = { gross:0, vat:0, n:0 });
+      o.gross += g; o.vat += v; o.n += 1;
+    }
+    const fromLive = Object.keys(byDate).map(date => {
+      const o = byDate[date];
+      return {
+        id        : `live-${date}`,
+        date,
+        type      : "SALE",
+        category  : "STANDARD",
+        description: `Daily sales (live) — ${o.n} order${o.n===1?"":"s"}`,
+        net       : vatR2(o.gross - o.vat),
+        vat       : vatR2(o.vat),
+        gross     : vatR2(o.gross),
+        inclVAT   : true,
+        invoiceRef: "LIVE",
+        auto      : true,
+        addedAt   : new Date().toISOString(),
+      };
+    });
+
+    return [...fromClosed, ...fromLive];
   }, [period, transactions]); // transactions dep so a re-render after edits refreshes too
 
   // Captured purchase documents → recoverable input-VAT entries (opt-in).
