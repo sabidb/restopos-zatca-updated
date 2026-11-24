@@ -16507,7 +16507,11 @@ async function renderReceiptToPNG(html, hintWidthPx){
     const svgUrl = "data:image/svg+xml;charset=utf-8,"+encodeURIComponent(svg);
     const im = new Image();
     await new Promise((res,rej)=>{ im.onload=res; im.onerror=()=>rej(new Error("svg render failed")); im.src=svgUrl; });
-    const scale = 3; // oversample so thermal output stays crisp
+    // The image is downscaled by QZ to the ~576-dot 80mm head regardless, so
+    // oversampling past ~2x only inflates the PNG encode + websocket transfer
+    // (the main source of slow printing) with no gain in printed sharpness.
+    // Was 3; drop to 2 for a much faster encode. Use 1 for maximum speed.
+    const scale = 2; // render near head resolution — fast encode, same print quality
     const canvas = document.createElement("canvas");
     canvas.width = w*scale; canvas.height = h*scale;
     const ctx = canvas.getContext("2d");
