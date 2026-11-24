@@ -244,6 +244,96 @@ export const verifyLogin = onCall({ cors: true, region: "us-central1" }, async (
   };
 });
 
+// ── Admin device approval / denial / revocation (server-authoritative) ────
+//
+// A device gains data access ONLY when its Firebase uid is on the license's
+// authUids allowlist. This used to be done by the admin panel writing authUids
+// directly, guarded in the browser by `if (device.uid) ...`. When a pending
+// entry carried no uid (an older client build, or a device that never finished
+// signing in), that guard silently skipped: the device was added to
+// approvedDevices (so the panel showed "approved") while authUids never
+// changed, and the device loaded forever.
+//
+// This settles the whole operation here, on the Admin SDK, in one transaction:
+//   - approve: move the device pending→approved AND add its uid to authUids,
+//     refusing LOUDLY if the uid is unknown (so it can never "approve" a device
+//     it cannot actually grant access to).
+//   - deny:    drop it from pendingDevices.
+//   - revoke:  drop it from approvedDevices AND pull its uid from authUids
+//              (unless another approved device shares that same uid).
+export const adminDeviceAction = onCall({ cors: true, region: "us-central1" }, async (req) => {
+  if (!req.auth) throw new HttpsError("unauthenticated", "Sign-in required.");
+  const isAdmin = req.auth.token?.email === ADMIN_EMAIL && req.auth.token?.email_verified;
+  if (!isAdmin) throw new HttpsError("permission-denied", "Admin only.");
+
+  const action = String(req.data?.action || "").trim();
+  const licenseKey = String(req.data?.licenseKey || "").trim().toUpperCase();
+  const deviceId = String(req.data?.deviceId || "").trim();
+  if (!licenseKey || !deviceId) {
+    throw new HttpsError("invalid-argument", "licenseKey and deviceId are required.");
+  }
+  if (!["approve", "deny", "revoke"].includes(action)) {
+    throw new HttpsError("invalid-argument", "Unknown action.");
+  }
+
+  const ref = db.collection("pending_activations").doc(licenseKey);
+  const match = (d) => devId(d) === deviceId;
+  const uidOf = (d) => (d && typeof d === "object" ? d.uid : undefined);
+
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new HttpsError("not-found", "License not found.");
+    const data = snap.data() || {};
+    const pending = Array.isArray(data.pendingDevices) ? data.pendingDevices : [];
+    const approved = Array.isArray(data.approvedDevices) ? data.approvedDevices : [];
+    const authUids = Array.isArray(data.authUids) ? data.authUids : [];
+
+    if (action === "approve") {
+      const pendingEntry = pending.find(match);
+      const approvedEntry = approved.find(match);
+      const uid = uidOf(pendingEntry) || uidOf(approvedEntry) || null;
+      if (!uid) {
+        throw new HttpsError(
+          "failed-precondition",
+          "This device hasn't finished signing in yet, so it can't be granted access. " +
+            "Ask the client to open the POS and log in once (the request will reappear here), then approve."
+        );
+      }
+      const label = (pendingEntry && pendingEntry.label) || (approvedEntry && approvedEntry.label) || "Device";
+      const now = new Date().toISOString();
+      const nextApproved = approved.some(match)
+        ? approved.map((d) => (match(d)
+            ? { ...(typeof d === "string" ? { id: d } : d), id: deviceId, uid, label, approvedAt: (typeof d === "object" && d.approvedAt) || now }
+            : d))
+        : [...approved, { id: deviceId, uid, label, approvedAt: now }];
+      const nextAuthUids = authUids.includes(uid) ? authUids : [...authUids, uid];
+      tx.update(ref, {
+        approvedDevices: nextApproved,
+        pendingDevices: pending.filter((d) => !match(d)),
+        authUids: nextAuthUids,
+      });
+      return { ok: true, action, granted: true };
+    }
+
+    if (action === "deny") {
+      tx.update(ref, { pendingDevices: pending.filter((d) => !match(d)) });
+      return { ok: true, action };
+    }
+
+    // revoke
+    const uid = uidOf(approved.find(match)) || null;
+    const update = { approvedDevices: approved.filter((d) => !match(d)) };
+    if (uid) {
+      // Keep the uid on the allowlist if another approved device still uses it
+      // (same physical machine re-approved under one anonymous uid).
+      const sharedByAnother = approved.some((d) => !match(d) && uidOf(d) === uid);
+      if (!sharedByAnother) update.authUids = authUids.filter((u) => u !== uid);
+    }
+    tx.update(ref, update);
+    return { ok: true, action };
+  });
+});
+
 // Sets or updates a client's login credentials for a license, hashing the
 // password server-side with bcrypt. The browser never computes or writes the
 // password hash directly. Authorization:
