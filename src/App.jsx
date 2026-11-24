@@ -2191,15 +2191,25 @@ function getDeviceInfo(){
   const browser=ua.includes("Chrome")?"Chrome":ua.includes("Firefox")?"Firefox":ua.includes("Safari")?"Safari":ua.includes("Edge")?"Edge":"Other";
   return{brand,os,browser,userAgent:ua.slice(0,120),screenW:screen.width,screenH:screen.height};
 }
-const APP_VERSION="v29.14.16";
-const APP_VERSION_FULL="RestoPOS v29.14.16 · ZATCA Phase 2";
+const APP_VERSION="v29.14.17";
+const APP_VERSION_FULL="RestoPOS v29.14.17 · ZATCA Phase 2";
 
 // ── Changelog — add a new entry here with every release ──────────
 const CHANGELOG=[
   {
-    version:"v29.14.16",
+    version:"v29.14.17",
     date:"24 Nov 2026",
     badge:"Latest",
+    badgeColor:"#10b981",
+    notes:[
+      "🧾 A purchase invoice now stores the supplier's VAT & CR number on the document itself, so the input-VAT record keeps the supplier's tax identity even if the supplier is later edited or deleted.",
+      "✏️ Suppliers are now editable — an Edit button on each supplier opens the form to update its VAT number, CR, address and contact details.",
+      "➕ New ＋ button next to the supermarket scan box: type a quantity then tap ＋ to set the last scanned item's quantity (or ＋ alone adds one). The scan box itself still only retrieves items.",
+    ]
+  },
+  {
+    version:"v29.14.16",
+    date:"24 Nov 2026",
     badgeColor:"#10b981",
     notes:[
       "🏭 Suppliers now capture a VAT number (15-digit, validated), CR number and address — shown in the Suppliers list and when recording a purchase invoice, so your input-VAT records carry the supplier's tax details.",
@@ -5484,10 +5494,10 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     else showN("⚠️ Couldn't auto-translate — type the Arabic name");
   }
   const posCats=(LS.get("restopos_categories")||[...new Set(items.map(i=>i.category).filter(Boolean))]);
-  // Id of the line a scan/tap last dropped into the cart. A bare number typed in
-  // the scan box (no qty-box tap) SETS this line's quantity — see submitScanBox.
-  const lastLineRef=useRef(null);
   function focusScanner(){setTimeout(()=>barcodeRef.current?.focus(),60);}
+  // Id of the line a scan/tap last dropped into the cart — the target for the ＋
+  // quantity button (type a number then ＋ sets that line's qty; ＋ alone +1s it).
+  const lastLineRef=useRef(null);
   // Switch to one of the 5 parked bills. Each bill's cart already lives in
   // `bills`, so we only clear the transient per-screen selection/edit state and
   // move the active pointer — the parked cart reappears exactly as it was left.
@@ -5495,6 +5505,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     if(i===activeBill)return;
     setEditPriceIdx(null);setEditPriceVal("");
     setSelectedRow(null);setDescModalIdx(null);
+    lastLineRef.current=null;
     setActiveBill(i);
     focusScanner();
   }
@@ -5653,6 +5664,28 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   function submitScanBox(){
     const raw=String(barcodeInput||"").trim();
     if(raw) handleBarcodeSearch(raw);
+  }
+  // ＋ quantity button: a typed number SETS the last scanned line's quantity
+  // (type 5 then ＋ → ×5; 0 removes it); ＋ with an empty box just +1s that line.
+  // This is the only way a number touches quantity — the scan box itself always
+  // retrieves an item, so numeric barcodes are never misread as a quantity.
+  function applyQtyPlus(){
+    const raw=String(barcodeInput||"").trim();
+    const targetId=lastLineRef.current;
+    if(targetId==null||!cart.some(c=>c.id===targetId&&!c.weighed&&!c.priceEdited)){
+      showN("Scan an item first"); focusScanner(); return;
+    }
+    if(raw!==""&&!/^\d{1,3}$/.test(raw)){ showN("Type a whole number for qty"); return; }
+    const q=raw===""?null:parseInt(raw,10);
+    setCart(prev=>{
+      const i=prev.findIndex(c=>c.id===targetId&&!c.weighed&&!c.priceEdited);
+      if(i<0)return prev;
+      if(q===0){lastLineRef.current=null;return prev.filter((_,x)=>x!==i);}
+      return prev.map((c,x)=>x===i?{...c,qty:q==null?c.qty+1:q}:c);
+    });
+    setBarcodeInput("");
+    showN(q===0?"✕ Line removed":"✎ Qty "+(q==null?"+1":q));
+    focusScanner();
   }
   async function confirmPayment(method,given,change,promo,totalDiscountAmt,finalTotal,finalVat,printAndSave,payInfo,manualDiscountAmt,promoDiscountAmt,isDraft=false,extraData={}){
     // ── Invoice numbering ────────────────────────────────────────────
@@ -6145,11 +6178,14 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   const quickItems=items.filter(i=>i.active&&favourites.includes(i.id));
   const weighedItems=items.filter(i=>i.active&&i.weighed);
   const superScanBar=(
-    <input ref={barcodeRef} value={barcodeInput}
-      onChange={e=>setBarcodeInput(e.target.value)}
-      onKeyDown={e=>{if(e.key==="Enter"&&barcodeInput.trim())submitScanBox();}}
-      placeholder={priceCheck?"🔍 Price check — scan to view":"🔲 Scan barcode or type code…"}
-      style={{flex:1,minWidth:0,padding:"12px 16px",border:`2px solid ${priceCheck?C.warning:C.primary}`,borderRadius:10,fontSize:16,fontWeight:600,fontFamily:"inherit",background:"#fff",color:C.text}}/>
+    <div style={{display:"flex",gap:8,flex:1,minWidth:0}}>
+      <input ref={barcodeRef} value={barcodeInput}
+        onChange={e=>setBarcodeInput(e.target.value)}
+        onKeyDown={e=>{if(e.key==="Enter"&&barcodeInput.trim())submitScanBox();}}
+        placeholder={priceCheck?"🔍 Price check — scan to view":"🔲 Scan barcode or type code…"}
+        style={{flex:1,minWidth:0,padding:"12px 16px",border:`2px solid ${priceCheck?C.warning:C.primary}`,borderRadius:10,fontSize:16,fontWeight:600,fontFamily:"inherit",background:"#fff",color:C.text}}/>
+      {!priceCheck&&<button onClick={applyQtyPlus} title="Set the last scanned item's quantity to the typed number (or ＋1 if empty)" style={{flexShrink:0,width:52,borderRadius:10,border:`2px solid ${C.primary}`,background:C.primaryLight,color:C.primary,fontSize:24,fontWeight:900,cursor:"pointer",fontFamily:"inherit",lineHeight:1}}>＋</button>}
+    </div>
   );
   // 5 parallel bill tabs — park one customer's cart and serve another, then tap
   // back. Active tab is solid; a tab holding items is tinted so the cashier can

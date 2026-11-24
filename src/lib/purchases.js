@@ -85,6 +85,11 @@ export function computePurchaseInvoice(inv = {}) {
     docType: normDocType(inv.docType),
     supplierId: inv.supplierId ?? null,
     supplierName: String(inv.supplierName ?? "").trim(),
+    // Supplier tax identity captured at entry time — kept on the document so the
+    // input-VAT record carries the supplier's VAT/CR even if the supplier is
+    // later edited or deleted.
+    supplierVatNumber: String(inv.supplierVatNumber ?? "").trim(),
+    supplierCrNumber: String(inv.supplierCrNumber ?? "").trim(),
     supplierInvoiceNo: String(inv.supplierInvoiceNo ?? "").trim(),
     supplierInvoiceNoNorm: normInvoiceNo(inv.supplierInvoiceNo),
     invoiceDate: inv.invoiceDate ?? null,
