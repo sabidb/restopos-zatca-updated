@@ -8865,21 +8865,35 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
     const item={...itemForm,name:(itemForm.name||"").trim(),nameAr:(itemForm.nameAr||"").trim(),price:parseFloat(itemForm.price),cost:parseFloat(itemForm.cost||0),stock:parseInt(itemForm.stock||0),id:editItem?editItem.id:Date.now()};
     setItems(prev=>editItem?prev.map(i=>i.id===editItem.id?item:i):[...prev,item]);setShowItemModal(false);
   }
-  // Bulk auto-translate: fill only the MISSING side for every item (English→Arabic
-  // when Arabic is blank, Arabic→English when English is blank). Never touches a
-  // name that is already present, so re-running is safe. Throttled so the free
-  // translation endpoint isn't hammered; saved to the catalogue when done.
+  // Decide what one item needs. Returns null (nothing) or {field,from} where
+  // `field` is the field to (re)write and `from` the source text to translate.
+  //  • English field holds Arabic (the classic bad import) → translate it to
+  //    English and REPLACE the English field; the real Arabic stays in nameAr.
+  //  • English only, no Arabic → fill Arabic.
+  //  • Arabic only, no English → fill English.
+  function _txPlan(it){
+    const en=String(it.name||"").trim(), ar=String(it.nameAr||"").trim();
+    if(en&&looksArabic(en)) return {field:"name", from:(ar||en), keepAr:!ar?en:null}; // Arabic in the EN slot → make English from the Arabic
+    if(en&&!ar) return {field:"nameAr", from:en};   // fill missing Arabic
+    if(!en&&ar) return {field:"name", from:ar};     // fill missing English
+    return null;
+  }
+  // Bulk auto-translate across the catalogue. Fills a missing side AND fixes the
+  // common bad import where Arabic was saved in BOTH name slots: it replaces the
+  // English field with a real English translation while keeping the Arabic in
+  // nameAr. A name that is already correct (proper English + proper Arabic) is
+  // left untouched, so re-running is safe. Throttled; saved when done.
   async function runBulkTranslate(){
     if(bulkTx&&bulkTx.running)return;
-    const targets=items.filter(it=>{const en=!!String(it.name||"").trim(),ar=!!String(it.nameAr||"").trim();return (en&&!ar)||(ar&&!en);});
-    if(targets.length===0){alert("Every item already has both an English and an Arabic name. (Items that already have both are left untouched.)");return;}
-    if(!window.confirm(`Auto-translate ${targets.length} item(s)?\n\nThis fills only the missing side — it never changes a name you already typed. It uses an online translator, so it needs internet and may take a while for a large list. You can keep working; changes save when it finishes.`))return;
+    const targets=items.filter(it=>!!_txPlan(it));
+    if(targets.length===0){alert("Nothing to translate — every item already has a proper English and Arabic name.");return;}
+    if(!window.confirm(`Auto-translate ${targets.length} item(s)?\n\nThis fills a missing English/Arabic name, and where Arabic was saved in the English field it replaces that with a real English translation (the Arabic name is kept). Names that are already correct are left alone.\n\nIt uses an online translator, so it needs internet and may take a while for a large list. You can keep working; changes save when it finishes.`))return;
     setBulkTx({running:true,done:0,total:targets.length,filled:0,failed:0});
     const updates=new Map(); let done=0,filled=0,failed=0;
     for(const it of targets){
-      const hasEn=!!String(it.name||"").trim();
-      let out=""; try{ out=hasEn?await translateEnToAr(it.name):await translateArToEn(it.nameAr); }catch(_){}
-      if(out){updates.set(it.id,hasEn?{nameAr:out}:{name:out});filled++;}else failed++;
+      const plan=_txPlan(it);
+      let out=""; try{ out=plan.field==="name"?await translateArToEn(plan.from):await translateEnToAr(plan.from); }catch(_){}
+      if(out){const patch={[plan.field]:out};if(plan.keepAr)patch.nameAr=plan.keepAr;updates.set(it.id,patch);filled++;}else failed++;
       done++; setBulkTx({running:true,done,total:targets.length,filled,failed});
       await new Promise(r=>setTimeout(r,250)); // be gentle on the free endpoint
     }
@@ -17456,7 +17470,7 @@ export default function App(){
   }
   function handleClearLicense(){LS.del("restopos_license_v2");LS.del("restopos_pins");setLicense(null);setCurrentUser(null);setStep("register");}
   function handleSwitchAccount(){LS.del("restopos_license_v2");LS.del("restopos_client_creds");setLicense(null);setCurrentUser(null);setStep("register");}
-  const ALL_NAV=[["dashboard","📊","Dashboard",["Admin","Manager"]],["pos","🖥️","POS",["Admin","Manager","Cashier"]],["settings","⚙️","Settings",["Admin"]],["create","➕","Create",["Admin","Manager"]],["transactions","💳","Transactions",["Admin","Manager"]],["financials","🏦","Financials",["Admin","Manager"]],["customers","👥","CRM",["Admin","Manager"]],["reports","📋","Reports",["Admin","Manager"]],["advanced","⚡","Advanced",["Admin","Manager"]],["inventory","📦","Inventory",["Admin","Manager"]],["vat","🧾","VAT",["Admin","Manager"]],["shifts","🔄","Shifts",["Admin","Manager"]],["help","❓","Help",["Admin","Manager","Cashier"]]];
+  const ALL_NAV=[["dashboard","📊","Dashboard",["Admin","Manager"]],["pos","🖥️","POS",["Admin","Manager","Cashier"]],["settings","⚙️","Settings",["Admin"]],["create","➕","Create",["Admin","Manager"]],["transactions","💳","Transactions",["Admin","Manager"]],["purchases","🧾","Purchases",["Admin","Manager"]],["financials","🏦","Financials",["Admin","Manager"]],["customers","👥","CRM",["Admin","Manager"]],["reports","📋","Reports",["Admin","Manager"]],["advanced","⚡","Advanced",["Admin","Manager"]],["inventory","📦","Inventory",["Admin","Manager"]],["vat","🧾","VAT",["Admin","Manager"]],["shifts","🔄","Shifts",["Admin","Manager"]],["help","❓","Help",["Admin","Manager","Cashier"]]];
   const NAV=ALL_NAV.filter(([,,,roles])=>currentUser&&roles.includes(currentUser.role));
   const biz=bizProfile(license);
   const superMode=biz.nav==="sidebar"; // sidebar-style types get the ☰ drawer + quick tabs
@@ -17467,7 +17481,8 @@ export default function App(){
   const SUPER_LABELS=biz.navLabels||{}; // per-type wording overrides (e.g. supermarket: Create → Products)
   const SUPER_GROUPS=[
     ["Sell","🛒",["pos","transactions"]],
-    ["Catalogue","🏷️",["create","inventory"]],
+    ["Buy","🧾",["purchases","inventory"]],
+    ["Catalogue","🏷️",["create"]],
     ["Reports","📈",["dashboard","reports","financials","vat"]],
     ["Customers","👥",["customers"]],
     ["Manage","⚙️",["shifts","advanced","settings","help"]],
@@ -17731,6 +17746,9 @@ export default function App(){
         {screen==="inventory"&&(canUse(license,"inventory")
           ?<InventoryManagement items={items} setItems={setItems} lang={lang}/>
           :<UpgradeWall feature="Inventory Management" requiredPlanName={SUBSCRIPTION_PLANS[reqPlanFor("inventory")]?.name||"Professional"} planColor={SUBSCRIPTION_PLANS[reqPlanFor("inventory")]?.color} note="Inventory tracking, stock alerts and supplier management come with the Professional plan. Upgrade anytime from Help → Support — it switches on instantly." onUpgrade={()=>setScreen("help")}/>)}
+        {screen==="purchases"&&(canUse(license,"inventory")
+          ?<InventoryManagement items={items} setItems={setItems} lang={lang} initialTab="purchases"/>
+          :<UpgradeWall feature="Purchases" requiredPlanName={SUBSCRIPTION_PLANS[reqPlanFor("inventory")]?.name||"Professional"} planColor={SUBSCRIPTION_PLANS[reqPlanFor("inventory")]?.color} note="Purchase invoices, suppliers and goods receipt come with the Professional plan. Upgrade anytime from Help → Support — it switches on instantly." onUpgrade={()=>setScreen("help")}/>)}
         {screen==="vat"&&<ZATCAVatEngine lang={lang}/>}
         {/* Backup moved into Settings → Backup tab; Users moved into Advanced → Users tab */}
         {screen==="shifts"&&<ShiftManager sales={allSales} currentUser={currentUser} lang={lang}/>}

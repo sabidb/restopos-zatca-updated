@@ -20,9 +20,9 @@ import { postReceiptToStock } from "../lib/costing.js";
 import { loadPurchaseOrders, savePurchaseOrder, deletePurchaseOrder } from "../lib/poStore.js";
 import { findByBarcode } from "../lib/barcode.js";
 
-export function InventoryManagement({items,setItems,lang="en"}){
+export function InventoryManagement({items,setItems,lang="en",initialTab="overview"}){
   const _t=s=>t(s,lang);
-  const [tab,setTab]=useState("overview");
+  const [tab,setTab]=useState(initialTab);
   const [search,setSearch]=useState("");
   const [lowThreshold,setLowThreshold]=useState(()=>parseInt(localStorage.getItem("restopos_low_stock_threshold")||"10"));
   const [movements,setMovements]=useState(()=>LS.get("restopos_stock_movements")||[]);
