@@ -8854,7 +8854,16 @@ function Create({items,setItems,promos,setPromos,lang="en"}){
     setTranslating(true);setTranslateError("");
     const out=await(dir==="toAr"?translateEnToAr(src):translateArToEn(src));
     setTranslating(false);
-    if(out)setItemForm(f=>dir==="toAr"?{...f,nameAr:out}:{...f,name:out});
+    if(out){
+      setItemForm(f=>dir==="toAr"?{...f,nameAr:out}:{...f,name:out});
+      // Auto-save the translation onto an existing product immediately, so a
+      // translated name is never lost by closing the form without pressing Save.
+      // (A brand-new item has no id/price yet; it saves normally on "Save Item".)
+      if(editItem){
+        const field=dir==="toAr"?"nameAr":"name";
+        setItems(prev=>prev.map(i=>i.id===editItem.id?{...i,[field]:out}:i));
+      }
+    }
     else setTranslateError("Could not translate — type it manually.");
   }
   function saveItem(){
@@ -13955,26 +13964,53 @@ function CloudSyncStatus(){
   async function manualSync(){
     const lic=LS.get("restopos_license_v2")?.licenseKey;if(!lic)return;
     setSyncing(true);
+    let catalogueCount=0;
     try{
       await Promise.all(SYNC_KEYS.map(async key=>{
         const val=localStorage.getItem(key);
         if(val){try{await syncKeyToFirestore(lic,key,JSON.parse(val));}catch(e){}}
       }));
+      // The product catalogue can exceed the 350 KB client_data blob cap (a large
+      // supermarket), after which restopos_items silently stops reaching the cloud
+      // and never restores onto another till. Push every product into the
+      // per-product catalogue subcollection and switch this licence to
+      // subcollection mode, so "Sync Now" reliably backs up the full catalogue.
+      try{
+        const localItems=LS.get("restopos_items")||[];
+        setCatalogueLicense(lic);
+        await backfillCatalogue(localItems);
+        setCatalogueSubEnabled(true);
+        catalogueCount=localItems.length;
+      }catch(e){console.warn("[Catalogue] sync backfill failed:",e.message);}
       const now=new Date().toLocaleString("en-SA");
       localStorage.setItem("restopos_last_cloud_sync",now);setLastSync(now);
     }catch(e){}
     setSyncing(false);
     const now2=new Date().toLocaleString("en-SA");
     localStorage.setItem("restopos_last_cloud_sync",now2);setLastSync(now2);
-    alert("✅ All data synced to cloud successfully!");
+    alert(`✅ All data synced to cloud successfully!${catalogueCount?`\n${catalogueCount} products backed up — they will now restore on your other devices.`:""}`);
   }
   async function restoreNow(){
     const lic=LS.get("restopos_license_v2")?.licenseKey;if(!lic)return;
     if(!confirm("Restore all data from cloud? This will overwrite current local data."))return;
     setSyncing(true);
-    const restored=await restoreFromFirestore(lic);setSyncing(false);
-    if(restored){
-      alert("✅ Data restored from cloud! Reloading app now...");
+    const restored=await restoreFromFirestore(lic);
+    // Also pull the product catalogue from the per-product subcollection, which
+    // holds the full list when it was too big for the client_data blob. This is
+    // what lets "Restore from Cloud" retrieve every product onto another till.
+    let catalogueCount=0;
+    try{
+      setCatalogueLicense(lic);
+      const cloudItems=await loadCatalogueCloud();
+      if(cloudItems&&cloudItems.length){
+        LS.set("restopos_items",cloudItems);
+        setCatalogueSubEnabled(true);
+        catalogueCount=cloudItems.length;
+      }
+    }catch(e){console.warn("[Catalogue] restore failed:",e.message);}
+    setSyncing(false);
+    if(restored||catalogueCount){
+      alert(`✅ Data restored from cloud${catalogueCount?` — ${catalogueCount} products`:""}! Reloading app now...`);
       setTimeout(()=>window.location.reload(),500);
     }else{
       alert("⚠️ No cloud backup found for this license key. Make sure you're using the same license key that was previously synced.");
@@ -17080,6 +17116,37 @@ export default function App(){
         await reclaimLegacySessionFields(lk);
       }catch(e){console.warn("[Sessions] sync failed:",e.message);}
     },11000);
+  },[]);
+
+  // ── Automatic catalogue cloud-sync ──────────────────────────────────────────
+  // A large catalogue (e.g. a supermarket) overflows the 350 KB client_data blob,
+  // so the product list must live in the per-product catalogue subcollection.
+  // Switch that mode on automatically once the catalogue is sizeable, push the
+  // full list once, then re-check every few minutes and push again whenever the
+  // catalogue has changed — so a bulk import/delete is backed up without anyone
+  // tapping "Sync Now". (Single product edits already persist live via setItems
+  // when the mode is on; this is the auto-enable plus the periodic safety net.)
+  useEffect(()=>{
+    const lic=LS.get("restopos_license_v2")?.licenseKey;
+    if(!lic)return;
+    setCatalogueLicense(lic);
+    const ENABLE_AT_BYTES=250*1024; // switch on before the ~350 KB per-key cap bites
+    async function autoCatalogueSync(){
+      try{
+        const list=LS.get("restopos_items")||[];
+        const bytes=JSON.stringify(list).length;
+        if(!catalogueSubOn()&&bytes>ENABLE_AT_BYTES)setCatalogueSubEnabled(true);
+        if(!catalogueSubOn())return;                         // small catalogue still fits the blob
+        const sig=list.length+":"+bytes;                     // cheap change-detector
+        if(sig===LS.get("restopos_catalogue_synced_sig"))return; // nothing pending since last push
+        await backfillCatalogue(list);
+        LS.set("restopos_catalogue_synced_sig",sig);
+        console.log("[Catalogue] auto-sync pushed",list.length,"products");
+      }catch(e){console.warn("[Catalogue] auto-sync failed:",e.message);}
+    }
+    const t=setTimeout(autoCatalogueSync,15000);             // once, after restore/boot settles
+    const id=setInterval(autoCatalogueSync,3*60*1000);       // then every 3 minutes
+    return ()=>{clearTimeout(t);clearInterval(id);};
   },[]);
 
   // REAL-TIME KILL-SWITCH WATCHDOG
