@@ -2191,15 +2191,25 @@ function getDeviceInfo(){
   const browser=ua.includes("Chrome")?"Chrome":ua.includes("Firefox")?"Firefox":ua.includes("Safari")?"Safari":ua.includes("Edge")?"Edge":"Other";
   return{brand,os,browser,userAgent:ua.slice(0,120),screenW:screen.width,screenH:screen.height};
 }
-const APP_VERSION="v29.14.13";
-const APP_VERSION_FULL="RestoPOS v29.14.13 · ZATCA Phase 2";
+const APP_VERSION="v29.14.14";
+const APP_VERSION_FULL="RestoPOS v29.14.14 · ZATCA Phase 2";
 
 // ── Changelog — add a new entry here with every release ──────────
 const CHANGELOG=[
   {
-    version:"v29.14.13",
+    version:"v29.14.14",
     date:"24 Nov 2026",
     badge:"Latest",
+    badgeColor:"#10b981",
+    notes:[
+      "🌐 Instant “New product” on the till now has an Arabic name field with a 🌐 Auto button that auto-translates the English name to Arabic.",
+      "🔢 Item quantity on the scan till is now editable — tap the number and type the quantity directly (the + / − buttons still work).",
+      "➖ “Divider line between each item” now works in every Preset Bill style (not just Style 5) and prints a tight, thin line with minimal spacing.",
+    ]
+  },
+  {
+    version:"v29.14.13",
+    date:"24 Nov 2026",
     badgeColor:"#10b981",
     notes:[
       "🧾 Preset Bills preview now shows ONLY your registered business — removed the sample “Broast Al-Bahr” demo data that used to appear as a default.",
@@ -5123,8 +5133,10 @@ function buildPresetHTML(order,license,zatcaInvoice,fmt,qrImgSrc,opts){
   const itemFontEn=parseInt(fmt.itemFontEn)||bodyFont;
   const itemFontAr=parseInt(fmt.itemFontAr)||bodyFont;
   const itemNameGap=fmt.itemNameGap!==undefined?parseInt(fmt.itemNameGap):3;
-  const itemDividerOn=style==="s5"&&!!fmt.itemDivider;
-  const itemDividerHTML=`<div style="border-top:1px dashed #000;margin:${Math.max(2,lineGap)}px 0"></div>`;
+  // Optional thin line between every item — works in ALL styles. Kept tight
+  // (minimal margin) so items stay close together.
+  const itemDividerOn=!!fmt.itemDivider;
+  const itemDividerHTML=`<div style="border-top:1px dashed #000;margin:2px 0"></div>`;
   const rows=items.map((it,idx)=>{
     let ar="",en="";
     if(style==="s5"){
@@ -5344,6 +5356,23 @@ function printDraftReceipt(order,license){
 // ═══════════════════════════════════════════════════════════════════
 // POS SCREEN
 // ═══════════════════════════════════════════════════════════════════
+// Auto-translate English → Arabic for quick product entry. Uses free public
+// endpoints from the client's browser (Google first, MyMemory as fallback);
+// returns "" if both fail so the cashier can type the Arabic name by hand.
+async function translateEnToAr(text){
+  const q=String(text||"").trim();
+  if(!q) return "";
+  try{
+    const r=await fetch("https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=ar&dt=t&q="+encodeURIComponent(q));
+    if(r.ok){ const d=await r.json(); const t=((d&&d[0])||[]).map(x=>x&&x[0]).filter(Boolean).join(""); if(t) return t; }
+  }catch(_e){}
+  try{
+    const r=await fetch("https://api.mymemory.translated.net/get?q="+encodeURIComponent(q)+"&langpair=en|ar");
+    if(r.ok){ const d=await r.json(); const t=d&&d.responseData&&d.responseData.translatedText; if(t&&!/^MYMEMORY/i.test(t)) return t; }
+  }catch(_e){}
+  return "";
+}
+
 function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang="en",currentUser=null}){
   const allCats=[...new Set(items.map(i=>i.category))];
   const [activeCat,setActiveCat]=useState("ALL");const [cart,setCart]=useState([]);const [orderType,setOrderType]=useState("takeaway");const [selectedTable,setSelectedTable]=useState(null);const [billType,setBillType]=useState("normal");
@@ -5372,14 +5401,24 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   const [weighItem,setWeighItem]=useState(null);const [weighKg,setWeighKg]=useState("");
   const [scannedItem,setScannedItem]=useState(null);const [scanMiss,setScanMiss]=useState("");
   const [priceCheck,setPriceCheck]=useState(false); // scan-to-view-only (customer-facing)
-  const [newProd,setNewProd]=useState(null); // {barcode,name,price,category,weighed} for quick create
+  const [newProd,setNewProd]=useState(null); // {barcode,name,nameAr,price,category,weighed} for quick create
+  const [translating,setTranslating]=useState(false);
+  async function autoTranslateNewProd(){
+    const nm=(newProd&&newProd.name||"").trim();
+    if(!nm){showN("❌ Type the product name first");return;}
+    setTranslating(true);
+    const ar=await translateEnToAr(nm);
+    setTranslating(false);
+    if(ar) setNewProd(p=>p?{...p,nameAr:ar}:p);
+    else showN("⚠️ Couldn't auto-translate — type the Arabic name");
+  }
   const posCats=(LS.get("restopos_categories")||[...new Set(items.map(i=>i.category).filter(Boolean))]);
   function focusScanner(){setTimeout(()=>barcodeRef.current?.focus(),60);}
   function saveNewProduct(){
     const p=newProd; const price=parseFloat(p.price);
     if(!p.name.trim()){showN("❌ Enter a name");return;}
     if(!(price>0)){showN("❌ Enter a price");return;}
-    const item={id:Date.now()+Math.random(),name:p.name.trim(),nameAr:"",category:p.category||posCats[0]||"General",price,cost:0,stock:0,active:true,barcode:(p.barcode||"").trim(),weighed:!!p.weighed};
+    const item={id:Date.now()+Math.random(),name:p.name.trim(),nameAr:(p.nameAr||"").trim(),category:p.category||posCats[0]||"General",price,cost:0,stock:0,active:true,barcode:(p.barcode||"").trim(),weighed:!!p.weighed};
     setItems&&setItems(prev=>[...prev,item]);
     setNewProd(null); showN("✅ Product created"); focusScanner();
     if(!priceCheck) addToCart(item);
@@ -6050,7 +6089,12 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
         <div style={{fontSize:11,color:C.textMid,width:74,textAlign:"right",paddingRight:8}}>{fmtSAR(item.price)}{item.weighed?"/kg":""}</div>
         <div style={{width:118,display:"flex",alignItems:"center",justifyContent:"center",gap:4}}>
           <button onClick={dec} style={{width:28,height:28,borderRadius:8,border:`1px solid ${C.danger}44`,background:C.dangerLight,color:C.danger,fontSize:17,fontWeight:800,cursor:"pointer",fontFamily:"inherit",lineHeight:1}}>−</button>
-          <span style={{width:32,textAlign:"center",fontSize:13.5,fontWeight:800,color:C.text}}>{item.weighed?item.qty+"kg":item.qty}</span>
+          {item.weighed
+            ? <span style={{width:40,textAlign:"center",fontSize:13.5,fontWeight:800,color:C.text}}>{item.qty}kg</span>
+            : <input value={item.qty} inputMode="numeric" onFocus={e=>e.target.select()}
+                onChange={e=>{const n=parseInt(e.target.value.replace(/[^\d]/g,""),10);setCart(prev=>prev.map((c,i)=>i===idx?{...c,qty:(n&&n>0)?n:1}:c));}}
+                title="Tap to type the quantity"
+                style={{width:40,textAlign:"center",fontSize:14,fontWeight:800,color:C.text,border:`1px solid ${C.border}`,borderRadius:7,padding:"5px 0",fontFamily:"inherit",background:"#fff"}}/>}
           <button onClick={inc} style={{width:28,height:28,borderRadius:8,border:`1px solid ${C.primary}44`,background:C.primaryLight,color:C.primary,fontSize:17,fontWeight:800,cursor:"pointer",fontFamily:"inherit",lineHeight:1}}>+</button>
         </div>
         <div style={{width:86,textAlign:"right",fontSize:14,fontWeight:900,color:C.primary}}>{fmtSAR(item.price*item.qty)}</div>
@@ -6351,6 +6395,10 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
             <div style={{fontSize:12.5,color:C.textMid,marginBottom:16}}>Barcode <span style={{fontFamily:"monospace",fontWeight:700,color:C.zatca}}>{np.barcode||"—"}</span> isn’t in your catalogue yet.</div>
             <div style={{display:"flex",flexDirection:"column",gap:10}}>
               <input autoFocus value={np.name} onChange={e=>upd("name",e.target.value)} placeholder="Product name" style={inpS}/>
+              <div style={{display:"flex",gap:8}}>
+                <input value={np.nameAr||""} onChange={e=>upd("nameAr",e.target.value)} dir="rtl" placeholder="الاسم بالعربية (اختياري)" style={{...inpS,flex:1,fontFamily:"'Tahoma','Arial','Segoe UI',sans-serif"}}/>
+                <button type="button" onClick={autoTranslateNewProd} disabled={translating||!np.name.trim()} title="Auto-translate the English name to Arabic" style={{flexShrink:0,padding:"0 14px",border:`1.5px solid ${C.primary}`,background:translating||!np.name.trim()?"#f3f4f6":C.primaryLight,color:C.primary,borderRadius:9,fontFamily:"inherit",fontSize:13,fontWeight:800,cursor:translating||!np.name.trim()?"default":"pointer",whiteSpace:"nowrap"}}>{translating?"⏳":"🌐 Auto"}</button>
+              </div>
               <div style={{display:"flex",gap:10}}>
                 <input value={np.price} onChange={e=>upd("price",e.target.value.replace(/[^\d.]/g,""))} inputMode="decimal" placeholder={np.weighed?"Price per kg (incl. VAT)":"Price (incl. VAT)"} style={{...inpS,flex:1}}/>
                 <select value={np.category} onChange={e=>upd("category",e.target.value)} style={{...inpS,flex:1}}>
@@ -7486,7 +7534,7 @@ body{font-family:'Courier New',monospace;font-size:${rf.rowFont}px;font-weight:$
                   ["lineAfterToken","Divider line after Token No"],
                   ["phoneInBox","Put “Telephone” label in a box (phone bills)"],
                   ["hidePhone","Hide the phone / Tel line on the bill"],
-                  ...(fmt.presetStyle==="s5"?[["itemDivider","Divider line between each item (Style 5)"]]:[])
+                  ["itemDivider","Divider line between each item"],
                 ].map(([key,label])=>(
                   <label key={key} style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer",fontSize:12.5,color:C.textMid,fontWeight:600}}>
                     <input type="checkbox" checked={!!fmt[key]} onChange={e=>set(key,e.target.checked)} style={{width:18,height:18,cursor:"pointer",accentColor:C.primary}}/>
