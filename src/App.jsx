@@ -4688,6 +4688,19 @@ const RECEIPT_FONT_MAP={
   "arial-narrow":"'Tahoma','Arial','Segoe UI',sans-serif",
   "impact":"'Tahoma','Arial','Segoe UI',sans-serif",
   "scheherazade":"'Tahoma','Arial','Times New Roman',serif",
+  // Alternative real Arabic fonts (installed with Windows) — pick these if the
+  // default rendering ever looks wrong on a particular printer.
+  "simplified-arabic":"'Simplified Arabic','Tahoma','Arial','Segoe UI',sans-serif",
+  "traditional-arabic":"'Traditional Arabic','Tahoma','Arial','Times New Roman',serif",
+};
+// Font families selectable for PRESET bills (invoice / draft). "default" keeps
+// the style's built-in font; the rest are system Arabic-capable fonts so the
+// cashier has a real fallback if the default ever renders badly on their printer.
+const PRESET_FONT_MAP={
+  "tahoma":"'Tahoma','Arial','Segoe UI',sans-serif",
+  "simplified-arabic":"'Simplified Arabic','Tahoma','Arial','Segoe UI',sans-serif",
+  "traditional-arabic":"'Traditional Arabic','Tahoma','Arial','Times New Roman',serif",
+  "amiri":"'Amiri','Tahoma','Arial','Times New Roman',serif",
 };
 function buildReceiptHTML(order,license,zatcaInvoice,fmt,qrImgSrc){
   fmt=fmt||{};
@@ -4993,7 +5006,9 @@ function buildPresetHTML(order,license,zatcaInvoice,fmt,qrImgSrc,opts){
   const footerAr=fmt.footerAr||"شكراً لك زيارة مرة أخرى";
   // monospace look for s1; serif for others — Arabic fonts ALWAYS included as fallback
   // Style 5 = Style 3's minimal treatment (no boxes, light solid dividers) + its own item-name layout
-  const bodyFamily=style==="s1"?"'Courier New','Tahoma','Arial',monospace":"'Tahoma','Arial','Amiri',serif";
+  const _styleFamily=style==="s1"?"'Courier New','Tahoma','Arial',monospace":"'Tahoma','Arial','Amiri',serif";
+  // Cashier can override the font (Settings → Preset Bills → Receipt font).
+  const bodyFamily=(fmt.fontKey&&PRESET_FONT_MAP[fmt.fontKey])||_styleFamily;
   const sepLine=style==="s4"?"2px solid #000":(style==="s3"||style==="s5")?"1px solid #000":"1px dashed #000";
   const SEP=`<div style="border-top:${sepLine};margin:5px 0"></div>`;
   const boxed=(inner,big)=>{
@@ -6972,6 +6987,8 @@ const RECEIPT_FONTS=[
   {id:"noto-naskh",label:"Noto Naskh Arabic",family:"'Noto Naskh Arabic','Amiri',serif",lang:"AR"},
   {id:"cairo",label:"Cairo",family:"'Cairo','Noto Naskh Arabic',sans-serif",lang:"AR"},
   {id:"tajawal",label:"Tajawal",family:"'Tajawal','Noto Naskh Arabic',sans-serif",lang:"AR"},
+  {id:"simplified-arabic",label:"Simplified Arabic (Windows)",family:"'Simplified Arabic','Tahoma','Arial',sans-serif",lang:"AR"},
+  {id:"traditional-arabic",label:"Traditional Arabic (Windows)",family:"'Traditional Arabic','Tahoma','Arial',serif",lang:"AR"},
 ];
 
 // ═══════════════════════════════════════════════════════════════════
@@ -7346,6 +7363,19 @@ body{font-family:'Courier New',monospace;font-size:${rf.rowFont}px;font-weight:$
           {/* sliders */}
           <div style={{display:"flex",flexDirection:"column",gap:14,marginBottom:16}}>
             <div style={{fontSize:12,fontWeight:800,color:C.text}}>Sizes & spacing</div>
+            {mode!=="kot"&&(
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}>
+                <span style={{fontSize:12,color:C.textMid,fontWeight:600}}>🔤 Receipt font</span>
+                <select value={fmt.fontKey||"default"} onChange={e=>set("fontKey",e.target.value)}
+                  style={{padding:"7px 10px",border:`1px solid ${C.border}`,borderRadius:8,fontSize:13,fontFamily:"inherit",background:"#fff",color:C.text,cursor:"pointer",minWidth:180}}>
+                  <option value="default">Default (built-in)</option>
+                  <option value="tahoma">Tahoma</option>
+                  <option value="simplified-arabic">Simplified Arabic (Windows)</option>
+                  <option value="traditional-arabic">Traditional Arabic (Windows)</option>
+                  <option value="amiri">Amiri</option>
+                </select>
+              </div>
+            )}
             <Slider label="Header font" k="headFont" min={10} max={26}/>
             <Slider label="Body font" k="bodyFont" min={9} max={20}/>
             {mode==="kot"&&<Slider label="🔤 English item size" k="bodyFontEn" min={9} max={28}/>}
