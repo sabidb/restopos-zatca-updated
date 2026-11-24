@@ -5476,6 +5476,9 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     else showN("⚠️ Couldn't auto-translate — type the Arabic name");
   }
   const posCats=(LS.get("restopos_categories")||[...new Set(items.map(i=>i.category).filter(Boolean))]);
+  // Id of the line a scan/tap last dropped into the cart. A bare number typed in
+  // the scan box (no qty-box tap) SETS this line's quantity — see submitScanBox.
+  const lastLineRef=useRef(null);
   function focusScanner(){setTimeout(()=>barcodeRef.current?.focus(),60);}
   // Switch to one of the 5 parked bills. Each bill's cart already lives in
   // `bills`, so we only clear the transient per-screen selection/edit state and
@@ -5519,13 +5522,16 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     if(item.weighed){ setWeighItem(item); setWeighKg(""); return; }
     // Merge only into a line at the catalogue price — a re-priced line is pinned,
     // so re-scanning the same item starts a new line (different price = new row).
-    setCart(prev=>{const ex=prev.find(c=>c.id===item.id&&!c.weighed&&!c.priceEdited);if(ex)return prev.map(c=>c===ex?{...c,qty:c.qty+1}:c);return[...prev,{...item,qty:1}];});showN("+ "+item.name);
+    setCart(prev=>{const ex=prev.find(c=>c.id===item.id&&!c.weighed&&!c.priceEdited);if(ex)return prev.map(c=>c===ex?{...c,qty:c.qty+1}:c);return[...prev,{...item,qty:1}];});lastLineRef.current=item.id;showN("+ "+item.name);
   }
   function confirmWeigh(){
     const w=parseFloat(weighKg);
     if(!(w>0)){showN("❌ Enter a valid weight");return;}
     const kg=Math.round(w*1000)/1000;
     setCart(prev=>[...prev,{...weighItem,qty:kg,weighed:true}]);
+    // A weighed line's "qty" is its weight — a typed whole number must not
+    // overwrite it, so clear the last-line pointer.
+    lastLineRef.current=null;
     showN("+ "+weighItem.name+" ("+kg+" kg)");
     setWeighItem(null);setWeighKg("");
   }
@@ -6245,7 +6251,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   // barcode rows. F1 opens the shared payment window; F2 clears the sale. ──
   const superClearAll=()=>{
     if(cart.length>=3 && !window.confirm(`Clear all ${cart.length} items from this sale?`)) return;
-    setCart([]); setSelectedRow(null); focusScanner();
+    setCart([]); setSelectedRow(null); lastLineRef.current=null; focusScanner();
   };
   const superOpenPay=()=>{ if(cart.length&&manualBillingEnabled()) setShowPayment(true); };
   const superOpenPrev=()=>{ const printed=(sales||[]).filter(s=>s.status!=="voided"); if(!printed.length){alert("No previous bills yet");return;} setPrevAllDays(false); setPrevIndex(0); setShowPrevBill(true); };
