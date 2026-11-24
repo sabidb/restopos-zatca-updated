@@ -32,14 +32,16 @@ export function InventoryManagement({items,setItems,lang="en",initialTab="overvi
   const [adjType,setAdjType]=useState("in"); // in | out
   const [adjReason,setAdjReason]=useState("");
   const [adjSupplier,setAdjSupplier]=useState("");
-  const [newSupplier,setNewSupplier]=useState({name:"",vatNumber:"",crNumber:"",phone:"",email:"",address:"",notes:""});
+  const blankSupplier={name:"",vatNumber:"",crNumber:"",phone:"",email:"",address:"",notes:""};
+  const [newSupplier,setNewSupplier]=useState(blankSupplier);
   const [showSupplierModal,setShowSupplierModal]=useState(false);
+  const [editingSupplierId,setEditingSupplierId]=useState(null);
 
   // ── Purchases (supplier/AP invoices) — Supermarket/Hypermarket only ─────────
   // Feature-flagged so Restaurant Mode's Inventory screen is unchanged.
   const showPurchases=bizFeature("purchasing");
   const blankLine=()=>({name:"",qty:"",unitCost:"",rate:0.15});
-  const blankPurchase=()=>({supplierId:"",supplierName:"",docType:"invoice",supplierInvoiceNo:"",invoiceDate:new Date().toISOString().slice(0,10),hasValidEInvoice:false,notes:"",lines:[blankLine()]});
+  const blankPurchase=()=>({supplierId:"",supplierName:"",supplierVatNumber:"",supplierCrNumber:"",docType:"invoice",supplierInvoiceNo:"",invoiceDate:new Date().toISOString().slice(0,10),hasValidEInvoice:false,notes:"",lines:[blankLine()]});
   const [purchases,setPurchases]=useState(()=>loadPurchaseInvoices());
   const [showPurchaseModal,setShowPurchaseModal]=useState(false);
   const [draft,setDraft]=useState(blankPurchase);
@@ -131,7 +133,7 @@ export function InventoryManagement({items,setItems,lang="en",initialTab="overvi
   }
   function addDraftLine(){ setDraft(d=>({...d,lines:[...d.lines,blankLine()]})); }
   function removeDraftLine(i){ setDraft(d=>({...d,lines:d.lines.length>1?d.lines.filter((_,j)=>j!==i):d.lines})); setDupWarn(null); }
-  function onPickSupplier(id){ const s=suppliers.find(x=>x.id===id); setDraft(d=>({...d,supplierId:id,supplierName:s?s.name:""})); setDupWarn(null); }
+  function onPickSupplier(id){ const s=suppliers.find(x=>x.id===id); setDraft(d=>({...d,supplierId:id,supplierName:s?s.name:"",supplierVatNumber:s?.vatNumber||"",supplierCrNumber:s?.crNumber||""})); setDupWarn(null); }
 
   // Save a purchase invoice. Validation blocks always; an EXACT duplicate (same
   // supplier + invoice number) and a NEAR duplicate (same supplier + total +
@@ -190,12 +192,21 @@ export function InventoryManagement({items,setItems,lang="en",initialTab="overvi
     setAdjItem(null);setAdjQty("");setAdjReason("");setAdjSupplier("");
   }
 
+  function openSupplierModal(s=null){
+    setEditingSupplierId(s?s.id:null);
+    setNewSupplier(s?{name:s.name||"",vatNumber:s.vatNumber||"",crNumber:s.crNumber||"",phone:s.phone||"",email:s.email||"",address:s.address||"",notes:s.notes||""}:blankSupplier);
+    setShowSupplierModal(true);
+  }
   function addSupplier(){
     if(!newSupplier.name.trim())return alert("Supplier name required.");
     const vn=String(newSupplier.vatNumber||"").replace(/\s/g,"");
     if(vn&&!/^\d{15}$/.test(vn))return alert("A Saudi VAT number is 15 digits. Leave it blank if the supplier isn't VAT-registered.");
-    saveSuppliers([{id:"SUP-"+Date.now(),...newSupplier,vatNumber:vn},...suppliers]);
-    setNewSupplier({name:"",vatNumber:"",crNumber:"",phone:"",email:"",address:"",notes:""});setShowSupplierModal(false);
+    if(editingSupplierId){
+      saveSuppliers(suppliers.map(s=>s.id===editingSupplierId?{...s,...newSupplier,vatNumber:vn}:s));
+    }else{
+      saveSuppliers([{id:"SUP-"+Date.now(),...newSupplier,vatNumber:vn},...suppliers]);
+    }
+    setNewSupplier(blankSupplier);setEditingSupplierId(null);setShowSupplierModal(false);
   }
 
   const tabs=[["overview","📊 "+_t("Overview")],["stock","📦 "+_t("Stock Levels")],["movements","🔄 "+_t("Movements")],["suppliers","🏭 "+_t("Suppliers")],...(showPurchases?[["orders","📋 "+_t("Orders")],["purchases","🧾 "+_t("Purchases")],["preports","📈 "+_t("Purchase Reports")],["synchealth","☁️ "+_t("Sync Health")]]:[])];
@@ -293,14 +304,14 @@ export function InventoryManagement({items,setItems,lang="en",initialTab="overvi
       {tab==="suppliers"&&<Card>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
           <div style={{fontSize:14,fontWeight:800}}>🏭 {_t("Suppliers")} ({suppliers.length})</div>
-          <Btn size="sm" onClick={()=>setShowSupplierModal(true)}>+ {_t("New Supplier")}</Btn>
+          <Btn size="sm" onClick={()=>openSupplierModal()}>+ {_t("New Supplier")}</Btn>
         </div>
         {suppliers.length===0?(
           <div style={{padding:"20px",textAlign:"center",color:C.textMid,fontSize:13}}>{_t("No suppliers yet.")}</div>
         ):(
           <DataTable headers={[_t("Name"),_t("VAT No."),_t("CR No."),_t("Phone"),_t("Email"),_t("Notes"),_t("Actions")]} rows={suppliers.map(s=>[
             <strong>{s.name}</strong>,<span style={{fontFamily:"monospace"}}>{s.vatNumber||"—"}</span>,<span style={{fontFamily:"monospace"}}>{s.crNumber||"—"}</span>,s.phone||"—",s.email||"—",s.notes||"—",
-            <Btn size="sm" variant="danger" onClick={()=>{if(confirm(_t("Delete supplier")+"?"))saveSuppliers(suppliers.filter(x=>x.id!==s.id));}}>{_t("Delete")}</Btn>
+            <div style={{display:"flex",gap:6}}><Btn size="sm" variant="outline" onClick={()=>openSupplierModal(s)}>{_t("Edit")}</Btn><Btn size="sm" variant="danger" onClick={()=>{if(confirm(_t("Delete supplier")+"?"))saveSuppliers(suppliers.filter(x=>x.id!==s.id));}}>{_t("Delete")}</Btn></div>
           ])}/>
         )}
       </Card>}
@@ -323,7 +334,7 @@ export function InventoryManagement({items,setItems,lang="en",initialTab="overvi
             return [
               p.invoiceDate?fmtDate(p.invoiceDate):"—",
               cn?<Badge color={C.danger} bg={C.dangerLight}>{_t("Credit")}</Badge>:<Badge color={C.success} bg={C.successLight}>{_t("Invoice")}</Badge>,
-              p.supplierName||"—",
+              <div><div>{p.supplierName||"—"}</div>{p.supplierVatNumber?<div style={{fontSize:10,color:C.textMid,fontFamily:"monospace"}}>{_t("VAT")} {p.supplierVatNumber}</div>:null}</div>,
               p.supplierInvoiceNo||"—",
               fmtSAR(s.subtotal),
               fmtSAR(s.vatAmount),
@@ -696,7 +707,7 @@ export function InventoryManagement({items,setItems,lang="en",initialTab="overvi
       </Modal>}
 
       {/* SUPPLIER MODAL */}
-      {showSupplierModal&&<Modal title={"🏭 "+_t("New Supplier")} onClose={()=>setShowSupplierModal(false)} width={420}>
+      {showSupplierModal&&<Modal title={"🏭 "+(editingSupplierId?_t("Edit Supplier"):_t("New Supplier"))} onClose={()=>{setShowSupplierModal(false);setEditingSupplierId(null);}} width={420}>
         <div style={{display:"flex",flexDirection:"column",gap:10}}>
           <input value={newSupplier.name} onChange={e=>setNewSupplier(s=>({...s,name:e.target.value}))} placeholder={_t("Supplier name")+" *"} style={{padding:"10px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontFamily:"inherit",fontSize:14}}/>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
@@ -711,8 +722,8 @@ export function InventoryManagement({items,setItems,lang="en",initialTab="overvi
           <input value={newSupplier.notes} onChange={e=>setNewSupplier(s=>({...s,notes:e.target.value}))} placeholder={_t("Notes")} style={{padding:"10px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontFamily:"inherit",fontSize:14}}/>
         </div>
         <div style={{display:"flex",gap:10,marginTop:16}}>
-          <Btn variant="ghost" style={{flex:1}} onClick={()=>setShowSupplierModal(false)}>{_t("Cancel")}</Btn>
-          <Btn style={{flex:1}} onClick={addSupplier}>{_t("Add Supplier")}</Btn>
+          <Btn variant="ghost" style={{flex:1}} onClick={()=>{setShowSupplierModal(false);setEditingSupplierId(null);}}>{_t("Cancel")}</Btn>
+          <Btn style={{flex:1}} onClick={addSupplier}>{editingSupplierId?_t("Save Changes"):_t("Add Supplier")}</Btn>
         </div>
       </Modal>}
     </div>
