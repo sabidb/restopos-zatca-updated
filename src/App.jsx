@@ -3960,9 +3960,9 @@ function PayKeyboard(){
   );
 }
 
-function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1,kotNo=1,customers=[],customerName:initCustName="",customerPhone:initCustPhone="",orderType:initOrderType="takeaway"}){
+function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1,kotNo=1,customers=[],customerName:initCustName="",customerPhone:initCustPhone="",orderType:initOrderType="takeaway",defaultMethod="Cash"}){
   // ── State ────────────────────────────────────────────────────────
-  const [method,setMethod]=useState("Cash");
+  const [method,setMethod]=useState(defaultMethod||"Cash");
   const [cashGiven,setCashGiven]=useState("");
   const _cashTouched=useRef(false); // becomes true once user edits cash; until then it auto-fills exact
   const [cardAmount,setCardAmount]=useState("");
@@ -5508,19 +5508,42 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   // picked up automatically; the price display (a div) opts in via data-pknav.
   function _pkCells(){
     const root=posRootRef.current; if(!root) return [];
+    // Navigation is confined to the scan bar + cart grid (the [data-pkzone]
+    // containers), so arrows move column-wise through the till rows and never
+    // wander into the F-key panel, bill tabs or keypad — those keep their own
+    // F1–F5 shortcuts and tap targets.
+    const zones=root.querySelectorAll("[data-pkzone]");
+    const scope=zones.length?Array.from(zones):[root];
     const sel="button:not([disabled]),input:not([disabled]):not([type=hidden]),[data-pknav]";
-    return Array.from(root.querySelectorAll(sel)).filter(el=>{
-      if(el.getAttribute&&el.getAttribute("aria-hidden")==="true") return false;
+    const seen=new Set(); const out=[];
+    scope.forEach(z=>z.querySelectorAll(sel).forEach(el=>{
+      if(seen.has(el)) return; seen.add(el);
+      if(el.getAttribute&&el.getAttribute("aria-hidden")==="true") return;
       const r=el.getBoundingClientRect();
-      return r.width>0&&r.height>0&&el.offsetParent!==null; // visible only
-    });
+      if(r.width>0&&r.height>0&&el.offsetParent!==null) out.push(el); // visible only
+    }));
+    return out;
   }
   function onPosNavKey(e){
     if(e.key!=="ArrowUp"&&e.key!=="ArrowDown"&&e.key!=="ArrowLeft"&&e.key!=="ArrowRight"&&e.key!=="Escape") return;
     if(e.ctrlKey||e.metaKey||e.altKey) return;
-    // A blocking modal owns the keyboard — leave navigation to it.
-    if(showPayment||showPrevBill||weighItem||weighPick||newProd||scannedItem) return;
-    if(e.key==="Escape"){ focusScanner(); e.preventDefault(); return; }
+    if(e.key==="Escape"){
+      // Esc closes the top-most open window (payment, item card, weigh, new
+      // product, previous bill, description) wherever it is pressed; with
+      // nothing open it just returns focus to the scanner.
+      e.preventDefault(); e.stopPropagation();
+      if(showPayment) setShowPayment(false);
+      else if(scannedItem) setScannedItem(null);
+      else if(weighItem) setWeighItem(null);
+      else if(weighPick) setWeighPick(false);
+      else if(newProd) setNewProd(null);
+      else if(showPrevBill) setShowPrevBill(false);
+      else if(showDescModal) setShowDescModal(false);
+      focusScanner();
+      return;
+    }
+    // Arrow keys: a blocking modal owns the keyboard — leave navigation to it.
+    if(showPayment||showPrevBill||weighItem||weighPick||newProd||scannedItem||showDescModal) return;
     const els=_pkCells(); if(!els.length) return;
     const active=document.activeElement;
     // In a text field, let ←/→ move the caret unless it is already at the edge,
@@ -5578,6 +5601,14 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   // Re-focus the scan box whenever a blocking modal (payment / previous bill)
   // closes, so the next scan lands in the box with no extra click.
   useEffect(()=>{ if(superMode&&!showPayment&&!showPrevBill) focusScanner(); },[superMode,showPayment,showPrevBill]);
+  // Price-check cards are view-only, so clear themselves after a few seconds and
+  // hand focus back to the scanner for the next item. Still closable by Done /
+  // Esc / tapping outside. Only in price-check mode — a normal add is untouched.
+  useEffect(()=>{
+    if(!(superMode&&priceCheck&&scannedItem)) return;
+    const t=setTimeout(()=>{ setScannedItem(null); focusScanner(); }, 4500);
+    return ()=>clearTimeout(t);
+  },[superMode,priceCheck,scannedItem]);
   const total=cart.reduce((s,i)=>s+i.price*i.qty,0);const vat=cartVat(cart).vat;const subtotal=parseFloat((total-vat).toFixed(2));
   function addToCart(item){
     // Weighed item (price is per-kg): open the weight modal. qty carries the
@@ -5719,7 +5750,12 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
       applyQtyPlus(); // reads barcodeInput, sets qty (0 removes), clears, refocuses scanner
       return;
     }
-    handleBarcodeSearch(raw);
+    // Manual Enter in the scan box now behaves like a scan: a matching active
+    // product drops straight into the cart (so the ＋ / typed-quantity multiplier
+    // has a line to act on), while price-check, unknown codes and inactive items
+    // fall back to the card / quick-create exactly as before.
+    setBarcodeInput("");
+    scanToCart(raw);
   }
   // ＋ quantity button: a typed number SETS the last scanned line's quantity
   // (type 5 then ＋ → ×5; 0 removes it); ＋ with an empty box just +1s that line.
@@ -6234,7 +6270,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   const quickItems=items.filter(i=>i.active&&favourites.includes(i.id));
   const weighedItems=items.filter(i=>i.active&&i.weighed);
   const superScanBar=(
-    <div style={{display:"flex",gap:8,flex:1,minWidth:0}}>
+    <div data-pkzone="scan" style={{display:"flex",gap:8,flex:1,minWidth:0}}>
       <input ref={barcodeRef} value={barcodeInput}
         onChange={e=>setBarcodeInput(e.target.value)}
         onKeyDown={e=>{if(e.key==="Enter"&&barcodeInput.trim())submitScanBox();}}
@@ -6264,7 +6300,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     <button onClick={onClick} style={{flexShrink:0,height:44,padding:"0 14px",borderRadius:10,border:`1.5px solid ${active?accent:C.border}`,background:active?accent+"18":"#fff",color:active?accent:C.textMid,cursor:"pointer",fontSize:13,fontWeight:800,fontFamily:"inherit",whiteSpace:"nowrap"}}>{label}</button>
   );
   const superReceipt=(
-    <div style={{flex:1,overflowY:"auto",padding:"10px 12px",display:"flex",flexDirection:"column",gap:6}}>
+    <div data-pkzone="cart" style={{flex:1,overflowY:"auto",padding:"10px 12px",display:"flex",flexDirection:"column",gap:6}}>
       {cart.length===0
         ? <div style={{margin:"auto",textAlign:"center",color:C.textLight}}><div style={{fontSize:40,opacity:0.5}}>🛒</div><div style={{fontSize:14,marginTop:6}}>Scan an item to start</div></div>
         : cart.map((item,idx)=>(
@@ -6293,7 +6329,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     </div>
   );
   const superQtyBar=(selectedRow!==null&&cart[selectedRow]&&(
-    <div style={{padding:"8px 14px",borderTop:`1px solid ${C.border}`,background:"#fff",display:"flex",gap:8,alignItems:"center"}}>
+    <div data-pkzone="qtybar" style={{padding:"8px 14px",borderTop:`1px solid ${C.border}`,background:"#fff",display:"flex",gap:8,alignItems:"center"}}>
       <span style={{fontSize:13,color:C.textMid,flex:1,fontWeight:700}}>{cart[selectedRow]?.name}</span>
       <button onClick={()=>updateQty(-1)} style={{width:38,height:38,borderRadius:9,border:`1px solid ${C.border}`,background:C.dangerLight,color:C.danger,fontSize:20,fontWeight:700,cursor:"pointer"}}>−</button>
       <span style={{fontSize:16,fontWeight:800,minWidth:28,textAlign:"center"}}>{cart[selectedRow]?.qty}</span>
@@ -6415,12 +6451,12 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
       <div key={idx} style={{display:"flex",alignItems:"center",padding:"0 14px",minHeight:46,borderBottom:`1px solid ${C.border}`,background:idx%2?"#FCFDFE":"#fff"}}>
         <span aria-hidden="true" style={{width:24,flexShrink:0,fontSize:12,fontWeight:800,color:C.textLight,textAlign:"left"}}>{idx+1}</span>
         <div style={{flex:1.4,minWidth:0}}>
-          <div style={{display:"flex",alignItems:"center",gap:6}}>
+          <div tabIndex={0} data-pknav="name" role="button" aria-label={`Line ${idx+1} ${item.name}`} onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();setSelectedRow(idx);}}} style={{display:"flex",alignItems:"center",gap:6,cursor:"default",borderRadius:6}}>
             <span style={{fontSize:15,fontWeight:700,color:C.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{item.name}</span>
             {lineCatChip(item)}
           </div>
         </div>
-        <div style={{flex:1,minWidth:0,fontSize:11,fontFamily:"monospace",color:C.textLight,textAlign:"center",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",padding:"0 6px"}}>{item.barcode||"—"}</div>
+        <div tabIndex={0} data-pknav="barcode" role="text" aria-label={`Barcode ${item.barcode||"none"}`} style={{flex:1,minWidth:0,fontSize:11,fontFamily:"monospace",color:C.textLight,textAlign:"center",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",padding:"0 6px",borderRadius:6}}>{item.barcode||"—"}</div>
         {editPriceIdx===idx&&!item.weighed
           ? <input autoFocus value={editPriceVal} inputMode="decimal"
               onChange={e=>setEditPriceVal(e.target.value.replace(/[^\d.]/g,""))}
@@ -6490,7 +6526,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
           <span style={{width:86,textAlign:"right"}}>TOTAL</span>
           <span style={{width:36}}/>
         </div>
-        <div style={{flex:1,overflowY:"auto"}}>
+        <div data-pkzone="cart" style={{flex:1,overflowY:"auto"}}>
           {cart.length===0
             ? <div style={{textAlign:"center",color:C.textLight,marginTop:70}}><div style={{fontSize:42,opacity:0.5}}>🛒</div><div style={{fontSize:14,marginTop:8}}>Scan an item to start</div></div>
             : cart.map((item,idx)=>superTillRow(item,idx))}
@@ -6662,7 +6698,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
         }
       `}</style>
       <style>{`@keyframes slideDown{from{opacity:0;transform:translateX(-50%) translateY(-20px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}`}</style>
-      {showPayment&&<PaymentModal total={total} subtotal={subtotal} vat={vat} promos={promos} license={license} vno={vno} kotNo={kotNo} customers={LS.get("restopos_customers")||[]} customerName={customerName} customerPhone={customerPhone} orderType={orderType} onConfirm={confirmPayment} onClose={()=>setShowPayment(false)}/>}
+      {showPayment&&<PaymentModal total={total} subtotal={subtotal} vat={vat} promos={promos} license={license} vno={vno} kotNo={kotNo} customers={LS.get("restopos_customers")||[]} customerName={customerName} customerPhone={customerPhone} orderType={orderType} defaultMethod={superMode?"Card":"Cash"} onConfirm={confirmPayment} onClose={()=>setShowPayment(false)}/>}
       {showReceipt&&lastOrder&&<ReceiptModal order={lastOrder} license={license} zatcaInvoice={lastZatcaInvoice} onClose={()=>{setShowReceipt(false);setLastZatcaInvoice(null);}}/>}
       {/* ⚖ Weigh picker — pick a weighed product when there's no grid to tap (Layout A/C) */}
       {weighPick&&(
@@ -6727,7 +6763,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
             {priceCheck&&<div style={{margin:"0 20px 6px",fontSize:12,fontWeight:800,color:C.warning,background:C.warningLight,borderRadius:8,padding:"7px 10px",textAlign:"center"}}>🔍 Price Check — view only</div>}
             <div style={{display:"flex",gap:8,padding:"12px 20px 18px"}}>
               {priceCheck
-                ? <button autoFocus onClick={close} onKeyDown={e=>{if(e.key==="Enter")close();}} style={{flex:1,padding:"12px 0",border:"none",background:C.primary,color:"#fff",borderRadius:10,fontFamily:"inherit",fontSize:14,fontWeight:800,cursor:"pointer"}}>Done</button>
+                ? <button onClick={close} style={{flex:1,padding:"12px 0",border:"none",background:C.primary,color:"#fff",borderRadius:10,fontFamily:"inherit",fontSize:14,fontWeight:800,cursor:"pointer"}}>Done</button>
                 : <>
                     <button onClick={close} style={{flex:1,padding:"12px 0",border:`1.5px solid ${C.border}`,background:"#fff",color:C.textMid,borderRadius:10,fontFamily:"inherit",fontSize:14,fontWeight:700,cursor:"pointer"}}>Close</button>
                     <button autoFocus onClick={addNow} onKeyDown={e=>{if(e.key==="Enter")addNow();}} style={{flex:2,padding:"12px 0",border:"none",background:C.primary,color:"#fff",borderRadius:10,fontFamily:"inherit",fontSize:14,fontWeight:800,cursor:"pointer"}}>{it.weighed?"⚖️ Weigh & Add":"＋ Add to Cart"}</button>
@@ -18085,7 +18121,9 @@ export default function App(){
               <button onClick={()=>handleScaleChange(uiScale+5)} style={{background:"rgba(255,255,255,0.1)",border:"none",color:"#fff",width:16,height:16,borderRadius:3,cursor:"pointer",fontSize:10,display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"inherit"}}>+</button>
             </div>
           </div>
-          <div style={{fontSize:9,color:"rgba(255,255,255,0.65)",fontWeight:700,whiteSpace:"nowrap",display:viewport.w<500?"none":"block"}}>{lang==="ar"?({"Admin":"مدير","Manager":"مشرف","Cashier":"كاشير"}[currentUser?.role]||currentUser?.role):currentUser?.role}</div>
+          {superMode
+            ? <span title="Supermarket mode" style={{display:"flex",alignItems:"center",gap:5,fontSize:11,fontWeight:900,color:"#fff",background:"linear-gradient(135deg,#1A6B4A,#134D36)",padding:"5px 12px",borderRadius:8,border:"1px solid rgba(255,255,255,0.3)",whiteSpace:"nowrap",boxShadow:"0 1px 6px rgba(0,0,0,0.3)"}}>🛒 {lang==="ar"?"سوبرماركت":"SUPERMARKET"}</span>
+            : <div style={{fontSize:9,color:"rgba(255,255,255,0.65)",fontWeight:700,whiteSpace:"nowrap",display:viewport.w<500?"none":"block"}}>{lang==="ar"?({"Admin":"مدير","Manager":"مشرف","Cashier":"كاشير"}[currentUser?.role]||currentUser?.role):currentUser?.role}</div>}
           <button onClick={()=>setCurrentUser(null)} style={{fontSize:9,background:"rgba(217,64,64,0.25)",color:"#ffaaaa",border:"1px solid rgba(217,64,64,0.35)",padding:"3px 7px",borderRadius:4,cursor:"pointer",fontFamily:"inherit",fontWeight:700,whiteSpace:"nowrap"}}>⎋</button>
         </div>
       </div>
