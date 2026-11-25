@@ -31,8 +31,23 @@ export const TAX_CATEGORIES = {
 };
 export const TAX_CATEGORY_CODES = ["S", "Z", "E", "O"];
 
-// ZATCA VAT exemption reason codes, by category. Verify against ZATCA's live
-// code list before production use.
+// ZATCA VAT exemption reason codes, by category.
+//
+// VERIFICATION (2026-11-25): the codes below were cross-checked against public
+// ZATCA-aligned references (ZATCA XML Implementation Standard code-list annex,
+// plus Vertex / ClearTax / Wafeq mirrors of it). The CORE list here — exports
+// (32/33), international transport (34-1…34-5), medicines (35), qualifying
+// metals (36), private education/healthcare to citizens (EDU/HEA), military
+// (MLTRY); financial services (29, 29-7) and real estate (30) as Exempt; and
+// VATEX-SA-OOS free-text out-of-scope — matches those references.
+//   ⚠️ ZATCA has ADDED codes over time that are NOT listed here (e.g.
+//   VATEX-SA-ROYALDECREE, a customs-suspension code, duty-free and diplomat
+//   codes). They are intentionally omitted rather than guessed, because a
+//   wrong category assignment is worse than an absent code. Confirm the exact
+//   current set and official reason TEXT against ZATCA's live XML Implementation
+//   Standard, and pass every Z/E/O invoice through ZATCA's simulation before
+//   production. (zatca.gov.sa was not reachable from the build environment, so
+//   this could not be auto-fetched from the primary source.)
 export const EXEMPTION_REASONS = [
   // Zero-rated (Z)
   { code: "VATEX-SA-32", category: "Z", text: "Export of goods" },
