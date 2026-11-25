@@ -29,6 +29,7 @@ import ImportWizard from "./components/ImportWizard.jsx";
 import { TODAY } from "./lib/date.js";
 import { logActivity } from "./lib/activity.js";
 import { initSync, debouncedSync, syncKeyToFirestore } from "./lib/sync.js";
+import { nextCellId as _gridNextCellId } from "./lib/gridNav.js";
 import { initCatalogueCloud, setCatalogueLicense, catalogueCloud, loadAllItems as loadCatalogueCloud, backfillCatalogue } from "./lib/catalogueCloud.js";
 import { catalogueSubEnabled, setCatalogueSubEnabled, CATALOGUE_FLAG_KEY } from "./lib/catalogueFlag.js";
 import { initPurchaseStore, setPurchaseInvoicesLocal, loadPurchaseInvoices } from "./lib/purchaseStore.js";
@@ -5495,6 +5496,49 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   }
   const posCats=(LS.get("restopos_categories")||[...new Set(items.map(i=>i.category).filter(Boolean))]);
   function focusScanner(){setTimeout(()=>barcodeRef.current?.focus(),60);}
+  // ── Arrow-key cell navigation (Supermarket till) ──────────────────────────
+  // The cashier can drive the WHOLE till from the keyboard: every control —
+  // the scan box, ＋ add, each cart line's name/price/−/qty/＋/✕ and the
+  // F-key panel — is a focusable cell, and ↑↓←→ move focus between them by
+  // on-screen position (see lib/gridNav.js). Enter then activates whatever is
+  // focused natively (buttons click; the scan box submits; the price/qty
+  // inputs commit). This is layout-agnostic, so it works on all four tills.
+  const posRootRef=useRef(null);
+  // The set of focusable cells currently on the till. Buttons and inputs are
+  // picked up automatically; the price display (a div) opts in via data-pknav.
+  function _pkCells(){
+    const root=posRootRef.current; if(!root) return [];
+    const sel="button:not([disabled]),input:not([disabled]):not([type=hidden]),[data-pknav]";
+    return Array.from(root.querySelectorAll(sel)).filter(el=>{
+      if(el.getAttribute&&el.getAttribute("aria-hidden")==="true") return false;
+      const r=el.getBoundingClientRect();
+      return r.width>0&&r.height>0&&el.offsetParent!==null; // visible only
+    });
+  }
+  function onPosNavKey(e){
+    if(e.key!=="ArrowUp"&&e.key!=="ArrowDown"&&e.key!=="ArrowLeft"&&e.key!=="ArrowRight"&&e.key!=="Escape") return;
+    if(e.ctrlKey||e.metaKey||e.altKey) return;
+    // A blocking modal owns the keyboard — leave navigation to it.
+    if(showPayment||showPrevBill||weighItem||weighPick||newProd||scannedItem) return;
+    if(e.key==="Escape"){ focusScanner(); e.preventDefault(); return; }
+    const els=_pkCells(); if(!els.length) return;
+    const active=document.activeElement;
+    // In a text field, let ←/→ move the caret unless it is already at the edge,
+    // so typing a barcode / price / quantity still works normally.
+    if(active&&(active.tagName==="INPUT"||active.tagName==="TEXTAREA")&&(e.key==="ArrowLeft"||e.key==="ArrowRight")){
+      const atStart=active.selectionStart===0&&active.selectionEnd===0;
+      const atEnd=active.selectionStart===(active.value?.length||0)&&active.selectionEnd===(active.value?.length||0);
+      if((e.key==="ArrowLeft"&&!atStart)||(e.key==="ArrowRight"&&!atEnd)) return;
+    }
+    const cells=els.map((el,i)=>{const r=el.getBoundingClientRect();return{id:i,x:r.left+r.width/2,y:r.top+r.height/2};});
+    const activeIdx=els.indexOf(active);
+    const nextIdx=_gridNextCellId(cells,activeIdx>=0?activeIdx:null,e.key);
+    if(nextIdx==null||nextIdx===activeIdx) return;
+    const target=els[nextIdx]; if(!target) return;
+    e.preventDefault();
+    try{ target.focus({preventScroll:true}); target.scrollIntoView({block:"nearest",inline:"nearest"}); }catch(_){ target.focus(); }
+    if(target.tagName==="INPUT"&&typeof target.select==="function"){ try{target.select();}catch(_){} }
+  }
   // Id of the line a scan/tap last dropped into the cart — the target for the ＋
   // quantity button (type a number then ＋ sets that line's qty; ＋ alone +1s it).
   const lastLineRef=useRef(null);
@@ -6225,7 +6269,10 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
         ? <div style={{margin:"auto",textAlign:"center",color:C.textLight}}><div style={{fontSize:40,opacity:0.5}}>🛒</div><div style={{fontSize:14,marginTop:6}}>Scan an item to start</div></div>
         : cart.map((item,idx)=>(
           <div key={idx} onClick={()=>setSelectedRow(idx===selectedRow?null:idx)}
+            tabIndex={0} data-pknav="row" role="button" aria-label={`Line ${idx+1} ${item.name} — Enter to select`}
+            onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();setSelectedRow(idx===selectedRow?null:idx);}}}
             style={{display:"flex",alignItems:"center",gap:10,padding:"11px 14px",borderRadius:10,cursor:"pointer",background:selectedRow===idx?C.primaryLight:"#fff",border:`1.5px solid ${selectedRow===idx?C.primary:C.border}`,boxShadow:idx===0&&selectedRow==null?`0 0 0 2px ${C.primary}22`:"none"}}>
+            <span aria-hidden="true" style={{flexShrink:0,minWidth:22,height:22,padding:"0 6px",borderRadius:6,background:C.bg,border:`1px solid ${C.border}`,color:C.textMid,fontSize:11,fontWeight:800,display:"flex",alignItems:"center",justifyContent:"center"}}>{idx+1}</span>
             <div style={{flex:1,minWidth:0}}>
               <div style={{fontSize:15,fontWeight:700,color:C.text}}>{item.name}</div>
               <div style={{fontSize:12,color:C.textMid}}>
@@ -6236,7 +6283,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
                       onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();commitPriceEdit();}else if(e.key==="Escape"){e.preventDefault();cancelPriceEdit();}}}
                       onClick={e=>e.stopPropagation()}
                       style={{width:70,textAlign:"right",fontSize:12,fontWeight:700,border:`1.5px solid ${C.primary}`,borderRadius:6,padding:"2px 4px",fontFamily:"inherit",color:C.text}}/>
-                  : <span onClick={e=>{e.stopPropagation();if(!item.weighed)beginPriceEdit(idx);}} title={item.weighed?undefined:"Tap to set a one-off price for this bill"} style={{color:item.priceEdited?C.primary:C.textMid,fontWeight:item.priceEdited?800:400,cursor:item.weighed?"default":"pointer",textDecoration:item.priceEdited?"underline dotted":"none"}}>{fmtSAR(item.price)}{item.weighed?"/kg":""}{item.priceEdited?" ✎":""}</span>}
+                  : <span onClick={e=>{e.stopPropagation();if(!item.weighed)beginPriceEdit(idx);}} tabIndex={0} data-pknav="price" role="button" aria-label={`Price ${fmtSAR(item.price)} — Enter to edit`} onKeyDown={e=>{if(e.key==="Enter"&&!item.weighed){e.preventDefault();e.stopPropagation();beginPriceEdit(idx);}}} title={item.weighed?undefined:"Tap to set a one-off price for this bill"} style={{color:item.priceEdited?C.primary:C.textMid,fontWeight:item.priceEdited?800:400,cursor:item.weighed?"default":"pointer",textDecoration:item.priceEdited?"underline dotted":"none"}}>{fmtSAR(item.price)}{item.weighed?"/kg":""}{item.priceEdited?" ✎":""}</span>}
                 {" × "}{item.qty}{item.weighed?" kg":""}
               </div>
             </div>
@@ -6254,11 +6301,45 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
       <button onClick={()=>{setCart(prev=>prev.filter((_,i)=>i!==selectedRow));setSelectedRow(null);}} style={{padding:"0 14px",height:38,borderRadius:9,border:`1px solid ${C.danger}`,background:C.dangerLight,color:C.danger,fontSize:12,fontWeight:800,cursor:"pointer",fontFamily:"inherit"}}>Remove</button>
     </div>
   ));
+  // ── VAT surfacing ─────────────────────────────────────────────────────────
+  // The single "VAT 15%" line is correct for an all-Standard cart. The moment a
+  // cart mixes in a zero-rated / exempt / out-of-scope item (per-product tax
+  // category), that one line hides the fact that part of the basket carries NO
+  // VAT. Only then do we break the VAT out per category so the cashier always
+  // sees exactly what the customer is paying VAT on — using the same test-locked
+  // cartVat() engine, so the number is identical to what the invoice reports.
+  const _taxCatsOn=taxCatsEnabled();
+  const _vatByCat=cartVat(cart).byCategory;            // inclusive gross per category
+  const _showVatBreakdown=_taxCatsOn&&hasNonStandard(cart);
+  // Chip shown on a cart line when it is NOT standard-rated (nothing on S lines).
+  const lineCatChip=(item)=>{
+    if(!_taxCatsOn) return null;
+    const c=productTaxCategory(item);
+    if(c==="S") return null;
+    const meta=TAX_CATEGORIES[c];
+    return <span title={meta.label} style={{flexShrink:0,fontSize:9,fontWeight:800,color:C.zatca,background:C.zatca+"15",border:`1px solid ${C.zatca}40`,borderRadius:5,padding:"1px 5px",whiteSpace:"nowrap"}}>{c} · 0%</span>;
+  };
+  // VAT rows for the totals panels: one line normally, a per-category breakdown
+  // when the cart is mixed. `fs` keeps each panel's existing font size.
+  const vatTotalRows=(fs=12.5)=>{
+    if(!_showVatBreakdown){
+      return <div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}><span style={{fontSize:fs,color:C.zatca}}>VAT 15%</span><span style={{fontSize:fs,fontWeight:700,color:C.zatca}}>{fmtSAR(vat)}</span></div>;
+    }
+    return <>
+      {TAX_CATEGORY_CODES.filter(c=>_vatByCat[c]>0).map(c=>(
+        <div key={c} style={{display:"flex",justifyContent:"space-between",marginBottom:2}}>
+          <span style={{fontSize:fs-0.5,color:C.zatca}}>{TAX_CATEGORIES[c].label}</span>
+          <span style={{fontSize:fs-0.5,fontWeight:700,color:C.zatca}}>{fmtSAR(c==="S"?vat:0)}</span>
+        </div>
+      ))}
+      <div style={{display:"flex",justifyContent:"space-between",marginBottom:3,paddingTop:3,borderTop:`1px dashed ${C.border}`}}><span style={{fontSize:fs,fontWeight:800,color:C.zatca}}>Total VAT</span><span style={{fontSize:fs,fontWeight:800,color:C.zatca}}>{fmtSAR(vat)}</span></div>
+    </>;
+  };
   const superTotals=(
     <div style={{padding:"14px 16px",borderTop:`2px solid ${C.border}`,background:"#fff"}}>
       <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}><span style={{fontSize:12,color:C.textMid}}>Items {cart.length} · Qty {cart.reduce((s,i)=>s+i.qty,0)}</span></div>
       <div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}><span style={{fontSize:12.5,color:C.textMid}}>Subtotal (excl. VAT)</span><span style={{fontSize:12.5,fontWeight:700}}>{fmtSAR(subtotal)}</span></div>
-      <div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}><span style={{fontSize:12.5,color:C.zatca}}>VAT 15%</span><span style={{fontSize:12.5,fontWeight:700,color:C.zatca}}>{fmtSAR(vat)}</span></div>
+      {vatTotalRows(12.5)}
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,paddingTop:8,borderTop:`1px solid ${C.border}`}}><span style={{fontSize:17,fontWeight:800}}>Total (incl. VAT)</span><span style={{fontSize:22,fontWeight:900,color:C.primary}}>{fmtSAR(total)}</span></div>
       <div style={{display:"flex",gap:8}}>
         <button onClick={()=>{const printed=(sales||[]).filter(s=>s.status!=="voided");if(!printed.length){alert("No previous bills yet");return;}setPrevAllDays(false);setPrevIndex(0);setShowPrevBill(true);}}
@@ -6332,8 +6413,12 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     const del=()=>setCart(prev=>prev.filter((_,i)=>i!==idx));
     return(
       <div key={idx} style={{display:"flex",alignItems:"center",padding:"0 14px",minHeight:46,borderBottom:`1px solid ${C.border}`,background:idx%2?"#FCFDFE":"#fff"}}>
+        <span aria-hidden="true" style={{width:24,flexShrink:0,fontSize:12,fontWeight:800,color:C.textLight,textAlign:"left"}}>{idx+1}</span>
         <div style={{flex:1.4,minWidth:0}}>
-          <div style={{fontSize:15,fontWeight:700,color:C.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{item.name}</div>
+          <div style={{display:"flex",alignItems:"center",gap:6}}>
+            <span style={{fontSize:15,fontWeight:700,color:C.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{item.name}</span>
+            {lineCatChip(item)}
+          </div>
         </div>
         <div style={{flex:1,minWidth:0,fontSize:11,fontFamily:"monospace",color:C.textLight,textAlign:"center",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",padding:"0 6px"}}>{item.barcode||"—"}</div>
         {editPriceIdx===idx&&!item.weighed
@@ -6343,7 +6428,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
               onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();commitPriceEdit();}else if(e.key==="Escape"){e.preventDefault();cancelPriceEdit();}}}
               onClick={e=>e.stopPropagation()}
               style={{width:74,textAlign:"right",fontSize:12,fontWeight:700,border:`1.5px solid ${C.primary}`,borderRadius:6,padding:"3px 4px",fontFamily:"inherit",color:C.text,boxSizing:"border-box"}}/>
-          : <div onClick={e=>{e.stopPropagation();if(!item.weighed)beginPriceEdit(idx);}} title={item.weighed?undefined:"Tap to set a one-off price for this bill"} style={{fontSize:11,color:item.priceEdited?C.primary:C.textMid,fontWeight:item.priceEdited?800:400,width:74,textAlign:"right",paddingRight:8,cursor:item.weighed?"default":"pointer",textDecoration:item.priceEdited?"underline dotted":"none"}}>{fmtSAR(item.price)}{item.weighed?"/kg":""}{item.priceEdited?" ✎":""}</div>}
+          : <div onClick={e=>{e.stopPropagation();if(!item.weighed)beginPriceEdit(idx);}} tabIndex={0} data-pknav="price" role="button" aria-label={`Price ${fmtSAR(item.price)} — Enter to edit`} onKeyDown={e=>{if(e.key==="Enter"&&!item.weighed){e.preventDefault();beginPriceEdit(idx);}}} title={item.weighed?undefined:"Tap to set a one-off price for this bill"} style={{fontSize:11,color:item.priceEdited?C.primary:C.textMid,fontWeight:item.priceEdited?800:400,width:74,textAlign:"right",paddingRight:8,cursor:item.weighed?"default":"pointer",textDecoration:item.priceEdited?"underline dotted":"none"}}>{fmtSAR(item.price)}{item.weighed?"/kg":""}{item.priceEdited?" ✎":""}</div>}
         <div style={{width:118,display:"flex",alignItems:"center",justifyContent:"center",gap:4}}>
           <button onClick={dec} style={{width:28,height:28,borderRadius:8,border:`1px solid ${C.danger}44`,background:C.dangerLight,color:C.danger,fontSize:17,fontWeight:800,cursor:"pointer",fontFamily:"inherit",lineHeight:1}}>−</button>
           {item.weighed
@@ -6376,7 +6461,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
           <div style={{display:"flex",justifyContent:"space-between",fontSize:12.5,color:C.textMid,marginBottom:6}}><span>Items</span><span style={{fontWeight:700,color:C.text}}>{cart.length}</span></div>
           <div style={{display:"flex",justifyContent:"space-between",fontSize:12.5,color:C.textMid,marginBottom:6}}><span>Quantity</span><span style={{fontWeight:700,color:C.text}}>{cart.reduce((s,i)=>s+i.qty,0)}</span></div>
           <div style={{display:"flex",justifyContent:"space-between",fontSize:12.5,color:C.textMid,marginBottom:6,paddingTop:6,borderTop:`1px solid ${C.border}`}}><span>Subtotal (excl. VAT)</span><span style={{fontWeight:700,color:C.text}}>{fmtSAR(subtotal)}</span></div>
-          <div style={{display:"flex",justifyContent:"space-between",fontSize:12.5,color:C.zatca,marginBottom:10}}><span>VAT 15%</span><span style={{fontWeight:700}}>{fmtSAR(vat)}</span></div>
+          <div style={{marginBottom:10}}>{vatTotalRows(12.5)}</div>
           <div style={{borderTop:`1px solid ${C.border}`,paddingTop:10}}>
             <div style={{fontSize:12,color:C.textMid,fontWeight:700}}>Total (incl. VAT)</div>
             <div style={{fontSize:30,fontWeight:900,color:C.primary,lineHeight:1.1}}>{fmtSAR(total)}</div>
@@ -6398,6 +6483,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
         {superBillTabs}
         <div style={{padding:12}}>{superScanBar}</div>
         <div style={{display:"flex",alignItems:"center",padding:"6px 14px",fontSize:10.5,fontWeight:800,letterSpacing:"0.06em",color:C.textLight,borderBottom:`1px solid ${C.border}`}}>
+          <span style={{width:24,flexShrink:0}}>#</span>
           <span style={{flex:1}}>ITEM / BARCODE</span>
           <span style={{width:74,textAlign:"right",paddingRight:8}}>PRICE</span>
           <span style={{width:118,textAlign:"center"}}>QTY</span>
@@ -6413,7 +6499,8 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     </div>
   );
   return(
-    <div style={{display:"flex",height:`calc(100vh - ${TRIAL?82:52}px)`,overflow:"hidden"}}>
+    <div ref={posRootRef} data-postill={superMode?"1":undefined} onKeyDownCapture={superMode?onPosNavKey:undefined} style={{display:"flex",height:`calc(100vh - ${TRIAL?82:52}px)`,overflow:"hidden"}}>
+      {superMode&&<style>{`[data-postill="1"] button:focus-visible,[data-postill="1"] input:focus-visible,[data-postill="1"] [data-pknav]:focus-visible,[data-postill="1"] button:focus,[data-postill="1"] [data-pknav]:focus{outline:3px solid ${C.primary};outline-offset:1px;border-radius:8px;box-shadow:0 0 0 4px ${C.primary}22;}`}</style>}
       {/* Previous Bills — step backward through printed invoices */}
       {showPrevBill&&(()=>{
         const printedAll=(sales||[]).filter(s=>s.status!=="voided").slice().sort((a,b)=>{
@@ -17750,6 +17837,50 @@ export default function App(){
   },[]);
   const [uiScale,setUiScale]=useState(()=>{const v=parseInt(LS.get("restopos_ui_scale")||"100");return isNaN(v)?100:v;});
   function handleScaleChange(v){const s=Math.max(70,Math.min(130,parseInt(v)||100));setUiScale(s);LS.set("restopos_ui_scale",String(s));}
+  // ── Manual cloud Sync (top-bar button; replaces the old Refresh) ───────────
+  // One tap pushes every synced key UP immediately (the normal save path only
+  // debounces, so recent edits may still be in flight), then pulls anything the
+  // cloud holds more of — the SAME restoreFromFirestore() merge a resumed device
+  // uses, so another till's products / settings / sales (incl. monthly archives)
+  // land here on demand. This is a deliberate push-then-pull the cashier
+  // triggers, NOT a live concurrent merge (that is a separate data-model change).
+  const [syncState,setSyncState]=useState(()=>{try{return{busy:false,at:JSON.parse(localStorage.getItem("restopos_last_sync")||"null"),msg:""};}catch(e){return{busy:false,at:null,msg:""};}});
+  async function doManualSync(){
+    if(syncState.busy)return;
+    const lk=license?.licenseKey||LS.get("restopos_license_v2")?.licenseKey;
+    // No license yet, or offline → fall back to the old hard-refresh behaviour.
+    if(!lk||!isOnline){ try{ if("serviceWorker" in navigator) navigator.serviceWorker.getRegistration().then(r=>r&&r.update()).catch(()=>{}); }catch(e){} window.location.reload(); return; }
+    setSyncState(s=>({...s,busy:true,msg:"Syncing…"}));
+    try{
+      // PUSH — flush each synced key now, bypassing the 3s debounce.
+      for(const k of SYNC_KEYS){
+        let raw; try{ raw=localStorage.getItem(k); }catch(e){ raw=null; }
+        if(raw==null) continue;
+        try{ await syncKeyToFirestore(lk,k,JSON.parse(raw)); }catch(e){ /* keep going; one bad key must not stop the rest */ }
+      }
+      // PULL — bring down whatever the cloud holds more of (products, settings,
+      // customers, the recent sales working set, and monthly sales archives).
+      const restored=await restoreFromFirestore(lk);
+      const now=new Date().toISOString();
+      try{ localStorage.setItem("restopos_last_sync",JSON.stringify(now)); }catch(e){}
+      setSyncState({busy:false,at:now,msg:restored?"Synced · new data pulled":"Synced ✓"});
+      // If the pull actually changed local data, reload so every screen shows it.
+      if(restored){ setTimeout(()=>window.location.reload(),700); }
+      else { setTimeout(()=>setSyncState(s=>({...s,msg:""})),2500); }
+    }catch(e){
+      setSyncState(s=>({...s,busy:false,msg:"Sync failed — check connection"}));
+      setTimeout(()=>setSyncState(s=>({...s,msg:""})),3500);
+    }
+  }
+  // Short "x min ago" label for the Sync button's last-synced time.
+  function _syncAgo(iso){
+    if(!iso) return "never";
+    const d=(Date.now()-new Date(iso).getTime())/1000;
+    if(d<60) return "just now";
+    if(d<3600) return Math.floor(d/60)+"m ago";
+    if(d<86400) return Math.floor(d/3600)+"h ago";
+    return Math.floor(d/86400)+"d ago";
+  }
   useEffect(()=>{
     if(TRIAL){
       // Straight into the till as Admin — a trial client shouldn't have to
@@ -17931,8 +18062,15 @@ export default function App(){
             </div>
           )}
           {justCameOnline&&<span style={{fontSize:9,background:"rgba(16,185,129,0.3)",color:"#6ee7b7",padding:"3px 8px",borderRadius:4,fontWeight:800,border:"1px solid rgba(16,185,129,0.5)",whiteSpace:"nowrap"}}>🟢 Back Online</span>}
-          <button onClick={()=>{ try{ if("serviceWorker" in navigator) navigator.serviceWorker.getRegistration().then(r=>r&&r.update()).catch(()=>{}); }catch(e){} window.location.reload(); }}
-            title="Refresh the app — fully reloads and re-reads the latest invoice number and data" style={{display:"flex",alignItems:"center",gap:4,fontSize:10,background:"rgba(255,255,255,0.14)",color:"#fff",padding:"3px 9px",borderRadius:6,fontWeight:800,border:"1px solid rgba(255,255,255,0.22)",cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>🔄 Refresh</button>
+          <style>{`@keyframes pkspin{to{transform:rotate(360deg)}}`}</style>
+          <button onClick={doManualSync} disabled={syncState.busy}
+            title={`Sync now — push this device's data to the cloud and pull the latest down (products, settings, customers, sales).\nLast synced: ${_syncAgo(syncState.at)}`}
+            style={{display:"flex",alignItems:"center",gap:4,fontSize:10,background:syncState.busy?"rgba(46,204,113,0.30)":"rgba(255,255,255,0.14)",color:"#fff",padding:"3px 9px",borderRadius:6,fontWeight:800,border:"1px solid rgba(255,255,255,0.22)",cursor:syncState.busy?"wait":"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>
+            <span style={{display:"inline-block",animation:syncState.busy?"pkspin 0.8s linear infinite":"none"}}>🔄</span>
+            {syncState.busy?"Syncing…":"Sync"}
+            {!syncState.busy&&<span style={{fontSize:8,opacity:0.65,fontWeight:700}}>{_syncAgo(syncState.at)}</span>}
+          </button>
+          {syncState.msg&&!syncState.busy&&<span style={{fontSize:9,background:"rgba(46,204,113,0.25)",color:"#7FFAB5",padding:"2px 7px",borderRadius:4,fontWeight:800,border:"1px solid rgba(46,204,113,0.5)",whiteSpace:"nowrap"}}>{syncState.msg}</span>}
           <span title="Last ZATCA invoice number — only real invoices count, not drafts" style={{fontSize:9,background:"rgba(26,107,74,0.35)",color:"#6ee7b7",padding:"2px 7px",borderRadius:4,fontWeight:800,border:"1px solid rgba(26,107,74,0.5)",whiteSpace:"nowrap"}}>🧾 INV-{String(currentICV).padStart(6,"0")}</span>
           <PendingReportBadge compact/>
           {/* Strict Live indicator — always visible when online (offline shown separately with queue count) */}
