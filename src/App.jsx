@@ -5663,7 +5663,19 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   // numeric barcode is never hijacked into a quantity change.
   function submitScanBox(){
     const raw=String(barcodeInput||"").trim();
-    if(raw) handleBarcodeSearch(raw);
+    if(!raw)return;
+    // Supermarket quick-qty: a 1–2 digit number typed right after a scan SETS the
+    // last scanned line's quantity (scan item → type 10 → Enter → qty 10), then
+    // returns to the scan box for the next item. Anything longer or non-numeric is
+    // always treated as a barcode, so real (8–13 digit) barcodes are never misread.
+    // Only on the scan-first till, and only when the last line is a normal editable
+    // line (not weighed / not price-overridden); otherwise fall through to barcode.
+    if(superMode && /^\d{1,2}$/.test(raw) && lastLineRef.current!=null &&
+       cart.some(c=>c.id===lastLineRef.current && !c.weighed && !c.priceEdited)){
+      applyQtyPlus(); // reads barcodeInput, sets qty (0 removes), clears, refocuses scanner
+      return;
+    }
+    handleBarcodeSearch(raw);
   }
   // ＋ quantity button: a typed number SETS the last scanned line's quantity
   // (type 5 then ＋ → ×5; 0 removes it); ＋ with an empty box just +1s that line.
@@ -6350,9 +6362,11 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     );
   };
   const superTillD=(
-    <div style={{flex:1,display:"flex",overflow:"hidden",background:C.bg}}>
-      {/* LEFT — totals + function keys */}
-      <div style={{width:268,flexShrink:0,background:"#fff",borderRight:`1px solid ${C.border}`,display:"flex",flexDirection:"column",padding:14,gap:12,overflow:"hidden"}}>
+    // row-reverse puts the totals/F-key panel on the RIGHT (supermarket till only);
+    // the panel is the first child below but renders on the right edge.
+    <div style={{flex:1,display:"flex",flexDirection:"row-reverse",overflow:"hidden",background:C.bg}}>
+      {/* RIGHT — totals + function keys (panel) */}
+      <div style={{width:268,flexShrink:0,background:"#fff",borderLeft:`1px solid ${C.border}`,display:"flex",flexDirection:"column",padding:14,gap:12,overflow:"hidden"}}>
         <div style={{display:"flex",alignItems:"center",gap:8}}>
           <span style={{fontSize:18,fontWeight:900,color:C.primary}}>RestoPos</span>
           {superModeChip}
@@ -6379,7 +6393,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
         </div>
         <div style={{marginTop:"auto",fontSize:10.5,color:C.textLight,textAlign:"center"}}>Tap a button or press its F-key</div>
       </div>
-      {/* RIGHT — bill tabs + scan bar + compact rows */}
+      {/* LEFT — bill tabs + scan bar + compact rows */}
       <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
         {superBillTabs}
         <div style={{padding:12}}>{superScanBar}</div>
