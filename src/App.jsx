@@ -5513,15 +5513,17 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   // focused natively (buttons click; the scan box submits; the price/qty
   // inputs commit). This is layout-agnostic, so it works on all four tills.
   const posRootRef=useRef(null);
-  // ── Two-level cart keyboard navigation (Supermarket till) ──────────────────
-  // First arrow picks a WHOLE ITEM (the row is highlighted). Enter / → steps
-  // INTO that item, where ←/→ move between its boxes — name · barcode · price ·
-  // − · qty · + · ✕ — the focused box marked in a DIFFERENT colour; Enter
-  // activates it. Delete removes the selected item, so a mid-list item can be
-  // voided with the keyboard alone. Esc steps back out, then to the scanner.
+  // ── Free cell-flow cart keyboard navigation (Supermarket till) ─────────────
+  // One box is selected at a time and ↑↓←→ move it freely across the grid —
+  // name(0) · barcode(1) · price(2) · qty(3). The two EDITABLE boxes are price
+  // and qty: landing on one makes it live-editable (type digits and they show at
+  // once, no Enter — an arrow then commits and moves on). Delete on the name or
+  // barcode box removes the whole item. A scan always adds, whatever box is
+  // selected (the hardware interceptor runs regardless of focus). Esc leaves nav
+  // and returns to the scanner.
   const [navRow,setNavRow]=useState(null);  // selected cart row, null = none
-  const [navCol,setNavCol]=useState(null);  // selected box in the row, null = whole row
-  const CART_COLS=7;                         // name,barcode,price,minus,qty,plus,delete
+  const [navCol,setNavCol]=useState(null);  // selected box 0..3, null acts as 0
+  const CART_COLS=4;                         // name(0),barcode(1),price(2),qty(3) — free cell flow
   useEffect(()=>{ // keep the selection valid as the cart changes
     if(navRow==null) return;
     if(!cart.length){ setNavRow(null); setNavCol(null); return; }
@@ -5531,7 +5533,6 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     if(navRow==null) return;
     try{ posRootRef.current?.querySelector(`[data-pkrow="${navRow}"]`)?.scrollIntoView({block:"nearest"}); }catch(_){}
   },[navRow,navCol]);
-  const cartQtyDelta=(idx,delta)=>setCart(prev=>prev.map((c,i)=>i===idx?{...c,qty:c.weighed?c.qty:Math.max(1,c.qty+delta)}:c));
   const removeCartRowAt=(idx)=>{
     const newLen=cart.length-1;
     setCart(prev=>prev.filter((_,i)=>i!==idx));
@@ -5541,34 +5542,36 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     showN("✕ Item removed");
   };
   const focusQtyInput=(idx)=>{ setTimeout(()=>{ try{ const el=posRootRef.current?.querySelector(`[data-pkqty="${idx}"]`); if(el){ el.focus(); el.select&&el.select(); } }catch(_){} },30); };
-  const activateCell=(idx,col)=>{
-    const it=cart[idx]; if(!it) return;
-    if(col===2){ if(!it.weighed) beginPriceEdit(idx); }       // price → edit
-    else if(col===3){ cartQtyDelta(idx,-1); }                 // −
-    else if(col===4){ if(!it.weighed) focusQtyInput(idx); }   // qty → type
-    else if(col===5){ cartQtyDelta(idx,1); }                  // +
-    else if(col===6){ removeCartRowAt(idx); }                 // ✕
-    // 0 name / 1 barcode: no action
-  };
-  // Delete inside a BOX clears only that box's value (price / quantity) — it
-  // never removes the item. Only Delete on the whole-item selection, or Enter on
-  // the ✕ box, deletes the item. Non-editable boxes (name/barcode/±/total) ignore it.
-  const clearCell=(idx,col)=>{
-    const it=cart[idx]; if(!it) return;
-    if(col===2){ if(!it.weighed) beginPriceEdit(idx); }       // price → empty, ready to type
-    else if(col===4){ if(!it.weighed) focusQtyInput(idx); }   // qty → selected, ready to retype
-  };
-  const _enterCartNav=(row)=>{ setNavRow(row); setNavCol(null); try{ document.activeElement&&document.activeElement.blur&&document.activeElement.blur(); }catch(_){} };
-  const _exitCartNav=()=>{ setNavRow(null); setNavCol(null); focusScanner(); };
+  const _enterCartNav=(row)=>{ setNavRow(row); setNavCol(0); };
+  const _exitCartNav=()=>{ if(editPriceIdx!=null) commitPriceEdit(); setNavRow(null); setNavCol(null); focusScanner(); };
+  // Free cell flow: arrows move a single selection across every editable box in
+  // the cart. Landing on PRICE (2) opens its editor; landing on QTY (3) focuses
+  // its box — so a number typed there reflects live, no Enter needed. Leaving an
+  // editable box commits/blurs it so stray keys can't leak into the wrong field.
+  useEffect(()=>{
+    if(navRow==null||navCol==null){ if(editPriceIdx!=null) commitPriceEdit(); return; }
+    const it=cart[navRow];
+    if(navCol!==2 && editPriceIdx!=null) commitPriceEdit();           // left the price cell
+    if(it){
+      if(navCol===2 && !it.weighed && editPriceIdx!==navRow) beginPriceEdit(navRow);
+      else if(navCol===3 && !it.weighed) focusQtyInput(navRow);
+    }
+    if(navCol!==3){                                                   // left the qty box
+      try{ const a=document.activeElement; if(a&&a.getAttribute&&a.getAttribute("data-pkqty")!=null) a.blur(); }catch(_){}
+    }
+    if(navCol===0||navCol===1){                                       // name/barcode hold no input
+      try{ const a=document.activeElement; if(a&&a.closest&&a.closest('[data-pkzone="cart"]')&&a.tagName==="INPUT") a.blur(); }catch(_){}
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[navRow,navCol]);
   function onPosNavKey(e){
     if(e.key!=="ArrowUp"&&e.key!=="ArrowDown"&&e.key!=="ArrowLeft"&&e.key!=="ArrowRight"&&e.key!=="Escape"&&e.key!=="Delete"&&e.key!=="Enter") return;
     if(e.ctrlKey||e.metaKey||e.altKey) return;
     // Only when the till is actually on screen (the POS can stay mounted behind
     // another screen), so arrows never hijack inputs elsewhere in the app.
     if(!posRootRef.current||posRootRef.current.offsetParent===null) return;
-    const ae=document.activeElement;
-    const editingCartInput = ae && ae.tagName==="INPUT" && ae.closest && ae.closest('[data-pkzone="cart"]');
-    // ── Escape — close the top-most window, an inline edit, or step out of nav.
+    const col = navCol==null?0:navCol;
+    // ── Escape — close the top-most window, cancel an inline edit, or leave nav.
     if(e.key==="Escape"){
       if(showPayment){e.preventDefault();e.stopPropagation();setShowPayment(false);focusScanner();return;}
       if(scannedItem){e.preventDefault();e.stopPropagation();setScannedItem(null);focusScanner();return;}
@@ -5577,45 +5580,33 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
       if(newProd){e.preventDefault();e.stopPropagation();setNewProd(null);focusScanner();return;}
       if(showPrevBill){e.preventDefault();e.stopPropagation();setShowPrevBill(false);focusScanner();return;}
       if(showDescModal){e.preventDefault();e.stopPropagation();setShowDescModal(false);focusScanner();return;}
-      if(editingCartInput) return;                              // let the field's own Esc cancel it
-      if(navRow!=null){ e.preventDefault(); if(navCol!=null) setNavCol(null); else _exitCartNav(); return; }
+      if(navRow!=null){ e.preventDefault(); if(editPriceIdx!=null) cancelPriceEdit(); _exitCartNav(); return; }
       focusScanner(); return;
     }
     // A blocking modal owns the remaining keys.
     if(showPayment||showPrevBill||weighItem||weighPick||newProd||scannedItem||showDescModal) return;
-    // A price / qty field is being edited — let it keep the keyboard.
-    if(editingCartInput) return;
-    // ── Delete — remove the selected item (fallback: the last one).
-    if(e.key==="Delete"){
-      e.preventDefault(); e.stopPropagation();
-      if(navRow!=null && cart[navRow]){
-        if(navCol==null) removeCartRowAt(navRow);   // whole item selected → remove the item
-        else clearCell(navRow,navCol);               // a box selected → clear only that box
-      }
-      else if(cart.length) removeLastLine();          // not navigating → void the last line
-      return;
-    }
     if(!cart.length) return;
-    // Not in the cart yet: ↓ grabs the first item, ↑ the last.
+    // Not in the cart yet: ↓ grabs the first item, ↑ the last (both land on name).
     if(navRow==null){
       if(e.key==="ArrowDown"){ e.preventDefault(); _enterCartNav(0); return; }
       if(e.key==="ArrowUp"){ e.preventDefault(); _enterCartNav(cart.length-1); return; }
       return;
     }
-    if(navCol==null){
-      // ROW MODE — a whole item is selected.
-      if(e.key==="ArrowUp"){ e.preventDefault(); if(navRow>0) setNavRow(navRow-1); else _exitCartNav(); return; }
-      if(e.key==="ArrowDown"){ e.preventDefault(); if(navRow<cart.length-1) setNavRow(navRow+1); return; }
-      if(e.key==="ArrowRight"||e.key==="Enter"){ e.preventDefault(); setNavCol(0); return; }
-      if(e.key==="ArrowLeft"){ e.preventDefault(); _exitCartNav(); return; }
+    // ── Delete — only name(0)/barcode(1) remove the whole item. On the price/qty
+    // boxes Delete belongs to the field (clears a digit), so we let it through.
+    if(e.key==="Delete"){
+      if(col===0||col===1){ e.preventDefault(); e.stopPropagation(); if(cart[navRow]) removeCartRowAt(navRow); }
       return;
     }
-    // CELL MODE — a box inside the item is selected.
-    if(e.key==="ArrowLeft"){ e.preventDefault(); if(navCol>0) setNavCol(navCol-1); else setNavCol(null); return; }
-    if(e.key==="ArrowRight"){ e.preventDefault(); if(navCol<CART_COLS-1) setNavCol(navCol+1); return; }
-    if(e.key==="ArrowUp"){ e.preventDefault(); if(navRow>0) setNavRow(navRow-1); return; }
+    // ── Arrows flow freely between boxes, even while a price/qty input is focused
+    // (the editable boxes are short, so we take the arrows for navigation). Moving
+    // off an editable box commits it via the [navRow,navCol] effect above.
+    if(e.key==="ArrowLeft"){ e.preventDefault(); if(col>0) setNavCol(col-1); else _exitCartNav(); return; }
+    if(e.key==="ArrowRight"){ e.preventDefault(); if(col<CART_COLS-1) setNavCol(col+1); return; }
+    if(e.key==="ArrowUp"){ e.preventDefault(); if(navRow>0) setNavRow(navRow-1); else _exitCartNav(); return; }
     if(e.key==="ArrowDown"){ e.preventDefault(); if(navRow<cart.length-1) setNavRow(navRow+1); return; }
-    if(e.key==="Enter"){ e.preventDefault(); activateCell(navRow,navCol); return; }
+    if(e.key==="Enter"){ e.preventDefault(); if(navRow<cart.length-1) setNavRow(navRow+1); else _exitCartNav(); return; }
+    // Any other key (digits) falls through to the focused price/qty input → live edit.
   }
   // Drive the two-level nav from a document-level listener so it keeps working
   // after the scan box is blurred (a handler bound to the till root only fires
@@ -5709,7 +5700,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   // cashier types the new amount straight away, no backspacing. Leaving it empty
   // keeps the original price (commitPriceEdit treats a blank/NaN as "unchanged").
   function beginPriceEdit(idx){const c=cart[idx];if(!c||c.weighed)return;setEditPriceIdx(idx);setEditPriceVal("");}
-  function commitPriceEdit(){setEditPriceIdx(cur=>{if(cur==null)return null;const n=parseFloat(String(editPriceVal).replace(/[^\d.]/g,""));setCart(prev=>prev.map((c,i)=>i===cur?{...c,price:(n>=0&&!Number.isNaN(n))?Math.round(n*100)/100:c.price,priceEdited:true}:c));return null;});setEditPriceVal("");}
+  function commitPriceEdit(){setEditPriceIdx(cur=>{if(cur==null)return null;const raw=String(editPriceVal).trim();if(raw===""){return null;}const n=parseFloat(raw.replace(/[^\d.]/g,""));setCart(prev=>prev.map((c,i)=>i===cur?{...c,price:(n>=0&&!Number.isNaN(n))?Math.round(n*100)/100:c.price,priceEdited:true}:c));return null;});setEditPriceVal("");}
   function cancelPriceEdit(){setEditPriceIdx(null);setEditPriceVal("");}
   // Resolve a scanned/typed code straight to the cart. A clean barcode hit on an
   // active product is added immediately (the cashier wanted it in the basket);
@@ -6521,19 +6512,15 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     return ()=>window.removeEventListener("keydown",onKey);
   },[superMode,superLayout,cart.length,priceCheck,showPayment]);
   const superTillRow=(item,idx)=>{
-    const inc=()=>setCart(prev=>prev.map((c,i)=>i===idx?{...c,qty:c.weighed?c.qty:c.qty+1}:c));
-    const dec=()=>setCart(prev=>prev.map((c,i)=>i===idx?{...c,qty:Math.max(c.weighed?c.qty:1,c.qty-1)}:c));
     const del=()=>removeCartRowAt(idx);
-    const rowSel=navRow===idx;                 // whole item selected by arrows
-    const wholeRow=rowSel&&navCol==null;       // row-mode (item, not a box, selected)
-    // A focused box is marked in a DISTINCT colour (amber) vs the green row.
-    const cellHL=(col)=>(rowSel&&navCol===col)?{boxShadow:`0 0 0 2px ${C.warning}`,background:"#FFF7E6",borderRadius:6}:null;
+    const rowSel=navRow===idx;                 // this row holds the arrow selection
+    // The selected box is marked in a DISTINCT colour (amber) against the green row.
+    const cellHL=(col)=>(rowSel&&(navCol==null?0:navCol)===col)?{boxShadow:`0 0 0 2px ${C.warning}`,background:"#FFF7E6",borderRadius:6}:null;
     return(
       <div key={idx} data-pkrow={idx} style={{display:"flex",alignItems:"stretch",minHeight:46,borderBottom:`1px solid ${C.border}`,
-        background: wholeRow?C.primaryLight:(rowSel?"#F1F8F4":(idx%2?"#FCFDFE":"#fff")),
-        boxShadow: wholeRow?`inset 4px 0 0 ${C.primary}`:"none",
-        outline: wholeRow?`2px solid ${C.primary}`:"none", outlineOffset:"-2px"}}>
-        <span aria-hidden="true" style={{width:24,flexShrink:0,fontSize:12,fontWeight:800,color:wholeRow?C.primary:C.textLight,display:"flex",alignItems:"center",justifyContent:"center",borderRight:`1px solid ${C.border}`}}>{idx+1}</span>
+        background: rowSel?"#F1F8F4":(idx%2?"#FCFDFE":"#fff"),
+        boxShadow: rowSel?`inset 4px 0 0 ${C.primary}`:"none"}}>
+        <span aria-hidden="true" style={{width:24,flexShrink:0,fontSize:12,fontWeight:800,color:rowSel?C.primary:C.textLight,display:"flex",alignItems:"center",justifyContent:"center",borderRight:`1px solid ${C.border}`}}>{idx+1}</span>
         <div style={{flex:1.4,minWidth:0,display:"flex",alignItems:"center",padding:"0 6px",borderRight:`1px solid ${C.border}`}}>
           <div data-pknav="name" aria-label={`Line ${idx+1} ${item.name}`} style={{display:"flex",alignItems:"center",gap:6,width:"100%",minWidth:0,padding:"2px 4px",...cellHL(0)}}>
             <span style={{fontSize:15,fontWeight:700,color:C.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{posItemName(item,posNameMode)}</span>
@@ -6553,20 +6540,18 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
                 style={{width:62,textAlign:"right",fontSize:12,fontWeight:700,border:`1.5px solid ${C.primary}`,borderRadius:6,padding:"3px 4px",fontFamily:"inherit",color:C.text,boxSizing:"border-box"}}/>
             : <div onClick={e=>{e.stopPropagation();if(!item.weighed)beginPriceEdit(idx);}} data-pknav="price" aria-label={`Price ${fmtSAR(item.price)} — Enter to edit`} title={item.weighed?undefined:"Tap to set a one-off price for this bill"} style={{fontSize:11,color:item.priceEdited?C.primary:C.textMid,fontWeight:item.priceEdited?800:400,textAlign:"right",padding:"2px 4px",cursor:item.weighed?"default":"pointer",textDecoration:item.priceEdited?"underline dotted":"none",...cellHL(2)}}>{fmtSAR(item.price)}{item.weighed?"/kg":""}{item.priceEdited?" ✎":""}</div>}
         </div>
-        <div style={{width:118,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",gap:4,borderRight:`1px solid ${C.border}`}}>
-          <button onClick={dec} style={{width:28,height:28,borderRadius:8,border:`1px solid ${C.danger}44`,background:C.dangerLight,color:C.danger,fontSize:17,fontWeight:800,cursor:"pointer",fontFamily:"inherit",lineHeight:1,...cellHL(3)}}>−</button>
+        <div style={{width:92,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",borderRight:`1px solid ${C.border}`}}>
           {item.weighed
-            ? <span style={{width:40,textAlign:"center",fontSize:13.5,fontWeight:800,color:C.text,...cellHL(4)}}>{item.qty}kg</span>
+            ? <span style={{minWidth:56,textAlign:"center",fontSize:13.5,fontWeight:800,color:C.text,padding:"4px 6px",...cellHL(3)}}>{item.qty}kg</span>
             : <input value={item.qty} inputMode="numeric" data-pkqty={idx} onFocus={e=>e.target.select()}
                 onChange={e=>{const n=parseInt(e.target.value.replace(/[^\d]/g,""),10);setCart(prev=>prev.map((c,i)=>i===idx?{...c,qty:(n&&n>0)?n:1}:c));}}
                 onKeyDown={e=>{if(e.key==="Enter"||e.key==="Escape"){e.preventDefault();e.currentTarget.blur();}}}
                 title="Type the quantity"
-                style={{width:40,textAlign:"center",fontSize:14,fontWeight:800,color:C.text,border:`1px solid ${C.border}`,borderRadius:7,padding:"5px 0",fontFamily:"inherit",background:"#fff",...cellHL(4)}}/>}
-          <button onClick={inc} style={{width:28,height:28,borderRadius:8,border:`1px solid ${C.primary}44`,background:C.primaryLight,color:C.primary,fontSize:17,fontWeight:800,cursor:"pointer",fontFamily:"inherit",lineHeight:1,...cellHL(5)}}>+</button>
+                style={{width:56,textAlign:"center",fontSize:15,fontWeight:800,color:C.text,border:`1px solid ${C.border}`,borderRadius:7,padding:"6px 0",fontFamily:"inherit",background:"#fff",...cellHL(3)}}/>}
         </div>
         <div style={{width:86,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"flex-end",padding:"0 8px",borderRight:`1px solid ${C.border}`,fontSize:14,fontWeight:900,color:C.primary}}>{fmtSAR(item.price*item.qty)}</div>
         <div style={{width:36,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center"}}>
-          <button onClick={del} title="Delete line" style={{width:26,height:26,borderRadius:7,border:"none",background:C.dangerLight,color:C.danger,fontSize:13,cursor:"pointer",fontFamily:"inherit",...cellHL(6)}}>✕</button>
+          <button onClick={del} title="Delete line" style={{width:26,height:26,borderRadius:7,border:"none",background:C.dangerLight,color:C.danger,fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>✕</button>
         </div>
       </div>
     );
@@ -6614,7 +6599,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
           <span style={{flex:1.4,minWidth:0,display:"flex",alignItems:"center",padding:"0 8px",borderRight:`1px solid ${C.border}`}}>ITEM</span>
           <span style={{flex:1,minWidth:0,display:"flex",alignItems:"center",justifyContent:"center",borderRight:`1px solid ${C.border}`}}>BARCODE</span>
           <span style={{width:74,display:"flex",alignItems:"center",justifyContent:"flex-end",padding:"0 8px",borderRight:`1px solid ${C.border}`}}>PRICE</span>
-          <span style={{width:118,display:"flex",alignItems:"center",justifyContent:"center",borderRight:`1px solid ${C.border}`}}>QTY</span>
+          <span style={{width:92,display:"flex",alignItems:"center",justifyContent:"center",borderRight:`1px solid ${C.border}`}}>QTY</span>
           <span style={{width:86,display:"flex",alignItems:"center",justifyContent:"flex-end",padding:"0 8px",borderRight:`1px solid ${C.border}`}}>TOTAL</span>
           <span style={{width:36}}/>
         </div>
