@@ -5553,7 +5553,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     showN("✕ Item removed");
   };
   const focusQtyInput=(idx)=>{ setTimeout(()=>{ try{ const el=posRootRef.current?.querySelector(`[data-pkqty="${idx}"]`); if(el){ el.focus(); el.select&&el.select(); } }catch(_){} },30); };
-  const _enterCartNav=(row)=>{ setNavRow(row); setNavCol(0); };
+  const _enterCartNav=(row)=>{ setNavRow(row); setNavCol(0); try{ const a=document.activeElement; if(a&&a.blur&&!a.closest?.('[data-pkzone="cart"]')) a.blur(); }catch(_){} };
   const _exitCartNav=()=>{ if(editPriceIdx!=null) commitPriceEdit(); setNavRow(null); setNavCol(null); focusScanner(); };
   // Free cell flow: arrows move a single selection across every editable box in
   // the cart. Landing on PRICE (2) opens its editor; landing on QTY (3) focuses
@@ -6352,7 +6352,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     <div data-pkzone="scan" style={{display:"flex",gap:8,flex:1,minWidth:0}}>
       <input ref={barcodeRef} value={barcodeInput}
         onChange={e=>setBarcodeInput(e.target.value)}
-        onKeyDown={e=>{if(e.key==="Enter"&&barcodeInput.trim())submitScanBox();else if(e.key==="Delete"&&!barcodeInput)removeLastLine();}}
+        onKeyDown={e=>{if(e.key==="Enter"&&barcodeInput.trim())submitScanBox();else if(e.key==="Delete"&&!barcodeInput&&navRow==null)removeLastLine();}}
         placeholder={priceCheck?"🔍 Price check — scan to view":"🔲 Scan barcode or type code…"}
         style={{flex:1,minWidth:0,padding:"12px 16px",border:`2px solid ${priceCheck?C.warning:C.primary}`,borderRadius:10,fontSize:16,fontWeight:600,fontFamily:"inherit",background:"#fff",color:C.text}}/>
       {!priceCheck&&<button onClick={applyQtyPlus} title="Set the last scanned item's quantity to the typed number (or ＋1 if empty)" style={{flexShrink:0,width:52,borderRadius:10,border:`2px solid ${C.primary}`,background:C.primaryLight,color:C.primary,fontSize:24,fontWeight:900,cursor:"pointer",fontFamily:"inherit",lineHeight:1}}>＋</button>}
@@ -7004,7 +7004,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
       {/* LEFT — Menu */}
       <div style={{flex:1,display:"flex",flexDirection:"column",borderRight:`1px solid ${C.border}`,background:C.bg,overflow:"hidden"}}>
         <div style={{padding:"8px 12px",background:C.zatcaLight,borderBottom:`1px solid ${C.border}`,display:"flex",gap:8,alignItems:"center"}}>
-          <input ref={barcodeRef} value={barcodeInput} onChange={e=>setBarcodeInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&barcodeInput.trim())submitScanBox();else if(e.key==="Delete"&&!barcodeInput)removeLastLine();}} placeholder={priceCheck?"🔍 Price check — scan to view":"🔲 Scan barcode or type…"} style={{flex:1,minWidth:0,padding:"7px 12px",border:`1.5px solid ${priceCheck?C.warning:C.zatca}`,borderRadius:8,fontSize:13,fontFamily:"inherit",background:"#fff"}}/>
+          <input ref={barcodeRef} value={barcodeInput} onChange={e=>setBarcodeInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&barcodeInput.trim())submitScanBox();else if(e.key==="Delete"&&!barcodeInput&&navRow==null)removeLastLine();}} placeholder={priceCheck?"🔍 Price check — scan to view":"🔲 Scan barcode or type…"} style={{flex:1,minWidth:0,padding:"7px 12px",border:`1.5px solid ${priceCheck?C.warning:C.zatca}`,borderRadius:8,fontSize:13,fontFamily:"inherit",background:"#fff"}}/>
           <button onClick={()=>setPriceCheck(p=>!p)} title="Price check: scan to view details only, never add to cart" style={{flexShrink:0,height:34,padding:"0 11px",borderRadius:8,border:`1.5px solid ${priceCheck?C.warning:C.border}`,background:priceCheck?C.warningLight:"#fff",color:priceCheck?C.warning:C.textMid,cursor:"pointer",fontSize:12,fontWeight:800,fontFamily:"inherit"}}>🔍 {priceCheck?"Price Check ON":"Price Check"}</button>
           {!editMode
             ? <button onClick={enterEdit} title="Edit layout — reorder items & resize boxes" style={{flexShrink:0,width:38,height:36,borderRadius:8,border:`1.5px solid ${C.border}`,background:"#fff",cursor:"pointer",fontSize:17,display:"flex",alignItems:"center",justifyContent:"center"}}>✏️</button>
