@@ -6518,27 +6518,31 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     // A focused box is marked in a DISTINCT colour (amber) vs the green row.
     const cellHL=(col)=>(rowSel&&navCol===col)?{boxShadow:`0 0 0 2px ${C.warning}`,background:"#FFF7E6",borderRadius:6}:null;
     return(
-      <div key={idx} data-pkrow={idx} style={{display:"flex",alignItems:"center",padding:"0 14px",minHeight:46,borderBottom:`1px solid ${C.border}`,
+      <div key={idx} data-pkrow={idx} style={{display:"flex",alignItems:"stretch",minHeight:46,borderBottom:`1px solid ${C.border}`,
         background: wholeRow?C.primaryLight:(rowSel?"#F1F8F4":(idx%2?"#FCFDFE":"#fff")),
         boxShadow: wholeRow?`inset 4px 0 0 ${C.primary}`:"none",
         outline: wholeRow?`2px solid ${C.primary}`:"none", outlineOffset:"-2px"}}>
-        <span aria-hidden="true" style={{width:24,flexShrink:0,fontSize:12,fontWeight:800,color:wholeRow?C.primary:C.textLight,textAlign:"left"}}>{idx+1}</span>
-        <div style={{flex:1.4,minWidth:0}}>
-          <div data-pknav="name" aria-label={`Line ${idx+1} ${item.name}`} style={{display:"flex",alignItems:"center",gap:6,cursor:"default",padding:"2px 4px",...cellHL(0)}}>
+        <span aria-hidden="true" style={{width:24,flexShrink:0,fontSize:12,fontWeight:800,color:wholeRow?C.primary:C.textLight,display:"flex",alignItems:"center",justifyContent:"center",borderRight:`1px solid ${C.border}`}}>{idx+1}</span>
+        <div style={{flex:1.4,minWidth:0,display:"flex",alignItems:"center",padding:"0 6px",borderRight:`1px solid ${C.border}`}}>
+          <div data-pknav="name" aria-label={`Line ${idx+1} ${item.name}`} style={{display:"flex",alignItems:"center",gap:6,width:"100%",minWidth:0,padding:"2px 4px",...cellHL(0)}}>
             <span style={{fontSize:15,fontWeight:700,color:C.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{posItemName(item,posNameMode)}</span>
             {lineCatChip(item)}
           </div>
         </div>
-        <div data-pknav="barcode" aria-label={`Barcode ${item.barcode||"none"}`} style={{flex:1,minWidth:0,fontSize:11,fontFamily:"monospace",color:C.textLight,textAlign:"center",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",padding:"2px 6px",...cellHL(1)}}>{item.barcode||"—"}</div>
-        {editPriceIdx===idx&&!item.weighed
-          ? <input autoFocus value={editPriceVal} inputMode="decimal" placeholder={String(item.price)}
-              onChange={e=>setEditPriceVal(e.target.value.replace(/[^\d.]/g,""))}
-              onBlur={commitPriceEdit}
-              onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();commitPriceEdit();}else if(e.key==="Escape"){e.preventDefault();cancelPriceEdit();}}}
-              onClick={e=>e.stopPropagation()}
-              style={{width:74,textAlign:"right",fontSize:12,fontWeight:700,border:`1.5px solid ${C.primary}`,borderRadius:6,padding:"3px 4px",fontFamily:"inherit",color:C.text,boxSizing:"border-box"}}/>
-          : <div onClick={e=>{e.stopPropagation();if(!item.weighed)beginPriceEdit(idx);}} data-pknav="price" aria-label={`Price ${fmtSAR(item.price)} — Enter to edit`} title={item.weighed?undefined:"Tap to set a one-off price for this bill"} style={{fontSize:11,color:item.priceEdited?C.primary:C.textMid,fontWeight:item.priceEdited?800:400,width:74,textAlign:"right",padding:"2px 8px 2px 0",cursor:item.weighed?"default":"pointer",textDecoration:item.priceEdited?"underline dotted":"none",...cellHL(2)}}>{fmtSAR(item.price)}{item.weighed?"/kg":""}{item.priceEdited?" ✎":""}</div>}
-        <div style={{width:118,display:"flex",alignItems:"center",justifyContent:"center",gap:4}}>
+        <div style={{flex:1,minWidth:0,display:"flex",alignItems:"center",justifyContent:"center",padding:"0 4px",borderRight:`1px solid ${C.border}`}}>
+          <div data-pknav="barcode" aria-label={`Barcode ${item.barcode||"none"}`} style={{fontSize:11,fontFamily:"monospace",color:C.textLight,textAlign:"center",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",padding:"2px 6px",maxWidth:"100%",...cellHL(1)}}>{item.barcode||"—"}</div>
+        </div>
+        <div style={{width:74,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"flex-end",padding:"0 6px",borderRight:`1px solid ${C.border}`}}>
+          {editPriceIdx===idx&&!item.weighed
+            ? <input autoFocus value={editPriceVal} inputMode="decimal" placeholder={String(item.price)}
+                onChange={e=>setEditPriceVal(e.target.value.replace(/[^\d.]/g,""))}
+                onBlur={commitPriceEdit}
+                onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();commitPriceEdit();}else if(e.key==="Escape"){e.preventDefault();cancelPriceEdit();}}}
+                onClick={e=>e.stopPropagation()}
+                style={{width:62,textAlign:"right",fontSize:12,fontWeight:700,border:`1.5px solid ${C.primary}`,borderRadius:6,padding:"3px 4px",fontFamily:"inherit",color:C.text,boxSizing:"border-box"}}/>
+            : <div onClick={e=>{e.stopPropagation();if(!item.weighed)beginPriceEdit(idx);}} data-pknav="price" aria-label={`Price ${fmtSAR(item.price)} — Enter to edit`} title={item.weighed?undefined:"Tap to set a one-off price for this bill"} style={{fontSize:11,color:item.priceEdited?C.primary:C.textMid,fontWeight:item.priceEdited?800:400,textAlign:"right",padding:"2px 4px",cursor:item.weighed?"default":"pointer",textDecoration:item.priceEdited?"underline dotted":"none",...cellHL(2)}}>{fmtSAR(item.price)}{item.weighed?"/kg":""}{item.priceEdited?" ✎":""}</div>}
+        </div>
+        <div style={{width:118,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",gap:4,borderRight:`1px solid ${C.border}`}}>
           <button onClick={dec} style={{width:28,height:28,borderRadius:8,border:`1px solid ${C.danger}44`,background:C.dangerLight,color:C.danger,fontSize:17,fontWeight:800,cursor:"pointer",fontFamily:"inherit",lineHeight:1,...cellHL(3)}}>−</button>
           {item.weighed
             ? <span style={{width:40,textAlign:"center",fontSize:13.5,fontWeight:800,color:C.text,...cellHL(4)}}>{item.qty}kg</span>
@@ -6549,8 +6553,8 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
                 style={{width:40,textAlign:"center",fontSize:14,fontWeight:800,color:C.text,border:`1px solid ${C.border}`,borderRadius:7,padding:"5px 0",fontFamily:"inherit",background:"#fff",...cellHL(4)}}/>}
           <button onClick={inc} style={{width:28,height:28,borderRadius:8,border:`1px solid ${C.primary}44`,background:C.primaryLight,color:C.primary,fontSize:17,fontWeight:800,cursor:"pointer",fontFamily:"inherit",lineHeight:1,...cellHL(5)}}>+</button>
         </div>
-        <div style={{width:86,textAlign:"right",fontSize:14,fontWeight:900,color:C.primary}}>{fmtSAR(item.price*item.qty)}</div>
-        <div style={{width:36,textAlign:"right"}}>
+        <div style={{width:86,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"flex-end",padding:"0 8px",borderRight:`1px solid ${C.border}`,fontSize:14,fontWeight:900,color:C.primary}}>{fmtSAR(item.price*item.qty)}</div>
+        <div style={{width:36,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center"}}>
           <button onClick={del} title="Delete line" style={{width:26,height:26,borderRadius:7,border:"none",background:C.dangerLight,color:C.danger,fontSize:13,cursor:"pointer",fontFamily:"inherit",...cellHL(6)}}>✕</button>
         </div>
       </div>
@@ -6592,12 +6596,15 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
       <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
         {superBillTabs}
         <div style={{padding:12}}>{superScanBar}</div>
-        <div style={{display:"flex",alignItems:"center",padding:"6px 14px",fontSize:10.5,fontWeight:800,letterSpacing:"0.06em",color:C.textLight,borderBottom:`1px solid ${C.border}`}}>
-          <span style={{width:24,flexShrink:0}}>#</span>
-          <span style={{flex:1}}>ITEM / BARCODE</span>
-          <span style={{width:74,textAlign:"right",paddingRight:8}}>PRICE</span>
-          <span style={{width:118,textAlign:"center"}}>QTY</span>
-          <span style={{width:86,textAlign:"right"}}>TOTAL</span>
+        {/* Grid header — each column is a bordered box, so the keyboard-selected
+           cell below reads against clear grid lines (spreadsheet-style till). */}
+        <div style={{display:"flex",alignItems:"stretch",minHeight:28,fontSize:10.5,fontWeight:800,letterSpacing:"0.04em",color:C.textMid,borderTop:`1px solid ${C.border}`,borderBottom:`2px solid #C9D6CE`,background:"#EDF2EF"}}>
+          <span style={{width:24,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",borderRight:`1px solid ${C.border}`}}>#</span>
+          <span style={{flex:1.4,minWidth:0,display:"flex",alignItems:"center",padding:"0 8px",borderRight:`1px solid ${C.border}`}}>ITEM</span>
+          <span style={{flex:1,minWidth:0,display:"flex",alignItems:"center",justifyContent:"center",borderRight:`1px solid ${C.border}`}}>BARCODE</span>
+          <span style={{width:74,display:"flex",alignItems:"center",justifyContent:"flex-end",padding:"0 8px",borderRight:`1px solid ${C.border}`}}>PRICE</span>
+          <span style={{width:118,display:"flex",alignItems:"center",justifyContent:"center",borderRight:`1px solid ${C.border}`}}>QTY</span>
+          <span style={{width:86,display:"flex",alignItems:"center",justifyContent:"flex-end",padding:"0 8px",borderRight:`1px solid ${C.border}`}}>TOTAL</span>
           <span style={{width:36}}/>
         </div>
         <div data-pkzone="cart" style={{flex:1,overflowY:"auto"}}>
