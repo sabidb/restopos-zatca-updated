@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildDailyReport, datesWithActivity, dailyReportHTML } from "./dailyReport.js";
+import { buildDailyReport, datesWithActivity, dailyReportHTML, buildPeriodReport, periodReportHTML } from "./dailyReport.js";
 
 const sales = [
   { id: 1, date: "2026-11-25", status: "completed", total: 115, vat: 15, payMethod: "Card", items: [{ category: "Dairy", qty: 2, price: 57.5 }] },
@@ -55,6 +55,32 @@ test("empty inputs are safe", () => {
   assert.equal(r.orderCount, 0);
   assert.equal(r.netVat, 0);
   assert.deepEqual(datesWithActivity([], []), []);
+});
+
+test("buildPeriodReport aggregates a date range with per-day rows", () => {
+  const r = buildPeriodReport(sales, purchases, "2026-11-24", "2026-11-25");
+  assert.equal(r.dayCount, 2);
+  assert.equal(r.orderCount, 3);          // 2 on the 25th + 1 on the 24th
+  assert.equal(r.revenue, 184);           // 138 + 46
+  assert.equal(r.vat, 24);                // 18 + 6  (output)
+  assert.equal(r.purchasesVat, 12);       // only 25th has purchases (15 − 3)
+  assert.equal(r.netVat, 12);             // 24 − 12
+  assert.deepEqual(r.days.map((d) => d.date), ["2026-11-24", "2026-11-25"]); // ascending
+});
+
+test("buildPeriodReport excludes out-of-range days", () => {
+  const r = buildPeriodReport(sales, purchases, "2026-11-25", "2026-11-25");
+  assert.equal(r.dayCount, 1);
+  assert.equal(r.orderCount, 2);
+  assert.equal(r.purchasesTotal, 92);
+});
+
+test("periodReportHTML renders the range, a by-day table and net VAT", () => {
+  const html = periodReportHTML(buildPeriodReport(sales, purchases, "2026-11-24", "2026-11-25"), { businessName: "Mart", vatNumber: "300" });
+  assert.match(html, /Period Report/);
+  assert.match(html, /2026-11-24 → 2026-11-25/);
+  assert.match(html, /By day/);
+  assert.match(html, /NET VAT PAYABLE/);
 });
 
 test("dailyReportHTML renders shop info, net VAT and escapes", () => {

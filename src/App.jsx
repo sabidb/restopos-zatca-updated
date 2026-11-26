@@ -38,7 +38,7 @@ import { initPOStore, setPurchaseOrdersLocal, loadPurchaseOrders } from "./lib/p
 import { initPurchaseCloud, setPurchaseCloudLicense, purchaseDocsCloud, purchaseOrdersCloud, mergeById } from "./lib/purchaseCloud.js";
 import { purchaseDocsToVatTx } from "./lib/vatBridge.js";
 import { signedAmounts as _purSignedAmounts } from "./lib/purchases.js";
-import { buildDailyReport, datesWithActivity, dailyReportHTML } from "./lib/dailyReport.js";
+import { buildDailyReport, datesWithActivity, dailyReportHTML, buildPeriodReport, periodReportHTML } from "./lib/dailyReport.js";
 import { getLang, setLangStore, t, dir } from "./i18n/index.js";
 import { BUSINESS_TYPES, DEFAULT_BUSINESS_TYPE, getBusinessType, bizProfile, bizFeature, manualBillingEnabled, isSupermarket } from "./config/businessTypes.js";
 import { rolesForProfile, DEFAULT_PINS } from "./config/roles.js";
@@ -9763,6 +9763,77 @@ function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,arch
  * a statement about their figures rather than about storage.
  */
 
+// ── DAILY / PERIOD REPORTS TAB ─────────────────────────────────────────────
+// Lists every day with activity (auto-saved, newest first) — each View / Save
+// PDF opens a formatted A4 report. The custom-timeline picker aggregates any
+// date range into one period PDF. Reports open in a print window so the browser
+// can "Save as PDF" (the app has no PDF library — same path as receipts).
+function DailyReportsTab({allSales=[],license}){
+  const _money=(n)=>"SAR "+(Number(n)||0).toFixed(2);
+  const purch=useMemo(()=>{try{return loadPurchaseInvoices()||[];}catch(e){return [];}},[]);
+  const saved=LS.get("restopos_daily_reports")||{};
+  const dates=datesWithActivity(allSales,purch).slice(0,180);
+  const reportFor=(date)=>(date<TODAY&&saved[date])?saved[date]:buildDailyReport(allSales,purch,date);
+  const lic=license||LS.get("restopos_license_v2")||{};
+  const openHTML=(html,doPrint)=>{
+    const w=window.open("","_blank");
+    if(!w){alert("Pop-up blocked — allow pop-ups to view or print the report.");return;}
+    w.document.write(doPrint?html.replace("</body>",`<script>window.onload=function(){window.print();}<\/script></body>`):html);
+    w.document.close();
+  };
+  const openDay=(rep,doPrint)=>openHTML(dailyReportHTML(rep,lic),doPrint);
+  const [from,setFrom]=useState(()=>dates.length?dates[dates.length-1]:TODAY);
+  const [to,setTo]=useState(TODAY);
+  const openRange=(doPrint)=>{
+    if(!from||!to){alert("Pick a start and end date.");return;}
+    const f=from<=to?from:to, tt=from<=to?to:from;
+    openHTML(periodReportHTML(buildPeriodReport(allSales,purch,f,tt),lic),doPrint);
+  };
+  const inp={padding:"8px 10px",border:"1px solid #C5DCF5",borderRadius:8,fontSize:13,fontFamily:"inherit",color:"#111"};
+  return (
+    <Card>
+      <div style={{fontSize:16,fontWeight:800,color:"#1A3A5C"}}>📄 Daily Reports</div>
+      <div style={{fontSize:12.5,color:"#6B7A8D",margin:"4px 0 12px"}}>Auto-saved for every day (00:00–23:59) with sales or purchases. Tap <strong>View</strong> to open, then print or <strong>Save as PDF</strong>. Totals, VAT and net VAT payable — no transaction list.</div>
+      <div style={{background:"#F3F7FB",border:"1px solid #D9E6F2",borderRadius:10,padding:"12px 14px",marginBottom:14}}>
+        <div style={{fontSize:13,fontWeight:800,color:"#1A3A5C",marginBottom:8}}>📆 Custom timeline — any date range as one PDF</div>
+        <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"flex-end"}}>
+          <label style={{fontSize:11,color:"#5A7A9A",fontWeight:700}}>From<br/><input type="date" value={from} onChange={e=>setFrom(e.target.value)} style={inp}/></label>
+          <label style={{fontSize:11,color:"#5A7A9A",fontWeight:700}}>To<br/><input type="date" value={to} onChange={e=>setTo(e.target.value)} style={inp}/></label>
+          <button onClick={()=>openRange(false)} style={{padding:"9px 14px",borderRadius:8,border:"1.5px solid #1A3A5C",background:"#fff",color:"#1A3A5C",fontFamily:"inherit",fontSize:13,fontWeight:700,cursor:"pointer"}}>📄 View range</button>
+          <button onClick={()=>openRange(true)} style={{padding:"9px 14px",borderRadius:8,border:"none",background:"linear-gradient(135deg,#1A6B4A,#0F4A30)",color:"#fff",fontFamily:"inherit",fontSize:13,fontWeight:700,cursor:"pointer"}}>🖨️ Save range PDF</button>
+          {[["Last 7d",6],["Last 30d",29],["This month","month"]].map(([lbl,n])=>(
+            <button key={lbl} onClick={()=>{const end=TODAY;let start;if(n==="month"){start=TODAY.slice(0,8)+"01";}else{const d=new Date(TODAY);d.setDate(d.getDate()-n);start=d.toISOString().slice(0,10);}setFrom(start);setTo(end);}} style={{padding:"8px 10px",borderRadius:8,border:"1px solid #C5DCF5",background:"#fff",color:"#5A7A9A",fontFamily:"inherit",fontSize:11,fontWeight:700,cursor:"pointer"}}>{lbl}</button>
+          ))}
+        </div>
+      </div>
+      {dates.length===0
+        ? <div style={{textAlign:"center",color:"#8A9AB0",fontSize:13,padding:"26px 0"}}>No activity yet. Reports appear here automatically as you make sales.</div>
+        : <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            {dates.map(date=>{
+              const rep=reportFor(date); const isToday=date===TODAY;
+              return (
+                <div key={date} style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap",border:"1px solid #E6EBF1",borderRadius:10,padding:"10px 14px",background:isToday?"#F3F9F5":"#fff"}}>
+                  <div style={{minWidth:120}}>
+                    <div style={{fontSize:14,fontWeight:800,color:"#1A3A5C"}}>{date}</div>
+                    <div style={{fontSize:10,color:isToday?"#1A6B4A":"#8A9AB0",fontWeight:700}}>{isToday?"TODAY · live":(saved[date]?"saved":"computed")}</div>
+                  </div>
+                  <div style={{flex:1,minWidth:200,display:"flex",gap:14,flexWrap:"wrap",fontSize:12}}>
+                    <span>🧾 <b>{rep.orderCount}</b> orders</span>
+                    <span>💰 {_money(rep.revenue)}</span>
+                    <span style={{color:"#6366f1"}}>VAT {_money(rep.vat)}</span>
+                    <span style={{color:rep.netVat>=0?"#1A6B4A":"#C0392B",fontWeight:700}}>Net VAT {_money(rep.netVat)}</span>
+                  </div>
+                  <div style={{display:"flex",gap:6}}>
+                    <button onClick={()=>openDay(rep,false)} style={{padding:"7px 12px",borderRadius:8,border:"1.5px solid #1A3A5C",background:"#fff",color:"#1A3A5C",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer"}}>📄 View</button>
+                    <button onClick={()=>openDay(rep,true)} style={{padding:"7px 12px",borderRadius:8,border:"none",background:"linear-gradient(135deg,#1A6B4A,#0F4A30)",color:"#fff",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer"}}>🖨️ Save PDF</button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>}
+    </Card>
+  );
+}
 function Reports({sales,allSales,items,setSales,lang="en",license,archiveIndex={},fetchCloudRange,cloudLoading,cloudError}){
   const _t=s=>t(s,lang);
   // ── All hooks first ──────────────────────────────────────────────
@@ -10514,51 +10585,7 @@ ${_brandingHTML({...REPORT_DEFAULTS,...(LS.get("restopos_report_format")||{})})}
       </div>
 
       {/* ── SUMMARY TAB ── */}
-      {tab==="dailyreports"&&(()=>{
-        const _money=(n)=>"SAR "+(Number(n)||0).toFixed(2);
-        const purch=(()=>{try{return loadPurchaseInvoices()||[];}catch(e){return [];}})();
-        const saved=LS.get("restopos_daily_reports")||{};
-        const dates=datesWithActivity(allSales,purch).slice(0,120);
-        const reportFor=(date)=>(date<TODAY&&saved[date])?saved[date]:buildDailyReport(allSales,purch,date);
-        const openReport=(rep,doPrint)=>{
-          const w=window.open("","_blank");
-          if(!w){alert("Pop-up blocked — allow pop-ups to view or print the report.");return;}
-          const html=dailyReportHTML(rep,license||LS.get("restopos_license_v2")||{});
-          w.document.write(doPrint?html.replace("</body>",`<script>window.onload=function(){window.print();}<\/script></body>`):html);
-          w.document.close();
-        };
-        return (
-          <Card>
-            <div style={{fontSize:16,fontWeight:800,color:"#1A3A5C"}}>📄 {_t("Daily Reports")}</div>
-            <div style={{fontSize:12.5,color:"#6B7A8D",margin:"4px 0 12px"}}>Auto-saved for every day (00:00–23:59) with sales or purchases. Tap <strong>View</strong> to open, then print or <strong>Save as PDF</strong> from your browser. Includes totals, VAT and net VAT payable — no transaction list.</div>
-            {dates.length===0
-              ? <div style={{textAlign:"center",color:"#8A9AB0",fontSize:13,padding:"26px 0"}}>No activity yet. Reports appear here automatically as you make sales.</div>
-              : <div style={{display:"flex",flexDirection:"column",gap:8}}>
-                  {dates.map(date=>{
-                    const rep=reportFor(date); const isToday=date===TODAY;
-                    return (
-                      <div key={date} style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap",border:"1px solid #E6EBF1",borderRadius:10,padding:"10px 14px",background:isToday?"#F3F9F5":"#fff"}}>
-                        <div style={{minWidth:120}}>
-                          <div style={{fontSize:14,fontWeight:800,color:"#1A3A5C"}}>{date}</div>
-                          <div style={{fontSize:10,color:isToday?"#1A6B4A":"#8A9AB0",fontWeight:700}}>{isToday?"TODAY · live":(saved[date]?"saved":"computed")}</div>
-                        </div>
-                        <div style={{flex:1,minWidth:200,display:"flex",gap:14,flexWrap:"wrap",fontSize:12}}>
-                          <span>🧾 <b>{rep.orderCount}</b> orders</span>
-                          <span>💰 {_money(rep.revenue)}</span>
-                          <span style={{color:"#6366f1"}}>VAT {_money(rep.vat)}</span>
-                          <span style={{color:rep.netVat>=0?"#1A6B4A":"#C0392B",fontWeight:700}}>Net VAT {_money(rep.netVat)}</span>
-                        </div>
-                        <div style={{display:"flex",gap:6}}>
-                          <button onClick={()=>openReport(rep,false)} style={{padding:"7px 12px",borderRadius:8,border:"1.5px solid #1A3A5C",background:"#fff",color:"#1A3A5C",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer"}}>📄 View</button>
-                          <button onClick={()=>openReport(rep,true)} style={{padding:"7px 12px",borderRadius:8,border:"none",background:"linear-gradient(135deg,#1A6B4A,#0F4A30)",color:"#fff",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer"}}>🖨️ Save PDF</button>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>}
-          </Card>
-        );
-      })()}
+      {tab==="dailyreports"&&<DailyReportsTab allSales={allSales} license={license}/>}
       {tab==="summary"&&<>
         <DateFilter/>
         <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:12,marginBottom:16}}>
