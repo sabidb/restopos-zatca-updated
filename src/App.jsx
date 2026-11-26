@@ -5513,73 +5513,122 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   // focused natively (buttons click; the scan box submits; the price/qty
   // inputs commit). This is layout-agnostic, so it works on all four tills.
   const posRootRef=useRef(null);
-  // The set of focusable cells currently on the till. Buttons and inputs are
-  // picked up automatically; the price display (a div) opts in via data-pknav.
-  function _pkCells(){
-    const root=posRootRef.current; if(!root) return [];
-    // Navigation is confined to the scan bar + cart grid (the [data-pkzone]
-    // containers), so arrows move column-wise through the till rows and never
-    // wander into the F-key panel, bill tabs or keypad — those keep their own
-    // F1–F5 shortcuts and tap targets.
-    const zones=root.querySelectorAll("[data-pkzone]");
-    const scope=zones.length?Array.from(zones):[root];
-    const sel="button:not([disabled]),input:not([disabled]):not([type=hidden]),[data-pknav]";
-    const seen=new Set(); const out=[];
-    scope.forEach(z=>z.querySelectorAll(sel).forEach(el=>{
-      if(seen.has(el)) return; seen.add(el);
-      if(el.getAttribute&&el.getAttribute("aria-hidden")==="true") return;
-      const r=el.getBoundingClientRect();
-      if(r.width>0&&r.height>0&&el.offsetParent!==null) out.push(el); // visible only
-    }));
-    return out;
-  }
+  // ── Two-level cart keyboard navigation (Supermarket till) ──────────────────
+  // First arrow picks a WHOLE ITEM (the row is highlighted). Enter / → steps
+  // INTO that item, where ←/→ move between its boxes — name · barcode · price ·
+  // − · qty · + · ✕ — the focused box marked in a DIFFERENT colour; Enter
+  // activates it. Delete removes the selected item, so a mid-list item can be
+  // voided with the keyboard alone. Esc steps back out, then to the scanner.
+  const [navRow,setNavRow]=useState(null);  // selected cart row, null = none
+  const [navCol,setNavCol]=useState(null);  // selected box in the row, null = whole row
+  const CART_COLS=7;                         // name,barcode,price,minus,qty,plus,delete
+  useEffect(()=>{ // keep the selection valid as the cart changes
+    if(navRow==null) return;
+    if(!cart.length){ setNavRow(null); setNavCol(null); return; }
+    if(navRow>cart.length-1) setNavRow(cart.length-1);
+  },[cart.length,navRow]);
+  useEffect(()=>{ // scroll the selected item into view in a long cart
+    if(navRow==null) return;
+    try{ posRootRef.current?.querySelector(`[data-pkrow="${navRow}"]`)?.scrollIntoView({block:"nearest"}); }catch(_){}
+  },[navRow,navCol]);
+  const cartQtyDelta=(idx,delta)=>setCart(prev=>prev.map((c,i)=>i===idx?{...c,qty:c.weighed?c.qty:Math.max(1,c.qty+delta)}:c));
+  const removeCartRowAt=(idx)=>{
+    const newLen=cart.length-1;
+    setCart(prev=>prev.filter((_,i)=>i!==idx));
+    setNavCol(null);
+    setNavRow(newLen<=0?null:Math.min(idx,newLen-1));
+    if(newLen<=0) focusScanner();
+    showN("✕ Item removed");
+  };
+  const focusQtyInput=(idx)=>{ setTimeout(()=>{ try{ const el=posRootRef.current?.querySelector(`[data-pkqty="${idx}"]`); if(el){ el.focus(); el.select&&el.select(); } }catch(_){} },30); };
+  const activateCell=(idx,col)=>{
+    const it=cart[idx]; if(!it) return;
+    if(col===2){ if(!it.weighed) beginPriceEdit(idx); }       // price → edit
+    else if(col===3){ cartQtyDelta(idx,-1); }                 // −
+    else if(col===4){ if(!it.weighed) focusQtyInput(idx); }   // qty → type
+    else if(col===5){ cartQtyDelta(idx,1); }                  // +
+    else if(col===6){ removeCartRowAt(idx); }                 // ✕
+    // 0 name / 1 barcode: no action
+  };
+  // Delete inside a BOX clears only that box's value (price / quantity) — it
+  // never removes the item. Only Delete on the whole-item selection, or Enter on
+  // the ✕ box, deletes the item. Non-editable boxes (name/barcode/±/total) ignore it.
+  const clearCell=(idx,col)=>{
+    const it=cart[idx]; if(!it) return;
+    if(col===2){ if(!it.weighed) beginPriceEdit(idx); }       // price → empty, ready to type
+    else if(col===4){ if(!it.weighed) focusQtyInput(idx); }   // qty → selected, ready to retype
+  };
+  const _enterCartNav=(row)=>{ setNavRow(row); setNavCol(null); try{ document.activeElement&&document.activeElement.blur&&document.activeElement.blur(); }catch(_){} };
+  const _exitCartNav=()=>{ setNavRow(null); setNavCol(null); focusScanner(); };
   function onPosNavKey(e){
-    if(e.key!=="ArrowUp"&&e.key!=="ArrowDown"&&e.key!=="ArrowLeft"&&e.key!=="ArrowRight"&&e.key!=="Escape"&&e.key!=="Delete") return;
+    if(e.key!=="ArrowUp"&&e.key!=="ArrowDown"&&e.key!=="ArrowLeft"&&e.key!=="ArrowRight"&&e.key!=="Escape"&&e.key!=="Delete"&&e.key!=="Enter") return;
     if(e.ctrlKey||e.metaKey||e.altKey) return;
-    if(e.key==="Delete"){
-      // Delete removes the most recent cart line — but only when the keyboard
-      // isn't busy editing a field (a Delete inside a non-empty input edits text).
-      if(showPayment||showPrevBill||weighItem||weighPick||newProd||scannedItem||showDescModal) return;
-      const a=document.activeElement;
-      if(a&&(a.tagName==="INPUT"||a.tagName==="TEXTAREA")&&a.value) return;
-      if(cart.length){ e.preventDefault(); e.stopPropagation(); removeLastLine(); }
-      return;
-    }
+    // Only when the till is actually on screen (the POS can stay mounted behind
+    // another screen), so arrows never hijack inputs elsewhere in the app.
+    if(!posRootRef.current||posRootRef.current.offsetParent===null) return;
+    const ae=document.activeElement;
+    const editingCartInput = ae && ae.tagName==="INPUT" && ae.closest && ae.closest('[data-pkzone="cart"]');
+    // ── Escape — close the top-most window, an inline edit, or step out of nav.
     if(e.key==="Escape"){
-      // Esc closes the top-most open window (payment, item card, weigh, new
-      // product, previous bill, description) wherever it is pressed; with
-      // nothing open it just returns focus to the scanner.
+      if(showPayment){e.preventDefault();e.stopPropagation();setShowPayment(false);focusScanner();return;}
+      if(scannedItem){e.preventDefault();e.stopPropagation();setScannedItem(null);focusScanner();return;}
+      if(weighItem){e.preventDefault();e.stopPropagation();setWeighItem(null);focusScanner();return;}
+      if(weighPick){e.preventDefault();e.stopPropagation();setWeighPick(false);focusScanner();return;}
+      if(newProd){e.preventDefault();e.stopPropagation();setNewProd(null);focusScanner();return;}
+      if(showPrevBill){e.preventDefault();e.stopPropagation();setShowPrevBill(false);focusScanner();return;}
+      if(showDescModal){e.preventDefault();e.stopPropagation();setShowDescModal(false);focusScanner();return;}
+      if(editingCartInput) return;                              // let the field's own Esc cancel it
+      if(navRow!=null){ e.preventDefault(); if(navCol!=null) setNavCol(null); else _exitCartNav(); return; }
+      focusScanner(); return;
+    }
+    // A blocking modal owns the remaining keys.
+    if(showPayment||showPrevBill||weighItem||weighPick||newProd||scannedItem||showDescModal) return;
+    // A price / qty field is being edited — let it keep the keyboard.
+    if(editingCartInput) return;
+    // ── Delete — remove the selected item (fallback: the last one).
+    if(e.key==="Delete"){
       e.preventDefault(); e.stopPropagation();
-      if(showPayment) setShowPayment(false);
-      else if(scannedItem) setScannedItem(null);
-      else if(weighItem) setWeighItem(null);
-      else if(weighPick) setWeighPick(false);
-      else if(newProd) setNewProd(null);
-      else if(showPrevBill) setShowPrevBill(false);
-      else if(showDescModal) setShowDescModal(false);
-      focusScanner();
+      if(navRow!=null && cart[navRow]){
+        if(navCol==null) removeCartRowAt(navRow);   // whole item selected → remove the item
+        else clearCell(navRow,navCol);               // a box selected → clear only that box
+      }
+      else if(cart.length) removeLastLine();          // not navigating → void the last line
       return;
     }
-    // Arrow keys: a blocking modal owns the keyboard — leave navigation to it.
-    if(showPayment||showPrevBill||weighItem||weighPick||newProd||scannedItem||showDescModal) return;
-    const els=_pkCells(); if(!els.length) return;
-    const active=document.activeElement;
-    // In a text field, let ←/→ move the caret unless it is already at the edge,
-    // so typing a barcode / price / quantity still works normally.
-    if(active&&(active.tagName==="INPUT"||active.tagName==="TEXTAREA")&&(e.key==="ArrowLeft"||e.key==="ArrowRight")){
-      const atStart=active.selectionStart===0&&active.selectionEnd===0;
-      const atEnd=active.selectionStart===(active.value?.length||0)&&active.selectionEnd===(active.value?.length||0);
-      if((e.key==="ArrowLeft"&&!atStart)||(e.key==="ArrowRight"&&!atEnd)) return;
+    if(!cart.length) return;
+    // Not in the cart yet: ↓ grabs the first item, ↑ the last.
+    if(navRow==null){
+      if(e.key==="ArrowDown"){ e.preventDefault(); _enterCartNav(0); return; }
+      if(e.key==="ArrowUp"){ e.preventDefault(); _enterCartNav(cart.length-1); return; }
+      return;
     }
-    const cells=els.map((el,i)=>{const r=el.getBoundingClientRect();return{id:i,x:r.left+r.width/2,y:r.top+r.height/2};});
-    const activeIdx=els.indexOf(active);
-    const nextIdx=_gridNextCellId(cells,activeIdx>=0?activeIdx:null,e.key);
-    if(nextIdx==null||nextIdx===activeIdx) return;
-    const target=els[nextIdx]; if(!target) return;
-    e.preventDefault();
-    try{ target.focus({preventScroll:true}); target.scrollIntoView({block:"nearest",inline:"nearest"}); }catch(_){ target.focus(); }
-    if(target.tagName==="INPUT"&&typeof target.select==="function"){ try{target.select();}catch(_){} }
+    if(navCol==null){
+      // ROW MODE — a whole item is selected.
+      if(e.key==="ArrowUp"){ e.preventDefault(); if(navRow>0) setNavRow(navRow-1); else _exitCartNav(); return; }
+      if(e.key==="ArrowDown"){ e.preventDefault(); if(navRow<cart.length-1) setNavRow(navRow+1); return; }
+      if(e.key==="ArrowRight"||e.key==="Enter"){ e.preventDefault(); setNavCol(0); return; }
+      if(e.key==="ArrowLeft"){ e.preventDefault(); _exitCartNav(); return; }
+      return;
+    }
+    // CELL MODE — a box inside the item is selected.
+    if(e.key==="ArrowLeft"){ e.preventDefault(); if(navCol>0) setNavCol(navCol-1); else setNavCol(null); return; }
+    if(e.key==="ArrowRight"){ e.preventDefault(); if(navCol<CART_COLS-1) setNavCol(navCol+1); return; }
+    if(e.key==="ArrowUp"){ e.preventDefault(); if(navRow>0) setNavRow(navRow-1); return; }
+    if(e.key==="ArrowDown"){ e.preventDefault(); if(navRow<cart.length-1) setNavRow(navRow+1); return; }
+    if(e.key==="Enter"){ e.preventDefault(); activateCell(navRow,navCol); return; }
   }
+  // Drive the two-level nav from a document-level listener so it keeps working
+  // after the scan box is blurred (a handler bound to the till root only fires
+  // while focus is inside it). A ref always points at the latest closure, so the
+  // listener is bound once per mode and never sees stale state. Bubble phase, so
+  // it runs after the capture-phase hardware-scanner interceptor.
+  const _navHandlerRef=useRef(onPosNavKey); _navHandlerRef.current=onPosNavKey;
+  useEffect(()=>{
+    if(!superMode) return;
+    const h=(e)=>{ try{ _navHandlerRef.current&&_navHandlerRef.current(e); }catch(_){} };
+    document.addEventListener("keydown",h);
+    return ()=>document.removeEventListener("keydown",h);
+  },[superMode]);
   // Id of the line a scan/tap last dropped into the cart — the target for the ＋
   // quantity button (type a number then ＋ sets that line's qty; ＋ alone +1s it).
   const lastLineRef=useRef(null);
@@ -6474,38 +6523,50 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   const superTillRow=(item,idx)=>{
     const inc=()=>setCart(prev=>prev.map((c,i)=>i===idx?{...c,qty:c.weighed?c.qty:c.qty+1}:c));
     const dec=()=>setCart(prev=>prev.map((c,i)=>i===idx?{...c,qty:Math.max(c.weighed?c.qty:1,c.qty-1)}:c));
-    const del=()=>setCart(prev=>prev.filter((_,i)=>i!==idx));
+    const del=()=>removeCartRowAt(idx);
+    const rowSel=navRow===idx;                 // whole item selected by arrows
+    const wholeRow=rowSel&&navCol==null;       // row-mode (item, not a box, selected)
+    // A focused box is marked in a DISTINCT colour (amber) vs the green row.
+    const cellHL=(col)=>(rowSel&&navCol===col)?{boxShadow:`0 0 0 2px ${C.warning}`,background:"#FFF7E6",borderRadius:6}:null;
     return(
-      <div key={idx} style={{display:"flex",alignItems:"center",padding:"0 14px",minHeight:46,borderBottom:`1px solid ${C.border}`,background:idx%2?"#FCFDFE":"#fff"}}>
-        <span aria-hidden="true" style={{width:24,flexShrink:0,fontSize:12,fontWeight:800,color:C.textLight,textAlign:"left"}}>{idx+1}</span>
-        <div style={{flex:1.4,minWidth:0}}>
-          <div tabIndex={0} data-pknav="name" role="button" aria-label={`Line ${idx+1} ${item.name}`} onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();setSelectedRow(idx);}}} style={{display:"flex",alignItems:"center",gap:6,cursor:"default",borderRadius:6}}>
+      <div key={idx} data-pkrow={idx} style={{display:"flex",alignItems:"stretch",minHeight:46,borderBottom:`1px solid ${C.border}`,
+        background: wholeRow?C.primaryLight:(rowSel?"#F1F8F4":(idx%2?"#FCFDFE":"#fff")),
+        boxShadow: wholeRow?`inset 4px 0 0 ${C.primary}`:"none",
+        outline: wholeRow?`2px solid ${C.primary}`:"none", outlineOffset:"-2px"}}>
+        <span aria-hidden="true" style={{width:24,flexShrink:0,fontSize:12,fontWeight:800,color:wholeRow?C.primary:C.textLight,display:"flex",alignItems:"center",justifyContent:"center",borderRight:`1px solid ${C.border}`}}>{idx+1}</span>
+        <div style={{flex:1.4,minWidth:0,display:"flex",alignItems:"center",padding:"0 6px",borderRight:`1px solid ${C.border}`}}>
+          <div data-pknav="name" aria-label={`Line ${idx+1} ${item.name}`} style={{display:"flex",alignItems:"center",gap:6,width:"100%",minWidth:0,padding:"2px 4px",...cellHL(0)}}>
             <span style={{fontSize:15,fontWeight:700,color:C.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{posItemName(item,posNameMode)}</span>
             {lineCatChip(item)}
           </div>
         </div>
-        <div tabIndex={0} data-pknav="barcode" role="text" aria-label={`Barcode ${item.barcode||"none"}`} style={{flex:1,minWidth:0,fontSize:11,fontFamily:"monospace",color:C.textLight,textAlign:"center",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",padding:"0 6px",borderRadius:6}}>{item.barcode||"—"}</div>
-        {editPriceIdx===idx&&!item.weighed
-          ? <input autoFocus value={editPriceVal} inputMode="decimal" placeholder={String(item.price)}
-              onChange={e=>setEditPriceVal(e.target.value.replace(/[^\d.]/g,""))}
-              onBlur={commitPriceEdit}
-              onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();commitPriceEdit();}else if(e.key==="Escape"){e.preventDefault();cancelPriceEdit();}}}
-              onClick={e=>e.stopPropagation()}
-              style={{width:74,textAlign:"right",fontSize:12,fontWeight:700,border:`1.5px solid ${C.primary}`,borderRadius:6,padding:"3px 4px",fontFamily:"inherit",color:C.text,boxSizing:"border-box"}}/>
-          : <div onClick={e=>{e.stopPropagation();if(!item.weighed)beginPriceEdit(idx);}} tabIndex={0} data-pknav="price" role="button" aria-label={`Price ${fmtSAR(item.price)} — Enter to edit`} onKeyDown={e=>{if(e.key==="Enter"&&!item.weighed){e.preventDefault();beginPriceEdit(idx);}}} title={item.weighed?undefined:"Tap to set a one-off price for this bill"} style={{fontSize:11,color:item.priceEdited?C.primary:C.textMid,fontWeight:item.priceEdited?800:400,width:74,textAlign:"right",paddingRight:8,cursor:item.weighed?"default":"pointer",textDecoration:item.priceEdited?"underline dotted":"none"}}>{fmtSAR(item.price)}{item.weighed?"/kg":""}{item.priceEdited?" ✎":""}</div>}
-        <div style={{width:118,display:"flex",alignItems:"center",justifyContent:"center",gap:4}}>
-          <button onClick={dec} style={{width:28,height:28,borderRadius:8,border:`1px solid ${C.danger}44`,background:C.dangerLight,color:C.danger,fontSize:17,fontWeight:800,cursor:"pointer",fontFamily:"inherit",lineHeight:1}}>−</button>
-          {item.weighed
-            ? <span style={{width:40,textAlign:"center",fontSize:13.5,fontWeight:800,color:C.text}}>{item.qty}kg</span>
-            : <input value={item.qty} inputMode="numeric" onFocus={e=>e.target.select()}
-                onChange={e=>{const n=parseInt(e.target.value.replace(/[^\d]/g,""),10);setCart(prev=>prev.map((c,i)=>i===idx?{...c,qty:(n&&n>0)?n:1}:c));}}
-                title="Tap to type the quantity"
-                style={{width:40,textAlign:"center",fontSize:14,fontWeight:800,color:C.text,border:`1px solid ${C.border}`,borderRadius:7,padding:"5px 0",fontFamily:"inherit",background:"#fff"}}/>}
-          <button onClick={inc} style={{width:28,height:28,borderRadius:8,border:`1px solid ${C.primary}44`,background:C.primaryLight,color:C.primary,fontSize:17,fontWeight:800,cursor:"pointer",fontFamily:"inherit",lineHeight:1}}>+</button>
+        <div style={{flex:1,minWidth:0,display:"flex",alignItems:"center",justifyContent:"center",padding:"0 4px",borderRight:`1px solid ${C.border}`}}>
+          <div data-pknav="barcode" aria-label={`Barcode ${item.barcode||"none"}`} style={{fontSize:11,fontFamily:"monospace",color:C.textLight,textAlign:"center",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",padding:"2px 6px",maxWidth:"100%",...cellHL(1)}}>{item.barcode||"—"}</div>
         </div>
-        <div style={{width:86,textAlign:"right",fontSize:14,fontWeight:900,color:C.primary}}>{fmtSAR(item.price*item.qty)}</div>
-        <div style={{width:36,textAlign:"right"}}>
-          <button onClick={del} title="Delete line" style={{width:26,height:26,borderRadius:7,border:"none",background:C.dangerLight,color:C.danger,fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>✕</button>
+        <div style={{width:74,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"flex-end",padding:"0 6px",borderRight:`1px solid ${C.border}`}}>
+          {editPriceIdx===idx&&!item.weighed
+            ? <input autoFocus value={editPriceVal} inputMode="decimal" placeholder={String(item.price)}
+                onChange={e=>setEditPriceVal(e.target.value.replace(/[^\d.]/g,""))}
+                onBlur={commitPriceEdit}
+                onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();commitPriceEdit();}else if(e.key==="Escape"){e.preventDefault();cancelPriceEdit();}}}
+                onClick={e=>e.stopPropagation()}
+                style={{width:62,textAlign:"right",fontSize:12,fontWeight:700,border:`1.5px solid ${C.primary}`,borderRadius:6,padding:"3px 4px",fontFamily:"inherit",color:C.text,boxSizing:"border-box"}}/>
+            : <div onClick={e=>{e.stopPropagation();if(!item.weighed)beginPriceEdit(idx);}} data-pknav="price" aria-label={`Price ${fmtSAR(item.price)} — Enter to edit`} title={item.weighed?undefined:"Tap to set a one-off price for this bill"} style={{fontSize:11,color:item.priceEdited?C.primary:C.textMid,fontWeight:item.priceEdited?800:400,textAlign:"right",padding:"2px 4px",cursor:item.weighed?"default":"pointer",textDecoration:item.priceEdited?"underline dotted":"none",...cellHL(2)}}>{fmtSAR(item.price)}{item.weighed?"/kg":""}{item.priceEdited?" ✎":""}</div>}
+        </div>
+        <div style={{width:118,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",gap:4,borderRight:`1px solid ${C.border}`}}>
+          <button onClick={dec} style={{width:28,height:28,borderRadius:8,border:`1px solid ${C.danger}44`,background:C.dangerLight,color:C.danger,fontSize:17,fontWeight:800,cursor:"pointer",fontFamily:"inherit",lineHeight:1,...cellHL(3)}}>−</button>
+          {item.weighed
+            ? <span style={{width:40,textAlign:"center",fontSize:13.5,fontWeight:800,color:C.text,...cellHL(4)}}>{item.qty}kg</span>
+            : <input value={item.qty} inputMode="numeric" data-pkqty={idx} onFocus={e=>e.target.select()}
+                onChange={e=>{const n=parseInt(e.target.value.replace(/[^\d]/g,""),10);setCart(prev=>prev.map((c,i)=>i===idx?{...c,qty:(n&&n>0)?n:1}:c));}}
+                onKeyDown={e=>{if(e.key==="Enter"||e.key==="Escape"){e.preventDefault();e.currentTarget.blur();}}}
+                title="Type the quantity"
+                style={{width:40,textAlign:"center",fontSize:14,fontWeight:800,color:C.text,border:`1px solid ${C.border}`,borderRadius:7,padding:"5px 0",fontFamily:"inherit",background:"#fff",...cellHL(4)}}/>}
+          <button onClick={inc} style={{width:28,height:28,borderRadius:8,border:`1px solid ${C.primary}44`,background:C.primaryLight,color:C.primary,fontSize:17,fontWeight:800,cursor:"pointer",fontFamily:"inherit",lineHeight:1,...cellHL(5)}}>+</button>
+        </div>
+        <div style={{width:86,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"flex-end",padding:"0 8px",borderRight:`1px solid ${C.border}`,fontSize:14,fontWeight:900,color:C.primary}}>{fmtSAR(item.price*item.qty)}</div>
+        <div style={{width:36,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center"}}>
+          <button onClick={del} title="Delete line" style={{width:26,height:26,borderRadius:7,border:"none",background:C.dangerLight,color:C.danger,fontSize:13,cursor:"pointer",fontFamily:"inherit",...cellHL(6)}}>✕</button>
         </div>
       </div>
     );
@@ -6546,12 +6607,15 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
       <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
         {superBillTabs}
         <div style={{padding:12}}>{superScanBar}</div>
-        <div style={{display:"flex",alignItems:"center",padding:"6px 14px",fontSize:10.5,fontWeight:800,letterSpacing:"0.06em",color:C.textLight,borderBottom:`1px solid ${C.border}`}}>
-          <span style={{width:24,flexShrink:0}}>#</span>
-          <span style={{flex:1}}>ITEM / BARCODE</span>
-          <span style={{width:74,textAlign:"right",paddingRight:8}}>PRICE</span>
-          <span style={{width:118,textAlign:"center"}}>QTY</span>
-          <span style={{width:86,textAlign:"right"}}>TOTAL</span>
+        {/* Grid header — each column is a bordered box, so the keyboard-selected
+           cell below reads against clear grid lines (spreadsheet-style till). */}
+        <div style={{display:"flex",alignItems:"stretch",minHeight:28,fontSize:10.5,fontWeight:800,letterSpacing:"0.04em",color:C.textMid,borderTop:`1px solid ${C.border}`,borderBottom:`2px solid #C9D6CE`,background:"#EDF2EF"}}>
+          <span style={{width:24,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",borderRight:`1px solid ${C.border}`}}>#</span>
+          <span style={{flex:1.4,minWidth:0,display:"flex",alignItems:"center",padding:"0 8px",borderRight:`1px solid ${C.border}`}}>ITEM</span>
+          <span style={{flex:1,minWidth:0,display:"flex",alignItems:"center",justifyContent:"center",borderRight:`1px solid ${C.border}`}}>BARCODE</span>
+          <span style={{width:74,display:"flex",alignItems:"center",justifyContent:"flex-end",padding:"0 8px",borderRight:`1px solid ${C.border}`}}>PRICE</span>
+          <span style={{width:118,display:"flex",alignItems:"center",justifyContent:"center",borderRight:`1px solid ${C.border}`}}>QTY</span>
+          <span style={{width:86,display:"flex",alignItems:"center",justifyContent:"flex-end",padding:"0 8px",borderRight:`1px solid ${C.border}`}}>TOTAL</span>
           <span style={{width:36}}/>
         </div>
         <div data-pkzone="cart" style={{flex:1,overflowY:"auto"}}>
@@ -6563,7 +6627,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     </div>
   );
   return(
-    <div ref={posRootRef} data-postill={superMode?"1":undefined} onKeyDownCapture={superMode?onPosNavKey:undefined} style={{display:"flex",height:`calc(100vh - ${TRIAL?82:52}px)`,overflow:"hidden"}}>
+    <div ref={posRootRef} data-postill={superMode?"1":undefined} style={{display:"flex",height:`calc(100vh - ${TRIAL?82:52}px)`,overflow:"hidden"}}>
       {superMode&&<style>{`[data-postill="1"] button:focus-visible,[data-postill="1"] input:focus-visible,[data-postill="1"] [data-pknav]:focus-visible,[data-postill="1"] button:focus,[data-postill="1"] [data-pknav]:focus{outline:3px solid ${C.primary};outline-offset:1px;border-radius:8px;box-shadow:0 0 0 4px ${C.primary}22;}`}</style>}
       {/* Previous Bills — step backward through printed invoices */}
       {showPrevBill&&(()=>{
@@ -18314,9 +18378,10 @@ export default function App(){
               <button onClick={()=>handleScaleChange(uiScale+5)} style={{background:"rgba(255,255,255,0.1)",border:"none",color:"#fff",width:16,height:16,borderRadius:3,cursor:"pointer",fontSize:10,display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"inherit"}}>+</button>
             </div>
           </div>
-          {superMode
-            ? <span title="Supermarket mode" style={{display:"flex",alignItems:"center",gap:5,fontSize:11,fontWeight:900,color:"#fff",background:"linear-gradient(135deg,#1A6B4A,#134D36)",padding:"5px 12px",borderRadius:8,border:"1px solid rgba(255,255,255,0.3)",whiteSpace:"nowrap",boxShadow:"0 1px 6px rgba(0,0,0,0.3)"}}>🛒 {lang==="ar"?"سوبرماركت":"SUPERMARKET"}</span>
-            : <div style={{fontSize:9,color:"rgba(255,255,255,0.65)",fontWeight:700,whiteSpace:"nowrap",display:viewport.w<500?"none":"block"}}>{lang==="ar"?({"Admin":"مدير","Manager":"مشرف","Cashier":"كاشير"}[currentUser?.role]||currentUser?.role):currentUser?.role}</div>}
+          {/* Supermarket mode is already shown next to "RestoPos" in the till panel,
+             so no top-corner chip here (would be the same label twice). The role
+             label still shows in non-supermarket modes. */}
+          {!superMode&&<div style={{fontSize:9,color:"rgba(255,255,255,0.65)",fontWeight:700,whiteSpace:"nowrap",display:viewport.w<500?"none":"block"}}>{lang==="ar"?({"Admin":"مدير","Manager":"مشرف","Cashier":"كاشير"}[currentUser?.role]||currentUser?.role):currentUser?.role}</div>}
           {/* Logout routes to the role/owner-login screen (a path toward owner/admin),
              so it is hidden on the supermarket till — a cashier should never reach it
              from here. The owner still switches users from Settings → Security. */}
