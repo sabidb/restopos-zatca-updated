@@ -30,12 +30,14 @@ import { TODAY } from "./lib/date.js";
 import { logActivity } from "./lib/activity.js";
 import { initSync, debouncedSync, syncKeyToFirestore } from "./lib/sync.js";
 import { nextCellId as _gridNextCellId } from "./lib/gridNav.js";
+import { resolveKeyOnRestore as _resolveKeyOnRestore } from "./lib/syncMerge.js";
 import { initCatalogueCloud, setCatalogueLicense, catalogueCloud, loadAllItems as loadCatalogueCloud, backfillCatalogue } from "./lib/catalogueCloud.js";
 import { catalogueSubEnabled, setCatalogueSubEnabled, CATALOGUE_FLAG_KEY } from "./lib/catalogueFlag.js";
 import { initPurchaseStore, setPurchaseInvoicesLocal, loadPurchaseInvoices } from "./lib/purchaseStore.js";
 import { initPOStore, setPurchaseOrdersLocal, loadPurchaseOrders } from "./lib/poStore.js";
 import { initPurchaseCloud, setPurchaseCloudLicense, purchaseDocsCloud, purchaseOrdersCloud, mergeById } from "./lib/purchaseCloud.js";
 import { purchaseDocsToVatTx } from "./lib/vatBridge.js";
+import { signedAmounts as _purSignedAmounts } from "./lib/purchases.js";
 import { getLang, setLangStore, t, dir } from "./i18n/index.js";
 import { BUSINESS_TYPES, DEFAULT_BUSINESS_TYPE, getBusinessType, bizProfile, bizFeature, manualBillingEnabled, isSupermarket } from "./config/businessTypes.js";
 import { rolesForProfile, DEFAULT_PINS } from "./config/roles.js";
@@ -1246,31 +1248,21 @@ async function restoreFromFirestore(licenseKey){
     const keysToRestore=[...SYNC_KEYS,...LEGACY_SESSION_KEYS,
       ...Object.keys(data).filter(k=>/^restopos_sales_\d{4}-\d{2}$/.test(k))];
     keysToRestore.forEach(key=>{
-      if(data[key]){
-        try{
-          const parsed=JSON.parse(data[key]);
-          // Only restore if cloud has more data than local
-          const local=localStorage.getItem(key);
-          if(!local){
-            localStorage.setItem(key,data[key]);
-            restored++;
-          }else{
-            // For arrays, merge keeping more records
-            try{
-              const localArr=JSON.parse(local);
-              const cloudArr=parsed;
-              if(Array.isArray(localArr)&&Array.isArray(cloudArr)&&cloudArr.length>localArr.length){
-                localStorage.setItem(key,data[key]);
-                restored++;
-              }else if(!Array.isArray(localArr)){
-                // For objects, prefer cloud if newer
-                const cloudUpdated=data[`${key}_updatedAt`];
-                if(cloudUpdated){localStorage.setItem(key,data[key]);restored++;}
-              }
-            }catch(e){localStorage.setItem(key,data[key]);restored++;}
-          }
-        }catch(e){console.warn("[Restore] Error parsing",key);}
-      }
+      if(data[key]==null) return;
+      try{
+        const cloudParsed=JSON.parse(data[key]);
+        const localRaw=localStorage.getItem(key);
+        if(localRaw==null){
+          // Nothing local yet — take the cloud copy wholesale.
+          localStorage.setItem(key,data[key]); restored++; return;
+        }
+        let localParsed; try{ localParsed=JSON.parse(localRaw); }
+        catch(_){ localStorage.setItem(key,data[key]); restored++; return; }
+        // Record lists (sales, customers, …) are UNIONED by id so neither device
+        // loses a record; config objects take the cloud copy when it is newer.
+        const { value, changed } = _resolveKeyOnRestore(key, localParsed, cloudParsed, null, data[`${key}_updatedAt`]||null);
+        if(changed){ localStorage.setItem(key, JSON.stringify(value)); restored++; }
+      }catch(e){ console.warn("[Restore] Error on",key,e&&e.message); }
     });
     console.log(`[Sync] Restored ${restored} keys from Firestore`);
     return restored>0;
@@ -3960,9 +3952,9 @@ function PayKeyboard(){
   );
 }
 
-function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1,kotNo=1,customers=[],customerName:initCustName="",customerPhone:initCustPhone="",orderType:initOrderType="takeaway"}){
+function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1,kotNo=1,customers=[],customerName:initCustName="",customerPhone:initCustPhone="",orderType:initOrderType="takeaway",defaultMethod="Cash"}){
   // ── State ────────────────────────────────────────────────────────
-  const [method,setMethod]=useState("Cash");
+  const [method,setMethod]=useState(defaultMethod||"Cash");
   const [cashGiven,setCashGiven]=useState("");
   const _cashTouched=useRef(false); // becomes true once user edits cash; until then it auto-fills exact
   const [cardAmount,setCardAmount]=useState("");
@@ -5438,7 +5430,23 @@ function txPlan(it){
   return null;
 }
 
+// How a product's name is shown on the supermarket till — English, Arabic, or
+// both — chosen by the shop in Settings → POS (restopos_pos_name_lang).
+function posItemName(item, mode){
+  const en=(item&&item.name)||""; const ar=(item&&item.nameAr)||"";
+  if(mode==="ar") return ar||en;
+  if(mode==="both") return (en&&ar)?`${en} / ${ar}`:(en||ar);
+  return en||ar; // default: English (falls back to Arabic if no English name)
+}
 function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang="en",currentUser=null}){
+  // Live POS name-language preference (Settings → POS). Re-read on the custom
+  // event the settings screen fires, so a change applies without a reload.
+  const [posNameMode,setPosNameMode]=useState(()=>LS.get("restopos_pos_name_lang")||"en");
+  useEffect(()=>{
+    const onChange=()=>setPosNameMode(LS.get("restopos_pos_name_lang")||"en");
+    window.addEventListener("restopos-pos-settings",onChange);
+    return ()=>window.removeEventListener("restopos-pos-settings",onChange);
+  },[]);
   const allCats=[...new Set(items.map(i=>i.category))];
   const [activeCat,setActiveCat]=useState("ALL");
   // Supermarket till holds up to 5 parked bills at once so the cashier can serve
@@ -5508,19 +5516,51 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   // picked up automatically; the price display (a div) opts in via data-pknav.
   function _pkCells(){
     const root=posRootRef.current; if(!root) return [];
+    // Navigation is confined to the scan bar + cart grid (the [data-pkzone]
+    // containers), so arrows move column-wise through the till rows and never
+    // wander into the F-key panel, bill tabs or keypad — those keep their own
+    // F1–F5 shortcuts and tap targets.
+    const zones=root.querySelectorAll("[data-pkzone]");
+    const scope=zones.length?Array.from(zones):[root];
     const sel="button:not([disabled]),input:not([disabled]):not([type=hidden]),[data-pknav]";
-    return Array.from(root.querySelectorAll(sel)).filter(el=>{
-      if(el.getAttribute&&el.getAttribute("aria-hidden")==="true") return false;
+    const seen=new Set(); const out=[];
+    scope.forEach(z=>z.querySelectorAll(sel).forEach(el=>{
+      if(seen.has(el)) return; seen.add(el);
+      if(el.getAttribute&&el.getAttribute("aria-hidden")==="true") return;
       const r=el.getBoundingClientRect();
-      return r.width>0&&r.height>0&&el.offsetParent!==null; // visible only
-    });
+      if(r.width>0&&r.height>0&&el.offsetParent!==null) out.push(el); // visible only
+    }));
+    return out;
   }
   function onPosNavKey(e){
-    if(e.key!=="ArrowUp"&&e.key!=="ArrowDown"&&e.key!=="ArrowLeft"&&e.key!=="ArrowRight"&&e.key!=="Escape") return;
+    if(e.key!=="ArrowUp"&&e.key!=="ArrowDown"&&e.key!=="ArrowLeft"&&e.key!=="ArrowRight"&&e.key!=="Escape"&&e.key!=="Delete") return;
     if(e.ctrlKey||e.metaKey||e.altKey) return;
-    // A blocking modal owns the keyboard — leave navigation to it.
-    if(showPayment||showPrevBill||weighItem||weighPick||newProd||scannedItem) return;
-    if(e.key==="Escape"){ focusScanner(); e.preventDefault(); return; }
+    if(e.key==="Delete"){
+      // Delete removes the most recent cart line — but only when the keyboard
+      // isn't busy editing a field (a Delete inside a non-empty input edits text).
+      if(showPayment||showPrevBill||weighItem||weighPick||newProd||scannedItem||showDescModal) return;
+      const a=document.activeElement;
+      if(a&&(a.tagName==="INPUT"||a.tagName==="TEXTAREA")&&a.value) return;
+      if(cart.length){ e.preventDefault(); e.stopPropagation(); removeLastLine(); }
+      return;
+    }
+    if(e.key==="Escape"){
+      // Esc closes the top-most open window (payment, item card, weigh, new
+      // product, previous bill, description) wherever it is pressed; with
+      // nothing open it just returns focus to the scanner.
+      e.preventDefault(); e.stopPropagation();
+      if(showPayment) setShowPayment(false);
+      else if(scannedItem) setScannedItem(null);
+      else if(weighItem) setWeighItem(null);
+      else if(weighPick) setWeighPick(false);
+      else if(newProd) setNewProd(null);
+      else if(showPrevBill) setShowPrevBill(false);
+      else if(showDescModal) setShowDescModal(false);
+      focusScanner();
+      return;
+    }
+    // Arrow keys: a blocking modal owns the keyboard — leave navigation to it.
+    if(showPayment||showPrevBill||weighItem||weighPick||newProd||scannedItem||showDescModal) return;
     const els=_pkCells(); if(!els.length) return;
     const active=document.activeElement;
     // In a text field, let ←/→ move the caret unless it is already at the edge,
@@ -5578,6 +5618,14 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   // Re-focus the scan box whenever a blocking modal (payment / previous bill)
   // closes, so the next scan lands in the box with no extra click.
   useEffect(()=>{ if(superMode&&!showPayment&&!showPrevBill) focusScanner(); },[superMode,showPayment,showPrevBill]);
+  // Price-check cards are view-only, so clear themselves after a few seconds and
+  // hand focus back to the scanner for the next item. Still closable by Done /
+  // Esc / tapping outside. Only in price-check mode — a normal add is untouched.
+  useEffect(()=>{
+    if(!(superMode&&priceCheck&&scannedItem)) return;
+    const t=setTimeout(()=>{ setScannedItem(null); focusScanner(); }, 4500);
+    return ()=>clearTimeout(t);
+  },[superMode,priceCheck,scannedItem]);
   const total=cart.reduce((s,i)=>s+i.price*i.qty,0);const vat=cartVat(cart).vat;const subtotal=parseFloat((total-vat).toFixed(2));
   function addToCart(item){
     // Weighed item (price is per-kg): open the weight modal. qty carries the
@@ -5599,8 +5647,18 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     setWeighItem(null);setWeighKg("");
   }
   function updateQty(delta){if(selectedRow===null)return;setCart(prev=>{const next=prev.map((c,i)=>i===selectedRow?{...c,qty:Math.max(0,c.qty+delta)}:c).filter(c=>c.qty>0);if(next.length<=selectedRow){setSelectedRow(null);setDescModalIdx(null);}return next;});}
+  // Remove the most recently added cart line — bound to the Delete key so the
+  // cashier can void a mis-scan instantly without reaching for the mouse.
+  function removeLastLine(){
+    setCart(prev=>{ if(!prev.length) return prev; return prev.slice(0,-1); });
+    setSelectedRow(null); lastLineRef.current=null;
+    showN("✕ Last item removed"); focusScanner();
+  }
   // Per-bill price override helpers (see editPriceIdx state above).
-  function beginPriceEdit(idx){const c=cart[idx];if(!c||c.weighed)return;setEditPriceIdx(idx);setEditPriceVal(String(c.price??""));}
+  // Tapping a price clears the field (shows the old price as a placeholder) so the
+  // cashier types the new amount straight away, no backspacing. Leaving it empty
+  // keeps the original price (commitPriceEdit treats a blank/NaN as "unchanged").
+  function beginPriceEdit(idx){const c=cart[idx];if(!c||c.weighed)return;setEditPriceIdx(idx);setEditPriceVal("");}
   function commitPriceEdit(){setEditPriceIdx(cur=>{if(cur==null)return null;const n=parseFloat(String(editPriceVal).replace(/[^\d.]/g,""));setCart(prev=>prev.map((c,i)=>i===cur?{...c,price:(n>=0&&!Number.isNaN(n))?Math.round(n*100)/100:c.price,priceEdited:true}:c));return null;});setEditPriceVal("");}
   function cancelPriceEdit(){setEditPriceIdx(null);setEditPriceVal("");}
   // Resolve a scanned/typed code straight to the cart. A clean barcode hit on an
@@ -5719,7 +5777,12 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
       applyQtyPlus(); // reads barcodeInput, sets qty (0 removes), clears, refocuses scanner
       return;
     }
-    handleBarcodeSearch(raw);
+    // Manual Enter in the scan box now behaves like a scan: a matching active
+    // product drops straight into the cart (so the ＋ / typed-quantity multiplier
+    // has a line to act on), while price-check, unknown codes and inactive items
+    // fall back to the card / quick-create exactly as before.
+    setBarcodeInput("");
+    scanToCart(raw);
   }
   // ＋ quantity button: a typed number SETS the last scanned line's quantity
   // (type 5 then ＋ → ×5; 0 removes it); ＋ with an empty box just +1s that line.
@@ -6234,10 +6297,10 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   const quickItems=items.filter(i=>i.active&&favourites.includes(i.id));
   const weighedItems=items.filter(i=>i.active&&i.weighed);
   const superScanBar=(
-    <div style={{display:"flex",gap:8,flex:1,minWidth:0}}>
+    <div data-pkzone="scan" style={{display:"flex",gap:8,flex:1,minWidth:0}}>
       <input ref={barcodeRef} value={barcodeInput}
         onChange={e=>setBarcodeInput(e.target.value)}
-        onKeyDown={e=>{if(e.key==="Enter"&&barcodeInput.trim())submitScanBox();}}
+        onKeyDown={e=>{if(e.key==="Enter"&&barcodeInput.trim())submitScanBox();else if(e.key==="Delete"&&!barcodeInput)removeLastLine();}}
         placeholder={priceCheck?"🔍 Price check — scan to view":"🔲 Scan barcode or type code…"}
         style={{flex:1,minWidth:0,padding:"12px 16px",border:`2px solid ${priceCheck?C.warning:C.primary}`,borderRadius:10,fontSize:16,fontWeight:600,fontFamily:"inherit",background:"#fff",color:C.text}}/>
       {!priceCheck&&<button onClick={applyQtyPlus} title="Set the last scanned item's quantity to the typed number (or ＋1 if empty)" style={{flexShrink:0,width:52,borderRadius:10,border:`2px solid ${C.primary}`,background:C.primaryLight,color:C.primary,fontSize:24,fontWeight:900,cursor:"pointer",fontFamily:"inherit",lineHeight:1}}>＋</button>}
@@ -6264,7 +6327,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     <button onClick={onClick} style={{flexShrink:0,height:44,padding:"0 14px",borderRadius:10,border:`1.5px solid ${active?accent:C.border}`,background:active?accent+"18":"#fff",color:active?accent:C.textMid,cursor:"pointer",fontSize:13,fontWeight:800,fontFamily:"inherit",whiteSpace:"nowrap"}}>{label}</button>
   );
   const superReceipt=(
-    <div style={{flex:1,overflowY:"auto",padding:"10px 12px",display:"flex",flexDirection:"column",gap:6}}>
+    <div data-pkzone="cart" style={{flex:1,overflowY:"auto",padding:"10px 12px",display:"flex",flexDirection:"column",gap:6}}>
       {cart.length===0
         ? <div style={{margin:"auto",textAlign:"center",color:C.textLight}}><div style={{fontSize:40,opacity:0.5}}>🛒</div><div style={{fontSize:14,marginTop:6}}>Scan an item to start</div></div>
         : cart.map((item,idx)=>(
@@ -6274,10 +6337,10 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
             style={{display:"flex",alignItems:"center",gap:10,padding:"11px 14px",borderRadius:10,cursor:"pointer",background:selectedRow===idx?C.primaryLight:"#fff",border:`1.5px solid ${selectedRow===idx?C.primary:C.border}`,boxShadow:idx===0&&selectedRow==null?`0 0 0 2px ${C.primary}22`:"none"}}>
             <span aria-hidden="true" style={{flexShrink:0,minWidth:22,height:22,padding:"0 6px",borderRadius:6,background:C.bg,border:`1px solid ${C.border}`,color:C.textMid,fontSize:11,fontWeight:800,display:"flex",alignItems:"center",justifyContent:"center"}}>{idx+1}</span>
             <div style={{flex:1,minWidth:0}}>
-              <div style={{fontSize:15,fontWeight:700,color:C.text}}>{item.name}</div>
+              <div style={{fontSize:15,fontWeight:700,color:C.text}}>{posItemName(item,posNameMode)}</div>
               <div style={{fontSize:12,color:C.textMid}}>
                 {editPriceIdx===idx&&!item.weighed
-                  ? <input autoFocus value={editPriceVal} inputMode="decimal"
+                  ? <input autoFocus value={editPriceVal} inputMode="decimal" placeholder={String(item.price)}
                       onChange={e=>setEditPriceVal(e.target.value.replace(/[^\d.]/g,""))}
                       onBlur={commitPriceEdit}
                       onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();commitPriceEdit();}else if(e.key==="Escape"){e.preventDefault();cancelPriceEdit();}}}
@@ -6293,7 +6356,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     </div>
   );
   const superQtyBar=(selectedRow!==null&&cart[selectedRow]&&(
-    <div style={{padding:"8px 14px",borderTop:`1px solid ${C.border}`,background:"#fff",display:"flex",gap:8,alignItems:"center"}}>
+    <div data-pkzone="qtybar" style={{padding:"8px 14px",borderTop:`1px solid ${C.border}`,background:"#fff",display:"flex",gap:8,alignItems:"center"}}>
       <span style={{fontSize:13,color:C.textMid,flex:1,fontWeight:700}}>{cart[selectedRow]?.name}</span>
       <button onClick={()=>updateQty(-1)} style={{width:38,height:38,borderRadius:9,border:`1px solid ${C.border}`,background:C.dangerLight,color:C.danger,fontSize:20,fontWeight:700,cursor:"pointer"}}>−</button>
       <span style={{fontSize:16,fontWeight:800,minWidth:28,textAlign:"center"}}>{cart[selectedRow]?.qty}</span>
@@ -6357,7 +6420,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
           const col=colorForCat(effectiveCat(item,savedCats),savedCats);
           return(
             <button key={item.id} onClick={()=>addToCart(item)} style={{textAlign:"left",background:"#fff",border:`1px solid ${C.border}`,borderLeft:`4px solid ${col}`,borderRadius:9,padding:"9px 10px",cursor:"pointer",fontFamily:"inherit"}}>
-              <div style={{fontSize:12,fontWeight:700,color:C.text,lineHeight:1.25}}>{item.name}</div>
+              <div style={{fontSize:12,fontWeight:700,color:C.text,lineHeight:1.25}}>{posItemName(item,posNameMode)}</div>
               <div style={{fontSize:12,fontWeight:900,color:col,marginTop:2}}>{fmtSAR(item.price)}{item.weighed?"/kg":""}</div>
             </button>
           );
@@ -6415,14 +6478,14 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
       <div key={idx} style={{display:"flex",alignItems:"center",padding:"0 14px",minHeight:46,borderBottom:`1px solid ${C.border}`,background:idx%2?"#FCFDFE":"#fff"}}>
         <span aria-hidden="true" style={{width:24,flexShrink:0,fontSize:12,fontWeight:800,color:C.textLight,textAlign:"left"}}>{idx+1}</span>
         <div style={{flex:1.4,minWidth:0}}>
-          <div style={{display:"flex",alignItems:"center",gap:6}}>
-            <span style={{fontSize:15,fontWeight:700,color:C.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{item.name}</span>
+          <div tabIndex={0} data-pknav="name" role="button" aria-label={`Line ${idx+1} ${item.name}`} onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();setSelectedRow(idx);}}} style={{display:"flex",alignItems:"center",gap:6,cursor:"default",borderRadius:6}}>
+            <span style={{fontSize:15,fontWeight:700,color:C.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{posItemName(item,posNameMode)}</span>
             {lineCatChip(item)}
           </div>
         </div>
-        <div style={{flex:1,minWidth:0,fontSize:11,fontFamily:"monospace",color:C.textLight,textAlign:"center",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",padding:"0 6px"}}>{item.barcode||"—"}</div>
+        <div tabIndex={0} data-pknav="barcode" role="text" aria-label={`Barcode ${item.barcode||"none"}`} style={{flex:1,minWidth:0,fontSize:11,fontFamily:"monospace",color:C.textLight,textAlign:"center",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",padding:"0 6px",borderRadius:6}}>{item.barcode||"—"}</div>
         {editPriceIdx===idx&&!item.weighed
-          ? <input autoFocus value={editPriceVal} inputMode="decimal"
+          ? <input autoFocus value={editPriceVal} inputMode="decimal" placeholder={String(item.price)}
               onChange={e=>setEditPriceVal(e.target.value.replace(/[^\d.]/g,""))}
               onBlur={commitPriceEdit}
               onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();commitPriceEdit();}else if(e.key==="Escape"){e.preventDefault();cancelPriceEdit();}}}
@@ -6490,7 +6553,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
           <span style={{width:86,textAlign:"right"}}>TOTAL</span>
           <span style={{width:36}}/>
         </div>
-        <div style={{flex:1,overflowY:"auto"}}>
+        <div data-pkzone="cart" style={{flex:1,overflowY:"auto"}}>
           {cart.length===0
             ? <div style={{textAlign:"center",color:C.textLight,marginTop:70}}><div style={{fontSize:42,opacity:0.5}}>🛒</div><div style={{fontSize:14,marginTop:8}}>Scan an item to start</div></div>
             : cart.map((item,idx)=>superTillRow(item,idx))}
@@ -6662,7 +6725,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
         }
       `}</style>
       <style>{`@keyframes slideDown{from{opacity:0;transform:translateX(-50%) translateY(-20px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}`}</style>
-      {showPayment&&<PaymentModal total={total} subtotal={subtotal} vat={vat} promos={promos} license={license} vno={vno} kotNo={kotNo} customers={LS.get("restopos_customers")||[]} customerName={customerName} customerPhone={customerPhone} orderType={orderType} onConfirm={confirmPayment} onClose={()=>setShowPayment(false)}/>}
+      {showPayment&&<PaymentModal total={total} subtotal={subtotal} vat={vat} promos={promos} license={license} vno={vno} kotNo={kotNo} customers={LS.get("restopos_customers")||[]} customerName={customerName} customerPhone={customerPhone} orderType={orderType} defaultMethod={superMode?(LS.get("restopos_pos_default_pay")||"Card"):"Cash"} onConfirm={confirmPayment} onClose={()=>setShowPayment(false)}/>}
       {showReceipt&&lastOrder&&<ReceiptModal order={lastOrder} license={license} zatcaInvoice={lastZatcaInvoice} onClose={()=>{setShowReceipt(false);setLastZatcaInvoice(null);}}/>}
       {/* ⚖ Weigh picker — pick a weighed product when there's no grid to tap (Layout A/C) */}
       {weighPick&&(
@@ -6727,7 +6790,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
             {priceCheck&&<div style={{margin:"0 20px 6px",fontSize:12,fontWeight:800,color:C.warning,background:C.warningLight,borderRadius:8,padding:"7px 10px",textAlign:"center"}}>🔍 Price Check — view only</div>}
             <div style={{display:"flex",gap:8,padding:"12px 20px 18px"}}>
               {priceCheck
-                ? <button autoFocus onClick={close} onKeyDown={e=>{if(e.key==="Enter")close();}} style={{flex:1,padding:"12px 0",border:"none",background:C.primary,color:"#fff",borderRadius:10,fontFamily:"inherit",fontSize:14,fontWeight:800,cursor:"pointer"}}>Done</button>
+                ? <button onClick={close} style={{flex:1,padding:"12px 0",border:"none",background:C.primary,color:"#fff",borderRadius:10,fontFamily:"inherit",fontSize:14,fontWeight:800,cursor:"pointer"}}>Done</button>
                 : <>
                     <button onClick={close} style={{flex:1,padding:"12px 0",border:`1.5px solid ${C.border}`,background:"#fff",color:C.textMid,borderRadius:10,fontFamily:"inherit",fontSize:14,fontWeight:700,cursor:"pointer"}}>Close</button>
                     <button autoFocus onClick={addNow} onKeyDown={e=>{if(e.key==="Enter")addNow();}} style={{flex:2,padding:"12px 0",border:"none",background:C.primary,color:"#fff",borderRadius:10,fontFamily:"inherit",fontSize:14,fontWeight:800,cursor:"pointer"}}>{it.weighed?"⚖️ Weigh & Add":"＋ Add to Cart"}</button>
@@ -6876,7 +6939,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
       {/* LEFT — Menu */}
       <div style={{flex:1,display:"flex",flexDirection:"column",borderRight:`1px solid ${C.border}`,background:C.bg,overflow:"hidden"}}>
         <div style={{padding:"8px 12px",background:C.zatcaLight,borderBottom:`1px solid ${C.border}`,display:"flex",gap:8,alignItems:"center"}}>
-          <input ref={barcodeRef} value={barcodeInput} onChange={e=>setBarcodeInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&barcodeInput.trim())submitScanBox();}} placeholder={priceCheck?"🔍 Price check — scan to view":"🔲 Scan barcode or type…"} style={{flex:1,minWidth:0,padding:"7px 12px",border:`1.5px solid ${priceCheck?C.warning:C.zatca}`,borderRadius:8,fontSize:13,fontFamily:"inherit",background:"#fff"}}/>
+          <input ref={barcodeRef} value={barcodeInput} onChange={e=>setBarcodeInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&barcodeInput.trim())submitScanBox();else if(e.key==="Delete"&&!barcodeInput)removeLastLine();}} placeholder={priceCheck?"🔍 Price check — scan to view":"🔲 Scan barcode or type…"} style={{flex:1,minWidth:0,padding:"7px 12px",border:`1.5px solid ${priceCheck?C.warning:C.zatca}`,borderRadius:8,fontSize:13,fontFamily:"inherit",background:"#fff"}}/>
           <button onClick={()=>setPriceCheck(p=>!p)} title="Price check: scan to view details only, never add to cart" style={{flexShrink:0,height:34,padding:"0 11px",borderRadius:8,border:`1.5px solid ${priceCheck?C.warning:C.border}`,background:priceCheck?C.warningLight:"#fff",color:priceCheck?C.warning:C.textMid,cursor:"pointer",fontSize:12,fontWeight:800,fontFamily:"inherit"}}>🔍 {priceCheck?"Price Check ON":"Price Check"}</button>
           {!editMode
             ? <button onClick={enterEdit} title="Edit layout — reorder items & resize boxes" style={{flexShrink:0,width:38,height:36,borderRadius:8,border:`1.5px solid ${C.border}`,background:"#fff",cursor:"pointer",fontSize:17,display:"flex",alignItems:"center",justifyContent:"center"}}>✏️</button>
@@ -8823,12 +8886,50 @@ function HardwareTest(){
   </div>);
 }
 
+// ── POS Settings — supermarket till preferences in one place ───────────────
+// Changes save to localStorage and fire a "restopos-pos-settings" event so the
+// open till applies them live (no reload). More POS toggles can slot in here.
+function PosSettingsTab({lang="en",invoiceFormat,setInvoiceFormat}){
+  const [nameLang,setNameLang]=useState(()=>LS.get("restopos_pos_name_lang")||"en");
+  const [defaultPay,setDefaultPay]=useState(()=>LS.get("restopos_pos_default_pay")||"Card");
+  const [showCust,setShowCust]=useState(()=>invoiceFormat?.showCustomer!==false);
+  const [saved,setSaved]=useState("");
+  const flash=(m)=>{setSaved(m);setTimeout(()=>setSaved(""),1600);};
+  const announce=()=>{try{window.dispatchEvent(new CustomEvent("restopos-pos-settings"));}catch(e){}};
+  const saveName=(v)=>{setNameLang(v);LS.set("restopos_pos_name_lang",v);announce();flash("Saved ✓");};
+  const savePay=(v)=>{setDefaultPay(v);LS.set("restopos_pos_default_pay",v);announce();flash("Saved ✓");};
+  const saveCust=(v)=>{setShowCust(v);setInvoiceFormat&&setInvoiceFormat(f=>({...f,showCustomer:v}));announce();flash("Saved ✓");};
+  const row={display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,padding:"14px 0",borderBottom:"1px solid #EEF2F6"};
+  const label=(t,d)=><div style={{maxWidth:360}}><div style={{fontSize:14,fontWeight:700,color:"#1A3A5C"}}>{t}</div><div style={{fontSize:12,color:"#6B7A8D",marginTop:2,lineHeight:1.4}}>{d}</div></div>;
+  const seg=(opts,val,on)=><div style={{display:"flex",gap:6,flexShrink:0}}>{opts.map(([v,lbl])=><button key={v} onClick={()=>on(v)} style={{padding:"8px 14px",borderRadius:9,border:`1.5px solid ${val===v?"#1A6B4A":"#D5DEE8"}`,background:val===v?"#1A6B4A":"#fff",color:val===v?"#fff":"#5A7A9A",fontFamily:"inherit",fontSize:13,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>{lbl}</button>)}</div>;
+  return (
+    <Card style={{maxWidth:680}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
+        <div style={{fontSize:16,fontWeight:800,color:"#1A3A5C"}}>🛒 {t("POS Settings",lang)}</div>
+        {saved&&<span style={{fontSize:12,color:"#1A6B4A",fontWeight:700}}>{saved}</span>}
+      </div>
+      <div style={{fontSize:12.5,color:"#6B7A8D",marginBottom:10}}>Preferences for the supermarket checkout till.</div>
+      <div style={row}>
+        {label("Item name language","Which name to show on the till as items are scanned into the cart.")}
+        {seg([["en","English"],["ar","العربية"],["both","Both"]],nameLang,saveName)}
+      </div>
+      <div style={row}>
+        {label("Default payment method","Which method is pre-selected when the payment window opens.")}
+        {seg([["Card","💳 Card"],["Cash","💵 Cash"]],defaultPay,savePay)}
+      </div>
+      <div style={{...row,borderBottom:"none"}}>
+        {label("Show customer name / phone on receipt","Prints the customer name and phone entered at checkout on the invoice.")}
+        {seg([[true,"On"],[false,"Off"]],showCust,saveCust)}
+      </div>
+    </Card>
+  );
+}
 function Settings({company,setCompany,tables,setTables,license,onClearLicense,onSwitchAccount,pins,setPins,invoiceFormat,setInvoiceFormat,lang="en",onLangChange,sales=[],items=[]}){
   const [tab,setTab]=useState("company");const [newTableCount,setNewTableCount]=useState(tables.length);const [companySaved,setCompanySaved]=useState(false);
   const TAB_LABELS={"company":"🏢 "+t("Company",lang),"dashboard":"📊 "+t("Dashboard",lang),"tables":"🪑 "+t("Tables",lang),"printers":"🖨️ "+t("Bill Printer",lang),"invoices":"📄 "+t("Invoices",lang),"backup":"💾 "+t("Backup",lang),"security":"🔐 "+t("Security",lang),"license":"📋 "+t("License",lang),"language":"🌐 "+t("Language",lang)};
   // Tables tab for types that seat guests; Checkout (scan-layout picker) for barcode-first types.
   const hasTables=bizFeature("tables");
-  const tabs=[[`company`,`🏢 ${t("Company",lang)}`],[`dashboard`,`📊 ${t("Dashboard",lang)}`],...(hasTables?[[`tables`,`🪑 ${t("Tables",lang)}`]]:[[`checkout`,`🛒 ${t("Checkout",lang)}`]]),[`printers`,`🖨️ ${t("Bill Printer",lang)}`],[`invoices`,`📄 ${t("Invoices",lang)}`],[`presets`,`🎨 ${t("Preset Bills",lang)}`],[`backup`,`💾 ${t("Backup",lang)}`],[`security`,`🔐 ${t("Security",lang)}`],[`license`,`📋 ${t("License",lang)}`],[`updates`,`🔄 ${t("Updates",lang)}`],[`language`,`🌐 ${t("Language",lang)}`]];
+  const tabs=[[`company`,`🏢 ${t("Company",lang)}`],[`dashboard`,`📊 ${t("Dashboard",lang)}`],...(hasTables?[[`tables`,`🪑 ${t("Tables",lang)}`]]:[[`checkout`,`🛒 ${t("Checkout",lang)}`]]),[`possettings`,`🛒 ${t("POS Settings",lang)}`],[`printers`,`🖨️ ${t("Bill Printer",lang)}`],[`invoices`,`📄 ${t("Invoices",lang)}`],[`presets`,`🎨 ${t("Preset Bills",lang)}`],[`backup`,`💾 ${t("Backup",lang)}`],[`security`,`🔐 ${t("Security",lang)}`],[`license`,`📋 ${t("License",lang)}`],[`updates`,`🔄 ${t("Updates",lang)}`],[`language`,`🌐 ${t("Language",lang)}`]];
   return(<div dir={lang==="ar"?"rtl":"ltr"} style={{fontFamily:lang==="ar"?"'Tajawal',sans-serif":"inherit"}}>
     <div style={{display:"flex",gap:8,marginBottom:20,flexWrap:"wrap"}}>{tabs.map(([id,label])=><button key={id} onClick={()=>setTab(id)} style={{padding:"8px 16px",borderRadius:8,border:`1.5px solid ${tab===id?C.primary:C.border}`,background:tab===id?C.primaryLight:"#fff",color:tab===id?C.primary:C.textMid,fontFamily:"inherit",fontSize:13,fontWeight:600,cursor:"pointer"}}>{TAB_LABELS[id]||label}</button>)}</div>
     {tab==="company"&&<Card style={{maxWidth:640}}>
@@ -8844,6 +8945,7 @@ function Settings({company,setCompany,tables,setTables,license,onClearLicense,on
     </Card>}
     {tab==="dashboard"&&<DashboardEditor sales={sales} items={items}/>}
     {tab==="checkout"&&<CheckoutLayoutTab/>}
+    {tab==="possettings"&&<PosSettingsTab lang={lang} invoiceFormat={invoiceFormat} setInvoiceFormat={setInvoiceFormat}/>}
     {tab==="tables"&&<Card style={{maxWidth:500}}>
       <div style={{fontSize:15,fontWeight:700,marginBottom:16}}>Table Configuration</div>
       <div style={{display:"flex",gap:10,marginBottom:20,alignItems:"flex-end"}}><Inp label="Number of Tables" value={newTableCount} onChange={v=>setNewTableCount(parseInt(v)||1)} type="number"/><Btn onClick={()=>setTables(Array.from({length:newTableCount},(_,i)=>({id:i+1,status:"free",capacity:4})))}>Update</Btn></div>
@@ -9823,8 +9925,22 @@ function Reports({sales,allSales,items,setSales,lang="en",license,archiveIndex={
     // Time range: first sale → now (close)
     const sorted=salesArr.slice().sort((a,b)=>String(a.time).localeCompare(String(b.time)));
     const startTime=sorted.length?(sorted[0].time||""):"";
+    // Purchases (supplier invoices) captured for this day — totals + VAT only, so
+    // the daily report shows input VAT alongside output VAT. Credit notes subtract.
+    let purchasesTotal=0,purchasesVat=0,purchasesNet=0,purchasesCount=0;
+    try{
+      const pdocs=LS.get("restopos_purchase_invoices")||[];
+      pdocs.forEach(d=>{
+        if(String(d&&d.invoiceDate||"").slice(0,10)!==dateStr) return;
+        const s=_purSignedAmounts(d);
+        purchasesTotal+=s.total; purchasesVat+=s.vatAmount; purchasesNet+=s.subtotal; purchasesCount++;
+      });
+    }catch(e){}
+    const r2=(n)=>Math.round((Number(n)||0)*100)/100;
     return{date:dateStr,orderCount:salesArr.length,revenue,vat,discount,payBreakdown,catList,expenses:expTotal,netRevenue:revenue-expTotal,
-      cashSale,cardSale,creditSale,startTime,closeTime:new Date().toLocaleTimeString("en-SA")};
+      cashSale,cardSale,creditSale,startTime,closeTime:new Date().toLocaleTimeString("en-SA"),
+      purchasesTotal:r2(purchasesTotal),purchasesVat:r2(purchasesVat),purchasesNet:r2(purchasesNet),purchasesCount,
+      netVat:r2(vat-purchasesVat)};
   }
 
   // ── Excel export ─────────────────────────────────────────────────
@@ -10225,6 +10341,7 @@ ${_brandingHTML({...REPORT_DEFAULTS,...(LS.get("restopos_report_format")||{})})}
             <div style={{background:"linear-gradient(135deg,#1A3A5C,#0F2340)",padding:"16px 20px",borderRadius:"20px 20px 0 0",display:"flex",justifyContent:"space-between",alignItems:"center",position:"sticky",top:0,zIndex:10}}>
               <div>
                 <div style={{color:"#fff",fontSize:16,fontWeight:800}}>📊 Day Closed — Summary</div>
+                {(license?.businessName||license?.vatNumber)&&<div style={{color:"rgba(255,255,255,0.8)",fontSize:11,marginTop:3,fontWeight:700}}>{license?.businessName||""}{license?.vatNumber?` · VAT ${license.vatNumber}`:""}</div>}
                 <div style={{color:"rgba(255,255,255,0.6)",fontSize:11,marginTop:2}}>{daySummaryData.dateRange||daySummaryData.date} · {daySummaryData.orderCount} orders{daySummaryData.isMultiDay?` · ${daySummaryData.dayCount} days`:""}</div>
                 {daySummaryData.prevCloseLabel&&<div style={{color:"rgba(255,255,255,0.4)",fontSize:10,marginTop:2}}>⏮️ Prev close: {daySummaryData.prevCloseLabel}</div>}
               </div>
@@ -10240,6 +10357,23 @@ ${_brandingHTML({...REPORT_DEFAULTS,...(LS.get("restopos_report_format")||{})})}
                   </div>
                 ))}
               </div>
+              {/* Purchases & VAT — input VAT from supplier invoices for the period,
+                  and the net VAT payable (output − input). Shown when any purchase
+                  was captured for the day; sales-only days just show output VAT above. */}
+              {(daySummaryData.purchasesCount>0||daySummaryData.purchasesTotal)?(
+                <div style={{background:C.zatcaLight||C.bg,borderRadius:10,padding:"10px 14px",border:`1px solid ${C.zatca}22`}}>
+                  <div style={{fontSize:12,fontWeight:700,marginBottom:6}}>🧾 Purchases & VAT {daySummaryData.purchasesCount?`· ${daySummaryData.purchasesCount} bill${daySummaryData.purchasesCount>1?"s":""}`:""}</div>
+                  <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                    {[["Purchases (incl VAT)",daySummaryData.purchasesTotal],["Input VAT",daySummaryData.purchasesVat],["Output VAT (sales)",daySummaryData.vat],["Net VAT payable",daySummaryData.netVat]].map(([l,v])=>(
+                      <div key={l} style={{background:"#fff",border:`1px solid ${C.border}`,borderRadius:8,padding:"6px 10px"}}>
+                        <div style={{fontSize:10,color:C.textMid,fontWeight:700}}>{l}</div>
+                        <div style={{fontSize:12,fontWeight:800,color:C.zatca}}>SAR {Number(v||0).toFixed(2)}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{fontSize:10,color:C.textLight,marginTop:6}}>Net VAT payable = output VAT on sales − input VAT on purchases.</div>
+                </div>
+              ):null}
               {/* Payment breakdown */}
               <div style={{background:C.bg,borderRadius:10,padding:"10px 14px"}}>
                 <div style={{fontSize:12,fontWeight:700,marginBottom:6}}>💳 Payment Breakdown</div>
@@ -17852,15 +17986,17 @@ export default function App(){
     if(!lk||!isOnline){ try{ if("serviceWorker" in navigator) navigator.serviceWorker.getRegistration().then(r=>r&&r.update()).catch(()=>{}); }catch(e){} window.location.reload(); return; }
     setSyncState(s=>({...s,busy:true,msg:"Syncing…"}));
     try{
-      // PUSH — flush each synced key now, bypassing the 3s debounce.
+      // 1) PULL + MERGE first — union every record list (sales, customers, …) with
+      //    the cloud so this device gains the other tills' records without losing
+      //    its own. restoreFromFirestore writes the merged result into localStorage.
+      const restored=await restoreFromFirestore(lk);
+      // 2) PUSH the merged local state back up, so the cloud now holds the union
+      //    too and the OTHER devices pull everything on their next sync.
       for(const k of SYNC_KEYS){
         let raw; try{ raw=localStorage.getItem(k); }catch(e){ raw=null; }
         if(raw==null) continue;
         try{ await syncKeyToFirestore(lk,k,JSON.parse(raw)); }catch(e){ /* keep going; one bad key must not stop the rest */ }
       }
-      // PULL — bring down whatever the cloud holds more of (products, settings,
-      // customers, the recent sales working set, and monthly sales archives).
-      const restored=await restoreFromFirestore(lk);
       const now=new Date().toISOString();
       try{ localStorage.setItem("restopos_last_sync",JSON.stringify(now)); }catch(e){}
       setSyncState({busy:false,at:now,msg:restored?"Synced · new data pulled":"Synced ✓"});
@@ -18085,8 +18221,13 @@ export default function App(){
               <button onClick={()=>handleScaleChange(uiScale+5)} style={{background:"rgba(255,255,255,0.1)",border:"none",color:"#fff",width:16,height:16,borderRadius:3,cursor:"pointer",fontSize:10,display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"inherit"}}>+</button>
             </div>
           </div>
-          <div style={{fontSize:9,color:"rgba(255,255,255,0.65)",fontWeight:700,whiteSpace:"nowrap",display:viewport.w<500?"none":"block"}}>{lang==="ar"?({"Admin":"مدير","Manager":"مشرف","Cashier":"كاشير"}[currentUser?.role]||currentUser?.role):currentUser?.role}</div>
-          <button onClick={()=>setCurrentUser(null)} style={{fontSize:9,background:"rgba(217,64,64,0.25)",color:"#ffaaaa",border:"1px solid rgba(217,64,64,0.35)",padding:"3px 7px",borderRadius:4,cursor:"pointer",fontFamily:"inherit",fontWeight:700,whiteSpace:"nowrap"}}>⎋</button>
+          {superMode
+            ? <span title="Supermarket mode" style={{display:"flex",alignItems:"center",gap:5,fontSize:11,fontWeight:900,color:"#fff",background:"linear-gradient(135deg,#1A6B4A,#134D36)",padding:"5px 12px",borderRadius:8,border:"1px solid rgba(255,255,255,0.3)",whiteSpace:"nowrap",boxShadow:"0 1px 6px rgba(0,0,0,0.3)"}}>🛒 {lang==="ar"?"سوبرماركت":"SUPERMARKET"}</span>
+            : <div style={{fontSize:9,color:"rgba(255,255,255,0.65)",fontWeight:700,whiteSpace:"nowrap",display:viewport.w<500?"none":"block"}}>{lang==="ar"?({"Admin":"مدير","Manager":"مشرف","Cashier":"كاشير"}[currentUser?.role]||currentUser?.role):currentUser?.role}</div>}
+          {/* Logout routes to the role/owner-login screen (a path toward owner/admin),
+             so it is hidden on the supermarket till — a cashier should never reach it
+             from here. The owner still switches users from Settings → Security. */}
+          {!superMode&&<button onClick={()=>setCurrentUser(null)} style={{fontSize:9,background:"rgba(217,64,64,0.25)",color:"#ffaaaa",border:"1px solid rgba(217,64,64,0.35)",padding:"3px 7px",borderRadius:4,cursor:"pointer",fontFamily:"inherit",fontWeight:700,whiteSpace:"nowrap"}}>⎋</button>}
         </div>
       </div>
       {/* ☰ SUPERMARKET SIDEBAR — every module, grouped as a heading with its branches */}
