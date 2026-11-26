@@ -38,6 +38,7 @@ import { initPOStore, setPurchaseOrdersLocal, loadPurchaseOrders } from "./lib/p
 import { initPurchaseCloud, setPurchaseCloudLicense, purchaseDocsCloud, purchaseOrdersCloud, mergeById } from "./lib/purchaseCloud.js";
 import { purchaseDocsToVatTx } from "./lib/vatBridge.js";
 import { signedAmounts as _purSignedAmounts } from "./lib/purchases.js";
+import { buildDailyReport, datesWithActivity, dailyReportHTML } from "./lib/dailyReport.js";
 import { getLang, setLangStore, t, dir } from "./i18n/index.js";
 import { BUSINESS_TYPES, DEFAULT_BUSINESS_TYPE, getBusinessType, bizProfile, bizFeature, manualBillingEnabled, isSupermarket } from "./config/businessTypes.js";
 import { rolesForProfile, DEFAULT_PINS } from "./config/roles.js";
@@ -10274,7 +10275,7 @@ ${_brandingHTML({...REPORT_DEFAULTS,...(LS.get("restopos_report_format")||{})})}
     </Card>
   );
 
-  const tabs=[[`summary`,`📋 ${_t("Sales Summary")}`],[`drafts`,`📋 ${_t("D-Invoices")}`],[`transactions`,`🧾 ${_t("Transactions")}`],[`eod`,`🌙 ${_t("End of Day")}`],[`custom`,`📆 ${_t("Custom Report")}`],[`dayhistory`,`📅 ${_t("Day History")}`]];
+  const tabs=[[`dailyreports`,`📄 ${_t("Daily Reports")}`],[`summary`,`📋 ${_t("Sales Summary")}`],[`drafts`,`📋 ${_t("D-Invoices")}`],[`transactions`,`🧾 ${_t("Transactions")}`],[`eod`,`🌙 ${_t("End of Day")}`],[`custom`,`📆 ${_t("Custom Report")}`],[`dayhistory`,`📅 ${_t("Day History")}`]];
 
   return(
     <div>
@@ -10513,6 +10514,51 @@ ${_brandingHTML({...REPORT_DEFAULTS,...(LS.get("restopos_report_format")||{})})}
       </div>
 
       {/* ── SUMMARY TAB ── */}
+      {tab==="dailyreports"&&(()=>{
+        const _money=(n)=>"SAR "+(Number(n)||0).toFixed(2);
+        const purch=(()=>{try{return loadPurchaseInvoices()||[];}catch(e){return [];}})();
+        const saved=LS.get("restopos_daily_reports")||{};
+        const dates=datesWithActivity(allSales,purch).slice(0,120);
+        const reportFor=(date)=>(date<TODAY&&saved[date])?saved[date]:buildDailyReport(allSales,purch,date);
+        const openReport=(rep,doPrint)=>{
+          const w=window.open("","_blank");
+          if(!w){alert("Pop-up blocked — allow pop-ups to view or print the report.");return;}
+          const html=dailyReportHTML(rep,license||LS.get("restopos_license_v2")||{});
+          w.document.write(doPrint?html.replace("</body>",`<script>window.onload=function(){window.print();}<\/script></body>`):html);
+          w.document.close();
+        };
+        return (
+          <Card>
+            <div style={{fontSize:16,fontWeight:800,color:"#1A3A5C"}}>📄 {_t("Daily Reports")}</div>
+            <div style={{fontSize:12.5,color:"#6B7A8D",margin:"4px 0 12px"}}>Auto-saved for every day (00:00–23:59) with sales or purchases. Tap <strong>View</strong> to open, then print or <strong>Save as PDF</strong> from your browser. Includes totals, VAT and net VAT payable — no transaction list.</div>
+            {dates.length===0
+              ? <div style={{textAlign:"center",color:"#8A9AB0",fontSize:13,padding:"26px 0"}}>No activity yet. Reports appear here automatically as you make sales.</div>
+              : <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                  {dates.map(date=>{
+                    const rep=reportFor(date); const isToday=date===TODAY;
+                    return (
+                      <div key={date} style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap",border:"1px solid #E6EBF1",borderRadius:10,padding:"10px 14px",background:isToday?"#F3F9F5":"#fff"}}>
+                        <div style={{minWidth:120}}>
+                          <div style={{fontSize:14,fontWeight:800,color:"#1A3A5C"}}>{date}</div>
+                          <div style={{fontSize:10,color:isToday?"#1A6B4A":"#8A9AB0",fontWeight:700}}>{isToday?"TODAY · live":(saved[date]?"saved":"computed")}</div>
+                        </div>
+                        <div style={{flex:1,minWidth:200,display:"flex",gap:14,flexWrap:"wrap",fontSize:12}}>
+                          <span>🧾 <b>{rep.orderCount}</b> orders</span>
+                          <span>💰 {_money(rep.revenue)}</span>
+                          <span style={{color:"#6366f1"}}>VAT {_money(rep.vat)}</span>
+                          <span style={{color:rep.netVat>=0?"#1A6B4A":"#C0392B",fontWeight:700}}>Net VAT {_money(rep.netVat)}</span>
+                        </div>
+                        <div style={{display:"flex",gap:6}}>
+                          <button onClick={()=>openReport(rep,false)} style={{padding:"7px 12px",borderRadius:8,border:"1.5px solid #1A3A5C",background:"#fff",color:"#1A3A5C",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer"}}>📄 View</button>
+                          <button onClick={()=>openReport(rep,true)} style={{padding:"7px 12px",borderRadius:8,border:"none",background:"linear-gradient(135deg,#1A6B4A,#0F4A30)",color:"#fff",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer"}}>🖨️ Save PDF</button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>}
+          </Card>
+        );
+      })()}
       {tab==="summary"&&<>
         <DateFilter/>
         <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:12,marginBottom:16}}>
@@ -17877,6 +17923,26 @@ export default function App(){
     const d=(x)=>String(x&&x.date||""),i=(x)=>String(x&&x.id||"");
     return[...sales,...deduped,...fromCloud].sort((a,b)=>d(b).localeCompare(d(a))||i(b).localeCompare(i(a)));
   },[sales,salesVersion,cloudSales]);
+  // ── AUTO DAILY REPORTS ─────────────────────────────────────────────
+  // Save one report per PAST day (00:00–23:59) that had sales or purchases, so
+  // Reports → Daily Reports always has ready-to-view / print-to-PDF reports with
+  // no manual Close Day. Today stays live (recomputed on view), never frozen.
+  // Reports are derived from synced sales, so each device rebuilds its own — no
+  // need to sync the cache itself.
+  useEffect(()=>{
+    try{
+      const purch=loadPurchaseInvoices()||[];
+      const saved=LS.get("restopos_daily_reports")||{};
+      let changed=false;
+      for(const date of datesWithActivity(allSales,purch)){
+        if(date>=TODAY) continue;      // only completed past days are frozen
+        if(saved[date]) continue;      // already saved
+        saved[date]={...buildDailyReport(allSales,purch,date),savedAt:new Date().toISOString()};
+        changed=true;
+      }
+      if(changed) LS.set("restopos_daily_reports",saved);
+    }catch(e){ console.warn("[DailyReport] auto-save skipped:",e&&e.message); }
+  },[allSales,license]);
   // ── TRIAL DATA MIRROR ──────────────────────────────────────────────
   // Push a readable copy of everything this trial does into Firebase, so the
   // operator can browse it in the console instead of squinting at the JSON
