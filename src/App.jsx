@@ -5443,8 +5443,19 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   // Live POS name-language preference (Settings → POS). Re-read on the custom
   // event the settings screen fires, so a change applies without a reload.
   const [posNameMode,setPosNameMode]=useState(()=>LS.get("restopos_pos_name_lang")||"en");
+  // Optional feature switches a shop can turn on/off in POS Settings. All default
+  // ON (undefined !== false) so existing tills are unchanged; a key is only ever
+  // false when the owner has explicitly switched that feature off.
+  const [posShowWeigh,setPosShowWeigh]=useState(()=>LS.get("restopos_pos_show_weigh")!==false);
+  const [posShowPriceCheck,setPosShowPriceCheck]=useState(()=>LS.get("restopos_pos_show_pricecheck")!==false);
+  const [posMultiBill,setPosMultiBill]=useState(()=>LS.get("restopos_pos_multibill")!==false);
   useEffect(()=>{
-    const onChange=()=>setPosNameMode(LS.get("restopos_pos_name_lang")||"en");
+    const onChange=()=>{
+      setPosNameMode(LS.get("restopos_pos_name_lang")||"en");
+      setPosShowWeigh(LS.get("restopos_pos_show_weigh")!==false);
+      setPosShowPriceCheck(LS.get("restopos_pos_show_pricecheck")!==false);
+      setPosMultiBill(LS.get("restopos_pos_multibill")!==false);
+    };
     window.addEventListener("restopos-pos-settings",onChange);
     return ()=>window.removeEventListener("restopos-pos-settings",onChange);
   },[]);
@@ -6350,7 +6361,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   // 5 parallel bill tabs — park one customer's cart and serve another, then tap
   // back. Active tab is solid; a tab holding items is tinted so the cashier can
   // see which bills are in progress at a glance.
-  const superBillTabs=(
+  const superBillTabs=(!posMultiBill?null:
     <div style={{display:"flex",gap:6,padding:"8px 12px 0",flexShrink:0,background:C.bg}}>
       {bills.map((b,i)=>{
         const act=i===activeBill;
@@ -6496,21 +6507,25 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
   };
   const superOpenPay=()=>{ if(cart.length&&manualBillingEnabled()) setShowPayment(true); };
   const superOpenPrev=()=>{ const printed=(sales||[]).filter(s=>s.status!=="voided"); if(!printed.length){alert("No previous bills yet");return;} setPrevAllDays(false); setPrevIndex(0); setShowPrevBill(true); };
+  // F3 (price check) and F4 (weigh) are optional per shop — hidden here and from
+  // the hardware F-keys below when switched off in POS Settings.
   const superFKeys=[
     ["F1","💳","Pay",superOpenPay,C.primary,true,cart.length===0||!manualBillingEnabled()],
     ["F2","🗑","Clear all",superClearAll,C.danger,false,cart.length===0],
-    ["F3","🔍",priceCheck?"Price Check ON":"Price check",()=>setPriceCheck(p=>!p),C.warning,false,false],
-    ["F4","⚖","Weigh",()=>setWeighPick(true),C.primary,false,false],
+    ...(posShowPriceCheck?[["F3","🔍",priceCheck?"Price Check ON":"Price check",()=>setPriceCheck(p=>!p),C.warning,false,false]]:[]),
+    ...(posShowWeigh?[["F4","⚖","Weigh",()=>setWeighPick(true),C.primary,false,false]]:[]),
     ["F5","🕐","Prev bill",superOpenPrev,C.primary,false,false],
   ];
   // Hardware F-keys (USB keyboard) mirror the on-screen buttons, on Layout D only.
   useEffect(()=>{
     if(!(superMode&&superLayout==="D"))return;
-    const map={F1:superOpenPay,F2:superClearAll,F3:()=>setPriceCheck(p=>!p),F4:()=>setWeighPick(true),F5:superOpenPrev};
+    const map={F1:superOpenPay,F2:superClearAll,F5:superOpenPrev};
+    if(posShowPriceCheck) map.F3=()=>setPriceCheck(p=>!p);
+    if(posShowWeigh) map.F4=()=>setWeighPick(true);
     const onKey=(e)=>{ if(!showPayment && map[e.key]){ e.preventDefault(); map[e.key](); } };
     window.addEventListener("keydown",onKey);
     return ()=>window.removeEventListener("keydown",onKey);
-  },[superMode,superLayout,cart.length,priceCheck,showPayment]);
+  },[superMode,superLayout,cart.length,priceCheck,showPayment,posShowPriceCheck,posShowWeigh]);
   const superTillRow=(item,idx)=>{
     const del=()=>removeCartRowAt(idx);
     const rowSel=navRow===idx;                 // this row holds the arrow selection
@@ -8943,12 +8958,18 @@ function PosSettingsTab({lang="en",invoiceFormat,setInvoiceFormat}){
   const [nameLang,setNameLang]=useState(()=>LS.get("restopos_pos_name_lang")||"en");
   const [defaultPay,setDefaultPay]=useState(()=>LS.get("restopos_pos_default_pay")||"Card");
   const [showCust,setShowCust]=useState(()=>invoiceFormat?.showCustomer!==false);
+  const [showWeigh,setShowWeigh]=useState(()=>LS.get("restopos_pos_show_weigh")!==false);
+  const [showPriceChk,setShowPriceChk]=useState(()=>LS.get("restopos_pos_show_pricecheck")!==false);
+  const [multiBill,setMultiBill]=useState(()=>LS.get("restopos_pos_multibill")!==false);
   const [saved,setSaved]=useState("");
   const flash=(m)=>{setSaved(m);setTimeout(()=>setSaved(""),1600);};
   const announce=()=>{try{window.dispatchEvent(new CustomEvent("restopos-pos-settings"));}catch(e){}};
   const saveName=(v)=>{setNameLang(v);LS.set("restopos_pos_name_lang",v);announce();flash("Saved ✓");};
   const savePay=(v)=>{setDefaultPay(v);LS.set("restopos_pos_default_pay",v);announce();flash("Saved ✓");};
   const saveCust=(v)=>{setShowCust(v);setInvoiceFormat&&setInvoiceFormat(f=>({...f,showCustomer:v}));announce();flash("Saved ✓");};
+  const saveWeigh=(v)=>{setShowWeigh(v);LS.set("restopos_pos_show_weigh",v);announce();flash("Saved ✓");};
+  const savePriceChk=(v)=>{setShowPriceChk(v);LS.set("restopos_pos_show_pricecheck",v);announce();flash("Saved ✓");};
+  const saveMultiBill=(v)=>{setMultiBill(v);LS.set("restopos_pos_multibill",v);announce();flash("Saved ✓");};
   const row={display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,padding:"14px 0",borderBottom:"1px solid #EEF2F6"};
   const label=(t,d)=><div style={{maxWidth:360}}><div style={{fontSize:14,fontWeight:700,color:"#1A3A5C"}}>{t}</div><div style={{fontSize:12,color:"#6B7A8D",marginTop:2,lineHeight:1.4}}>{d}</div></div>;
   const seg=(opts,val,on)=><div style={{display:"flex",gap:6,flexShrink:0}}>{opts.map(([v,lbl])=><button key={v} onClick={()=>on(v)} style={{padding:"8px 14px",borderRadius:9,border:`1.5px solid ${val===v?"#1A6B4A":"#D5DEE8"}`,background:val===v?"#1A6B4A":"#fff",color:val===v?"#fff":"#5A7A9A",fontFamily:"inherit",fontSize:13,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>{lbl}</button>)}</div>;
@@ -8967,9 +8988,23 @@ function PosSettingsTab({lang="en",invoiceFormat,setInvoiceFormat}){
         {label("Default payment method","Which method is pre-selected when the payment window opens.")}
         {seg([["Card","💳 Card"],["Cash","💵 Cash"]],defaultPay,savePay)}
       </div>
-      <div style={{...row,borderBottom:"none"}}>
+      <div style={row}>
         {label("Show customer name / phone on receipt","Prints the customer name and phone entered at checkout on the invoice.")}
         {seg([[true,"On"],[false,"Off"]],showCust,saveCust)}
+      </div>
+      <div style={{fontSize:12,fontWeight:800,color:"#1A6B4A",letterSpacing:"0.04em",margin:"14px 0 2px"}}>OPTIONAL FEATURES</div>
+      <div style={{fontSize:12,color:"#6B7A8D",marginBottom:4,lineHeight:1.4}}>Turn these on or off to match the shop. Off hides the feature from the till.</div>
+      <div style={row}>
+        {label("Weigh / scale button (F4)","Shows the F4 Weigh flow for by-weight items. Turn off for shops with no scale.")}
+        {seg([[true,"On"],[false,"Off"]],showWeigh,saveWeigh)}
+      </div>
+      <div style={row}>
+        {label("Price check button (F3)","Shows the F3 price-lookup window so a cashier can check a price without adding the item.")}
+        {seg([[true,"On"],[false,"Off"]],showPriceChk,savePriceChk)}
+      </div>
+      <div style={{...row,borderBottom:"none"}}>
+        {label("Multiple bills (Bill 1–5)","Lets the cashier park up to 5 bills at once. Off keeps a single running bill.")}
+        {seg([[true,"On"],[false,"Off"]],multiBill,saveMultiBill)}
       </div>
     </Card>
   );
