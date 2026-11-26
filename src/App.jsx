@@ -5550,6 +5550,14 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     else if(col===6){ removeCartRowAt(idx); }                 // ✕
     // 0 name / 1 barcode: no action
   };
+  // Delete inside a BOX clears only that box's value (price / quantity) — it
+  // never removes the item. Only Delete on the whole-item selection, or Enter on
+  // the ✕ box, deletes the item. Non-editable boxes (name/barcode/±/total) ignore it.
+  const clearCell=(idx,col)=>{
+    const it=cart[idx]; if(!it) return;
+    if(col===2){ if(!it.weighed) beginPriceEdit(idx); }       // price → empty, ready to type
+    else if(col===4){ if(!it.weighed) focusQtyInput(idx); }   // qty → selected, ready to retype
+  };
   const _enterCartNav=(row)=>{ setNavRow(row); setNavCol(null); try{ document.activeElement&&document.activeElement.blur&&document.activeElement.blur(); }catch(_){} };
   const _exitCartNav=()=>{ setNavRow(null); setNavCol(null); focusScanner(); };
   function onPosNavKey(e){
@@ -5580,8 +5588,11 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     // ── Delete — remove the selected item (fallback: the last one).
     if(e.key==="Delete"){
       e.preventDefault(); e.stopPropagation();
-      if(navRow!=null && cart[navRow]) removeCartRowAt(navRow);
-      else if(cart.length) removeLastLine();
+      if(navRow!=null && cart[navRow]){
+        if(navCol==null) removeCartRowAt(navRow);   // whole item selected → remove the item
+        else clearCell(navRow,navCol);               // a box selected → clear only that box
+      }
+      else if(cart.length) removeLastLine();          // not navigating → void the last line
       return;
     }
     if(!cart.length) return;
