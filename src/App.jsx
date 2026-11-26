@@ -18731,7 +18731,7 @@ function ZATCAVatEngine({lang="en"}) {
   const [searchQ, setSearchQ]           = useState("");
   const [filterType, setFilterType]     = useState("ALL");
   // Light/Dark theme for the VAT engine (default dark; persisted)
-  const [vatTheme, setVatTheme]         = useState(() => (typeof LS!=="undefined"&&LS.get&&LS.get("restopos_vat_theme")) || "dark");
+  const [vatTheme, setVatTheme]         = useState(() => (typeof LS!=="undefined"&&LS.get&&LS.get("restopos_vat_theme")) || "light");
   const [showPrintMenu, setShowPrintMenu]= useState(false);
   const [showVatGuide, setShowVatGuide] = useState(false);
   function toggleVatTheme(){ const t=vatTheme==="dark"?"light":"dark"; setVatTheme(t); try{LS.set("restopos_vat_theme",t);}catch(e){} }
@@ -19191,17 +19191,17 @@ ${stats.amountOwed>0?`<div class="warn"><b>⚠️ Penalty estimates if filed lat
 
       {/* ── KPI Cards ─────────────────────────────────────── */}
       <div style={S.kpiGrid}>
-        <VatKPICard label="Total Sales (Net)" labelAr="صافي المبيعات"   value={vatSar(stats.totalSales)}       sub={`VAT collected: ${vatSar(stats.outputVAT)}`}    accent="#10b981" icon="📈" />
-        <VatKPICard label="Total Purchases"   labelAr="إجمالي المشتريات" value={vatSar(stats.totalPurchases)}   sub={`Input VAT paid: ${vatSar(stats.inputVAT)}`}     accent="#6366f1" icon="📦" />
-        <VatKPICard label="Output VAT"        labelAr="ضريبة المخرجات"   value={vatSar(stats.outputVAT)}        sub="VAT collected from customers"                  accent="#f59e0b" icon="⬆️" />
-        <VatKPICard label="Input VAT"         labelAr="ضريبة المدخلات"   value={vatSar(stats.inputVAT)}         sub="VAT paid on purchases (recoverable)"           accent="#8b5cf6" icon="⬇️" />
+        <VatKPICard label="Sales (before VAT)"     labelAr="المبيعات قبل الضريبة"  value={vatSar(stats.totalSales)}       sub={`VAT you charged customers: ${vatSar(stats.outputVAT)}`}  accent="#10b981" icon="📈" />
+        <VatKPICard label="Purchases (before VAT)" labelAr="المشتريات قبل الضريبة" value={vatSar(stats.totalPurchases)}   sub={`VAT you paid suppliers: ${vatSar(stats.inputVAT)}`}      accent="#6366f1" icon="📦" />
+        <VatKPICard label="VAT on sales (you owe)" labelAr="ضريبة المخرجات"        value={vatSar(stats.outputVAT)}        sub="VAT you collected from customers — owed to ZATCA"        accent="#f59e0b" icon="⬆️" />
+        <VatKPICard label="VAT on purchases (you reclaim)" labelAr="ضريبة المدخلات" value={vatSar(stats.inputVAT)}         sub="VAT you paid on purchases — ZATCA refunds this"          accent="#8b5cf6" icon="⬇️" />
       </div>
 
       {/* ── VAT Position Banner ───────────────────────────── */}
       <div style={{ ...S.positionBanner, borderColor: stats.netVATPayable >= 0 ? "#f59e0b" : "#10b981" }}>
         <div style={S.positionLeft}>
           <div style={S.positionLabel}>
-            {stats.netVATPayable >= 0 ? "🔴 ESTIMATED VAT PAYABLE TO ZATCA" : "🟢 ESTIMATED VAT REFUND FROM ZATCA"}
+            {stats.netVATPayable >= 0 ? "🔴 WHAT YOU'LL PAY ZATCA (ESTIMATE)" : "🟢 WHAT ZATCA WILL REFUND YOU (ESTIMATE)"}
           </div>
           <div style={{ ...S.positionLabel, fontSize: 12, color: "#64748b", marginTop: 2 }}>
             {stats.netVATPayable >= 0 ? "ضريبة القيمة المضافة المستحقة" : "استرداد ضريبة القيمة المضافة"}
@@ -19210,7 +19210,7 @@ ${stats.amountOwed>0?`<div class="warn"><b>⚠️ Penalty estimates if filed lat
             {stats.netVATPayable >= 0 ? vatSar(stats.amountOwed) : vatSar(stats.refundDue)}
           </div>
           <div style={S.positionFormula}>
-            Output VAT {vatSar(stats.outputVAT)} − Input VAT {vatSar(stats.inputVAT)} = <strong>{vatSar(stats.netVATPayable)}</strong>
+            VAT on sales {vatSar(stats.outputVAT)} − VAT on purchases {vatSar(stats.inputVAT)} = <strong>{vatSar(stats.netVATPayable)}</strong>
           </div>
         </div>
         <div style={S.positionRight}>
@@ -19226,10 +19226,10 @@ ${stats.amountOwed>0?`<div class="warn"><b>⚠️ Penalty estimates if filed lat
           </div>
           {/* Late penalty estimate */}
           {stats.amountOwed > 0 && (
-            <div style={S.penaltyBox}>
-              <div style={S.penaltyTitle}>⚠️ If filed late (estimated)</div>
-              <div style={S.penaltyRow}><span>5% monthly penalty:</span><span style={{ color: "#f87171" }}>{vatSar(stats.latePenalty)}</span></div>
-              <div style={S.penaltyRow}><span>Max non-filing penalty (25%):</span><span style={{ color: "#f87171" }}>{vatSar(stats.maxPenalty)}</span></div>
+            <div style={{...S.penaltyBox, ...(vatTheme==="light"?{background:"#FEF2F2",border:"1px solid #FCA5A5",color:"#991B1B"}:{})}}>
+              <div style={{...S.penaltyTitle, ...(vatTheme==="light"?{color:"#B91C1C"}:{})}}>⚠️ If you file late (estimated)</div>
+              <div style={S.penaltyRow}><span>Penalty if 1 month late (5%):</span><span style={{ color: vatTheme==="light"?"#DC2626":"#f87171" }}>{vatSar(stats.latePenalty)}</span></div>
+              <div style={S.penaltyRow}><span>Maximum penalty (25%):</span><span style={{ color: vatTheme==="light"?"#DC2626":"#f87171" }}>{vatSar(stats.maxPenalty)}</span></div>
             </div>
           )}
         </div>
@@ -19275,11 +19275,11 @@ ${stats.amountOwed>0?`<div class="warn"><b>⚠️ Penalty estimates if filed lat
                 </div>
               </div>
             ) : (
-              <div style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",background:"#111827",border:"1px solid #374151",borderRadius:12,opacity:0.7}}>
+              <div style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",background:vatTheme==="light"?"#F3F4F6":"#111827",border:`1px solid ${vatTheme==="light"?"#D1D5DB":"#374151"}`,borderRadius:12}}>
                 <span style={{fontSize:20}}>🔒</span>
                 <div>
-                  <div style={{fontSize:13,fontWeight:700,color:"#9ca3af"}}>Pay VAT — Not Yet Available</div>
-                  <div style={{fontSize:11.5,color:"#6b7280",marginTop:2}}>Filing window opens <strong style={{color:"#9ca3af"}}>{nextFilingMonthName} 1st</strong> after your quarter ends</div>
+                  <div style={{fontSize:13,fontWeight:700,color:vatTheme==="light"?"#374151":"#9ca3af"}}>Paying VAT isn't open yet</div>
+                  <div style={{fontSize:11.5,color:vatTheme==="light"?"#6B7280":"#6b7280",marginTop:2}}>You can file &amp; pay from <strong style={{color:vatTheme==="light"?"#374151":"#9ca3af"}}>{nextFilingMonthName} 1st</strong>, once this quarter ends. Until then this screen just tracks what you'll owe.</div>
                 </div>
               </div>
             )}
@@ -19299,9 +19299,9 @@ ${stats.amountOwed>0?`<div class="warn"><b>⚠️ Penalty estimates if filed lat
       ══════════════════════════════════════════════════════ */}
       {activeTab === "dashboard" && (
         <div style={S.tabContent}>
-          <div style={{ background:"#0b1f17", border:"1px solid #1A6B4A", borderRadius:10, padding:"12px 16px", marginBottom:14, fontSize:13, color:"#86efac", display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
+          <div style={{ background:vatTheme==="light"?"#F0FDF4":"#0b1f17", border:`1px solid ${vatTheme==="light"?"#86EFAC":"#1A6B4A"}`, borderRadius:10, padding:"12px 16px", marginBottom:14, fontSize:13, color:vatTheme==="light"?"#15803D":"#86efac", display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
             <span style={{fontSize:18}}>🔄</span>
-            <span>Sales auto-update from <strong>Close Day</strong> totals — {autoSalesTx.length} day{autoSalesTx.length===1?"":"s"} pulled this month ({vatSar(autoSalesTx.reduce((s,t)=>s+t.vat,0))} output VAT). Add purchases &amp; expenses manually with <strong>+ Add Entry</strong>.</span>
+            <span>Your sales fill in automatically — {autoSalesTx.length} day{autoSalesTx.length===1?"":"s"} counted this quarter ({vatSar(autoSalesTx.reduce((s,t)=>s+t.vat,0))} VAT on sales). Add your purchase bills with <strong>+ Add Entry</strong> so their VAT is deducted.</span>
           </div>
           {canAutoPurchaseVat && (
             <div style={{ background:"#13203a", border:`1px solid ${autoPurchaseVat?"#6366f1":"#334155"}`, borderRadius:10, padding:"12px 16px", marginBottom:14, fontSize:13, color:"#c7d2fe", display:"flex", alignItems:"center", gap:12, flexWrap:"wrap" }}>
