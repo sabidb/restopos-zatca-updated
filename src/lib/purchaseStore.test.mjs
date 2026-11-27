@@ -95,3 +95,14 @@ test("data lands under the dedicated local key (never a SYNC_KEY blob)", () => {
   assert.ok(storage.getItem(PURCHASE_LOCAL_KEY));
   assert.equal(PURCHASE_LOCAL_KEY, "restopos_purchase_invoices");
 });
+
+
+test("purchase revision increments on save, delete, and cloud hydration", () => {
+  const before = getPurchaseRevision();
+  const a = savePurchaseInvoice({ supplierName: "A", supplierInvoiceNo: "1", invoiceDate: "2026-11-01", lines: [{ qty: 1, unitCost: 1 }] });
+  assert.equal(getPurchaseRevision(), before + 1);
+  setPurchaseInvoicesLocal([a]);
+  assert.equal(getPurchaseRevision(), before + 2);
+  deletePurchaseInvoice(a.id);
+  assert.equal(getPurchaseRevision(), before + 3);
+});
