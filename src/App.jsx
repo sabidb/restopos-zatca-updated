@@ -9609,7 +9609,7 @@ function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,arch
   // Supermarket defaults the view to the last 7 days (restaurant keeps TODAY).
   // Only the *displayed* range changes — every invoice is still stored and
   // reachable by widening the date filter (ZATCA retention is untouched).
-  const [tab,setTab]=useState("sales");const [dateFrom,setDateFrom]=useState(()=>bizProfile().posLayout==="scan"?new Date(Date.now()-6*864e5).toISOString().slice(0,10):TODAY);const [dateTo,setDateTo]=useState(TODAY);const [search,setSearch]=useState("");const [refundTarget,setRefundTarget]=useState(null);
+  const [tab,setTab]=useState("sales");const [dateFrom,setDateFrom]=useState(TODAY);const [dateTo,setDateTo]=useState(TODAY);const [search,setSearch]=useState("");const [refundTarget,setRefundTarget]=useState(null);
   const [kotPrompt,setKotPrompt]=useState(null);const [viewInvoice,setViewInvoice]=useState(null);
   const [debitTarget,setDebitTarget]=useState(null);const [debitReason,setDebitReason]=useState("");const [debitAmount,setDebitAmount]=useState("");const [debitBusy,setDebitBusy]=useState(false);
   // Manager-approval gate for void/refund. requiresApproval() is false unless
@@ -9951,7 +9951,7 @@ function Reports({sales,allSales,items,setSales,lang="en",license,archiveIndex={
   const [viewInvoice,setViewInvoice]=useState(null); // invoice being viewed in modal
   const [kotPrompt,setKotPrompt]=useState(null); // sale pending the "print KOT?" choice
   const [txSearch,setTxSearch]=useState("");
-  const [txFrom,setTxFrom]=useState(()=>{const d=new Date();d.setDate(1);return d.toISOString().slice(0,10);});
+  const [txFrom,setTxFrom]=useState(TODAY);
   const [txTo,setTxTo]=useState(TODAY);
   const [selectedDay,setSelectedDay]=useState(null); // for Day History detail view
   const [pushingFatoora,setPushingFatoora]=useState(false);
@@ -14013,6 +14013,13 @@ function FinancialReports({sales,items,license,lang="en",archiveIndex={},fetchCl
         const vatRevTotal=vatSales.reduce((s,o)=>s+(o.total||0),0);
         const vatCollectedTotal=vatSales.reduce((s,o)=>s+(o.vat||0),0);
         const vatRevenueExcl=vatRevTotal-vatCollectedTotal;
+        // Quarter-to-date sales are sourced from the complete hydrated/archive
+        // sales set, not the currently selected transaction date range.
+        const now=new Date();
+        const qStart=new Date(now.getFullYear(),Math.floor(now.getMonth()/3)*3,1);
+        const quarterSales=(allSalesData||sales||[]).filter(s=>s&&!s.isDraft&&(!s.status||s.status==="completed")&&s.date>=qStart.toISOString().slice(0,10)&&s.date<=TODAY);
+        const quarterSalesBeforeVat=quarterSales.reduce((sum,s)=>sum+(Number(s.subtotal)||Math.max(0,(Number(s.total)||0)-(Number(s.vat)||0))),0);
+        const quarterVat=quarterSales.reduce((sum,s)=>sum+(Number(s.vat)||0),0);
         // Monthly breakdown
         const vatByMonth={};
         vatSales.forEach(s=>{
@@ -14023,10 +14030,8 @@ function FinancialReports({sales,items,license,lang="en",archiveIndex={},fetchCl
           vatByMonth[ym].vat+=s.vat||0;
         });
         const vatRows=Object.values(vatByMonth).sort((a,b)=>b.month.localeCompare(a.month));
-        // Current quarter VAT
-        const now=new Date();
-        const qStart=new Date(now.getFullYear(),Math.floor(now.getMonth()/3)*3,1);
-        const qVat=vatSales.filter(s=>s.date&&new Date(s.date)>=qStart).reduce((s,o)=>s+(o.vat||0),0);
+        // Quarter-to-date VAT comes from all quarter sales, not selected range.
+        const qVat=quarterVat;
 
         async function pushToFatoora(){
           if(!confirm("Submit VAT report to ZATCA FATOORA for this period?\n\nThis will report all unreported invoices via the Railway microservice."))return;
@@ -14080,6 +14085,7 @@ function FinancialReports({sales,items,license,lang="en",archiveIndex={},fetchCl
             {/* VAT KPIs */}
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(190px,1fr))",gap:12}}>
               <StatCard icon="💰" label="Revenue (incl. VAT)" value={fmtSAR(vatRevTotal)} color={C.primary} bg={C.primaryLight}/>
+              <StatCard icon="📆" label="Quarter Sales (before VAT)" value={fmtSAR(quarterSalesBeforeVat)} color={C.success} bg={C.successLight}/>
               <StatCard icon="🏷️" label="Revenue (excl. VAT)" value={fmtSAR(vatRevenueExcl)} color={C.info} bg={C.infoLight}/>
               <StatCard icon="🧾" label="VAT Collected" value={fmtSAR(vatCollectedTotal)} color={C.zatca} bg={C.zatcaLight}/>
               <StatCard icon="⚠️" label="VAT Payable (All Time)" value={fmtSAR(vatCollectedTotal)} color={C.danger} bg={C.dangerLight}/>
@@ -17582,7 +17588,40 @@ export default function App(){
       if(navigator.onLine){flushPendingInvoices();flushPurchaseSync().catch(()=>{});}
     },120000);
 
-    return()=>{cancelled=true;clearInterval(interval);};
+    // NIGHTLY UTILITY SYNC — once per local calendar day, beginning at 23:55.
+    // Catch up if the app is still open after 23:55; persist the day marker
+    // before work starts so a reload cannot duplicate the nightly sync.
+    const nightlySync=async()=>{
+      if(!navigator.onLine)return;
+      const lic=LS.get("restopos_license_v2")?.licenseKey;
+      if(!lic)return;
+      const day=new Date().toLocaleDateString("en-CA");
+      const marker="restopos_nightly_sync_day";
+      if(localStorage.getItem(marker)===day)return;
+      localStorage.setItem(marker,day);
+      try{
+        const salesToday=(LS.get("restopos_sales")||[]).filter(s=>s.date===day&&!s.isDraft);
+        archiveSalesDay(lic,day,salesToday);
+        await Promise.all(SYNC_KEYS.map(async key=>{
+          const raw=localStorage.getItem(key);
+          if(raw){try{await syncKeyToFirestore(lic,key,JSON.parse(raw));}catch(e){}}
+        }));
+        await flushArchive();
+        await flushPendingInvoices();
+        await flushPurchaseSync();
+        localStorage.setItem("restopos_last_nightly_utility_sync",JSON.stringify({date:day,at:new Date().toISOString(),ok:true}));
+        console.info("[Nightly Utility Sync] completed at 23:55+ local time");
+      }catch(e){
+        localStorage.setItem("restopos_last_nightly_utility_sync",JSON.stringify({date:day,at:new Date().toISOString(),ok:false,error:e?.message||String(e)}));
+        console.error("[Nightly Utility Sync] failed",e);
+      }
+    };
+    const nightlyInterval=setInterval(()=>{
+      const now=new Date();
+      if(now.getHours()===23&&now.getMinutes()>=55)nightlySync();
+    },20000);
+
+    return()=>{cancelled=true;clearInterval(interval);clearInterval(nightlyInterval);};
   },[justCameOnline]);
   // ═══════════════════════════════════════════════════════════════════
 
