@@ -33,7 +33,7 @@ export const BUSINESS_TYPES={
   restaurant:{
     id:"restaurant", label:"Restaurant", labelAr:"مطعم", icon:"🍽️",
     posLayout:"grid", nav:"topbar",
-    features:{ tables:true, dineIn:true, kot:true, kitchen:true, kds:true, recipes:true, weighing:false, barcodeFirst:false, manualBilling:true },
+    features:{ tables:true, dineIn:true, kot:true, kitchen:true, kds:true, recipes:true, weighing:false, barcodeFirst:false, manualBilling:true, purchasing:true },
     orderTypes:[["takeaway","🥡","Takeaway"],["dine-in","🍽","Dine-in"],["delivery","🛵","Delivery"]],
     hideAdvancedTabs:[],
     navLabels:{},
@@ -68,7 +68,7 @@ export const BUSINESS_TYPES={
   integration:{
     id:"integration", label:"Custom App Integration", labelAr:"تكامل تطبيق خارجي", icon:"🔌",
     posLayout:"grid", nav:"sidebar",
-    features:{ tables:false, dineIn:false, kot:false, kitchen:false, kds:false, recipes:false, weighing:false, barcodeFirst:false, manualBilling:false, onlineOrdering:true },
+    features:{ tables:false, dineIn:false, kot:false, kitchen:false, kds:false, recipes:false, weighing:false, barcodeFirst:false, manualBilling:false, onlineOrdering:true, purchasing:true },
     orderTypes:[["delivery","🛵","Delivery"],["takeaway","🥡","Pickup"]],
     hideAdvancedTabs:["kitchen","kds","recipes"],
     navLabels:{},
