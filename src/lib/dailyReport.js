@@ -10,6 +10,7 @@
 // match the live summary and the VAT engine exactly.
 // ═══════════════════════════════════════════════════════════════════
 import { vatFromInclusiveRaw } from "./tax.js";
+import { productVatRate } from "./taxCategories.js";
 import { signedAmounts, recoverablePortion } from "./purchases.js";
 
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
@@ -60,7 +61,8 @@ export function buildDailyReport(sales = [], purchaseDocs = [], dateStr) {
     const o = catMap[c] || (catMap[c] = { cat: c, qty: 0, revenue: 0, vat: 0 });
     o.qty += Number(it.qty) || 0;
     o.revenue += lt;
-    o.vat += vatFromInclusiveRaw(lt);
+    const rate = productVatRate(it);
+    o.vat += rate === 0.15 ? vatFromInclusiveRaw(lt) : (lt * rate) / (1 + rate);
   }));
   const catList = Object.values(catMap)
     .map((c) => ({ ...c, revenue: r2(c.revenue), vat: r2(c.vat) }))
@@ -88,6 +90,8 @@ export function buildDailyReport(sales = [], purchaseDocs = [], dateStr) {
     qty,
     revenue, vat, net, discount,
     payBreakdown, catList,
+    categoryVatTotal: r2(sum(catList, (c) => c.vat)),
+    categoryVatDelta: r2(sum(catList, (c) => c.vat) - vat),
     purchasesTotal: r2(purchasesTotal),
     purchasesVat: r2(purchasesVat),
     recoverableVat: r2(recoverableVat),
@@ -124,7 +128,7 @@ export function buildPeriodReport(sales = [], purchaseDocs = [], fromStr, toStr)
       o.qty += c.qty; o.revenue = r2(o.revenue + c.revenue); o.vat = r2(o.vat + c.vat);
     }
   }
-  const vat = sumBy((d) => d.vat), purchasesVat = sumBy((d) => d.purchasesVat);
+  const vat = sumBy((d) => d.vat), categoryVatTotal = sumBy((d) => d.categoryVatTotal), purchasesVat = sumBy((d) => d.purchasesVat);
   const recoverableVat = sumBy((d) => d.recoverableVat), nonRecoverableVat = sumBy((d) => d.nonRecoverableVat);
   return {
     from: fromStr, to: toStr, dayCount: days.length,
@@ -133,6 +137,7 @@ export function buildPeriodReport(sales = [], purchaseDocs = [], fromStr, toStr)
     revenue: sumBy((d) => d.revenue), vat, net: sumBy((d) => d.net), discount: sumBy((d) => d.discount),
     purchasesTotal: sumBy((d) => d.purchasesTotal), purchasesVat, purchasesNet: sumBy((d) => d.purchasesNet),
     recoverableVat, nonRecoverableVat,
+    categoryVatTotal, categoryVatDelta: r2(categoryVatTotal - vat),
     purchasesCount: days.reduce((s, d) => s + d.purchasesCount, 0),
     netVat: r2(vat - recoverableVat),
     payBreakdown, catList: Object.values(catMap).sort((a, b) => b.revenue - a.revenue),
@@ -160,7 +165,7 @@ h1{font-size:19px;margin:0 0 2px}.sub{color:#555;font-size:12px}.card{border:1px
 .kpis{display:flex;gap:10px;flex-wrap:wrap}.kpi{flex:1;min-width:120px;border:1px solid #e3e3e3;border-radius:8px;padding:10px;text-align:center}
 .kpi .l{font-size:10px;color:#666;text-transform:uppercase;letter-spacing:.04em}.kpi .v{font-size:16px;font-weight:800;margin-top:3px}
 table{width:100%;border-collapse:collapse}td,th{padding:5px 6px;border-bottom:1px solid #eee;font-size:12px}th{text-align:left;color:#555}
-.net{background:#f3f7f4;border:1px solid #1a6b4a33}.foot{margin-top:16px;color:#888;font-size:10px;text-align:center}
+.net{background:#f3f7f4;border:1px solid #1a6b4a33}.warning{background:#fff7ed;border:1px solid #f59e0b;color:#92400e;border-radius:8px;padding:10px 12px;margin:12px 0}.foot{margin-top:16px;color:#888;font-size:10px;text-align:center}
 h2{font-size:13px;margin:0 0 6px}</style></head><body>
 <div style="display:flex;justify-content:space-between;align-items:flex-start">
   <div><h1>${shop}</h1><div class="sub">${addr}${vatNo ? ` &middot; VAT ${vatNo}` : ""}</div></div>
@@ -180,6 +185,7 @@ h2{font-size:13px;margin:0 0 6px}</style></head><body>
   ${Number(report.nonRecoverableVat) ? row("Non-recoverable input VAT (no valid e-invoice)", money(report.nonRecoverableVat)) : ""}
   ${row("NET VAT PAYABLE", money(report.netVat), true)}
 </table><div class="sub" style="margin-top:6px">Net VAT payable = output VAT on sales − <b>recoverable</b> input VAT. Input VAT is recoverable only when the supplier issued a valid ZATCA e-invoice; this is an estimate, not a filed VAT return.</div></div>
+<div class="warning" style="display:${Math.abs(Number(report.categoryVatDelta)||0)>0.01?'block':'none'}">Category VAT breakdown differs from saved invoice-level output VAT by ${money(report.categoryVatDelta)}. The category calculation is diagnostic only and does not change the authoritative saved VAT amount.</div>
 <div class="card"><h2>Payments</h2><table>${pays.length ? pays.map(([k, v]) => row(k, money(v))).join("") : row("—", money(0))}</table></div>
 ${cats.length ? `<div class="card"><h2>By category</h2><table><tr><th>Category</th><th style="text-align:right">Qty</th><th style="text-align:right">Revenue</th><th style="text-align:right">VAT</th></tr>
 ${cats.map((c) => `<tr><td>${esc(c.cat)}</td><td style="text-align:right">${c.qty}</td><td style="text-align:right">${money(c.revenue)}</td><td style="text-align:right">${money(c.vat)}</td></tr>`).join("")}</table></div>` : ""}
@@ -205,7 +211,7 @@ h1{font-size:19px;margin:0 0 2px}.sub{color:#555;font-size:12px}.card{border:1px
 .kpis{display:flex;gap:10px;flex-wrap:wrap}.kpi{flex:1;min-width:110px;border:1px solid #e3e3e3;border-radius:8px;padding:10px;text-align:center}
 .kpi .l{font-size:10px;color:#666;text-transform:uppercase;letter-spacing:.04em}.kpi .v{font-size:16px;font-weight:800;margin-top:3px}
 table{width:100%;border-collapse:collapse}td,th{padding:5px 6px;border-bottom:1px solid #eee;font-size:12px}th{text-align:left;color:#555}
-.net{background:#f3f7f4;border:1px solid #1a6b4a33}.foot{margin-top:16px;color:#888;font-size:10px;text-align:center}h2{font-size:13px;margin:0 0 6px}
+.net{background:#f3f7f4;border:1px solid #1a6b4a33}.warning{background:#fff7ed;border:1px solid #f59e0b;color:#92400e;border-radius:8px;padding:10px 12px;margin:12px 0}.foot{margin-top:16px;color:#888;font-size:10px;text-align:center}h2{font-size:13px;margin:0 0 6px}
 tfoot td{font-weight:800;border-top:2px solid #ccc}</style></head><body>
 <div style="display:flex;justify-content:space-between;align-items:flex-start">
   <div><h1>${shop}</h1><div class="sub">${addr}${vatNo ? ` &middot; VAT ${vatNo}` : ""}</div></div>
@@ -225,6 +231,7 @@ tfoot td{font-weight:800;border-top:2px solid #ccc}</style></head><body>
   ${Number(report.nonRecoverableVat) ? row("Non-recoverable input VAT (no valid e-invoice)", money(report.nonRecoverableVat)) : ""}
   ${row("NET VAT PAYABLE", money(report.netVat), true)}
 </table><div class="sub" style="margin-top:6px">Net VAT payable = output VAT on sales − <b>recoverable</b> input VAT. Input VAT is recoverable only when the supplier issued a valid ZATCA e-invoice; this is an estimate, not a filed VAT return.</div></div>
+<div class="warning" style="display:${Math.abs(Number(report.categoryVatDelta)||0)>0.01?'block':'none'}">Category VAT breakdown differs from saved invoice-level output VAT by ${money(report.categoryVatDelta)}. The category calculation is diagnostic only and does not change the authoritative saved VAT amount.</div>
 <div class="card"><h2>Payments</h2><table>${pays.length ? pays.map(([k, v]) => row(k, money(v))).join("") : row("—", money(0))}</table></div>
 ${days.length ? `<div class="card"><h2>By day</h2><table><tr><th>Date</th><th style="text-align:right">Orders</th><th style="text-align:right">Revenue</th><th style="text-align:right">VAT</th><th style="text-align:right">Net VAT</th></tr>
 ${days.map((d) => `<tr><td>${esc(d.date)}</td><td style="text-align:right">${d.orderCount}</td><td style="text-align:right">${money(d.revenue)}</td><td style="text-align:right">${money(d.vat)}</td><td style="text-align:right">${money(d.netVat)}</td></tr>`).join("")}
