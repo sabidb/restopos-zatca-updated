@@ -9973,7 +9973,7 @@ function Reports({sales,allSales,items,setSales,lang="en",license,archiveIndex={
   const dayLog=LS.get("restopos_daylog")||{};
   const closedDays=LS.get("restopos_closed_days")||[];
   const paperWidth=(LS.get("restopos_invoice_format")?.paperWidth||"80mm");
-  const allSalesData=allSales||sales||[];
+  const allSalesData=uniqueSalesById(allSales||sales||[]);
   const filtered=allSalesData.filter(s=>s.date>=dateFrom&&s.date<=dateTo&&!s.isDraft);
 
   // ── What this range is missing ──────────────────────────────────────
