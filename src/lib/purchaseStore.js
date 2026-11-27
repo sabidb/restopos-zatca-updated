@@ -19,7 +19,23 @@ import { computePurchaseInvoice } from "./purchases.js";
 export const PURCHASE_LOCAL_KEY = "restopos_purchase_invoices";
 
 let _storage = (typeof localStorage !== "undefined") ? localStorage : null;
-let _cloud = null; // PR#2: { persist(invoice, list), remove(id, list) } → subcollection
+let _cloud = null; // { persist(invoice, list), remove(id, list) } → subcollection
+let _purchaseRevision = 0;
+
+/** Revision of the local purchase-document collection. */
+export function getPurchaseRevision() { return _purchaseRevision; }
+
+/** Notify mounted reports/VAT screens after purchase-document mutations. */
+function _emitPurchaseChange(action) {
+  _purchaseRevision += 1;
+  try {
+    if (typeof window !== "undefined" && window.dispatchEvent) {
+      window.dispatchEvent(new CustomEvent("restopos-purchase-docs-change", {
+        detail: { revision: _purchaseRevision, action }
+      }));
+    }
+  } catch (e) { /* non-browser or event unsupported */ }
+}
 
 /**
  * Inject a storage backend and/or a cloud adapter. Pass nothing in production
