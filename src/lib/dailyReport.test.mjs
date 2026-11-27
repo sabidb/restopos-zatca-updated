@@ -133,3 +133,24 @@ test("duplicate same-id records prefer newer edit timestamp", () => {
   ];
   assert.equal(buildDailyReport(duplicates, [], "2026-11-27").revenue, 120);
 });
+
+test("category VAT respects zero-rated product tax category", () => {
+  const sale = [{ id: "z1", date: "2026-11-25", status: "completed", total: 100, vat: 0, items: [{ category: "Medicine", taxCategory: "Z", qty: 1, price: 100 }] }];
+  const r = buildDailyReport(sale, [], "2026-11-25");
+  assert.equal(r.categoryVatTotal, 0);
+  assert.equal(r.categoryVatDelta, 0);
+  assert.equal(r.catList[0].vat, 0);
+});
+
+test("daily report surfaces category VAT divergence without changing saved VAT", () => {
+  const sale = [{ id: "d1", date: "2026-11-25", status: "completed", total: 110, vat: 14.35, discount: 5, items: [{ category: "Food", qty: 1, price: 115 }] }];
+  const r = buildDailyReport(sale, [], "2026-11-25");
+  assert.equal(r.vat, 14.35);
+  assert.equal(r.categoryVatTotal, 15);
+  assert.equal(r.categoryVatDelta, 0.65);
+  assert.match(dailyReportHTML(r), /Category VAT breakdown differs/);
+  const p = buildPeriodReport(sale, [], "2026-11-25", "2026-11-25");
+  assert.equal(p.categoryVatTotal, 15);
+  assert.equal(p.categoryVatDelta, 0.65);
+  assert.match(periodReportHTML(p), /Category VAT breakdown differs/);
+});
