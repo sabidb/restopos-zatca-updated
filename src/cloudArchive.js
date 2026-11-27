@@ -164,36 +164,57 @@ async function writeDay(licenseKey, date, sales) {
 }
 
 /** Queue a day for upload. Debounced so a lunch rush is one cycle, not fifty. */
-export function archiveSalesDay(licenseKey, date, sales) {
-  if (!fb || !licenseKey || !date) return;
-  pending[date] = { licenseKey, sales };
-  if (timers[date]) clearTimeout(timers[date]);
-  timers[date] = setTimeout(async () => {
+const archiveRetryAttempts={};
+function retryDelay(date){
+  const attempts=archiveRetryAttempts[date]||1;
+  return Math.min(300000,15000*Math.pow(2,Math.min(5,attempts-1)));
+}
+function scheduleArchive(date,delay){
+  if(timers[date])clearTimeout(timers[date]);
+  timers[date]=setTimeout(async()=>{
     delete timers[date];
-    const job = pending[date];
-    if (!job) return;
-    delete pending[date];
-    if (inFlight) { archiveSalesDay(job.licenseKey, date, job.sales); return; }
-    inFlight = true;
-    try {
-      const n = await writeDay(job.licenseKey, date, job.sales);
-      if (n) console.log(`[Archive] ${date}: ${n} bill(s) uploaded.`);
-    } catch (e) {
-      console.warn("[Archive] failed for", date, "—", e && e.message);
-      pending[date] = job;   // retry on the next change rather than losing the day
-    } finally { inFlight = false; }
-  }, DEBOUNCE_MS);
+    const job=pending[date];if(!job)return;
+    if(inFlight){scheduleArchive(date,DEBOUNCE_MS);return;}
+    delete pending[date];inFlight=true;
+    try{
+      const n=await writeDay(job.licenseKey,date,job.sales);
+      archiveRetryAttempts[date]=0;
+      if(n)console.log(`[Archive] ${date}: ${n} bill(s) uploaded.`);
+    }catch(e){
+      console.warn("[Archive] failed for",date,"—",e&&e.message);
+      pending[date]=job;
+      archiveRetryAttempts[date]=(archiveRetryAttempts[date]||0)+1;
+      scheduleArchive(date,retryDelay(date));
+    }finally{inFlight=false;}
+  },delay);
+  // In Node tests the retry timer should not keep the process alive.
+  if(timers[date]&&typeof timers[date].unref==="function")timers[date].unref();
 }
 
-/** Write every pending day now — used when the tab is closing. */
-export async function flushArchive() {
-  for (const d of Object.keys(pending)) {
-    const job = pending[d];
-    if (!job) continue;
-    delete pending[d];
-    if (timers[d]) { clearTimeout(timers[d]); delete timers[d]; }
-    try { await writeDay(job.licenseKey, d, job.sales); }
-    catch (e) { console.warn("[Archive] flush failed for", d, "—", e && e.message); }
+/** Queue a day for upload. Debounced so a lunch rush is one cycle, not fifty. */
+export function archiveSalesDay(licenseKey,date,sales){
+  if(!fb||!licenseKey||!date)return;
+  pending[date]={licenseKey,sales};
+  archiveRetryAttempts[date]=0;
+  scheduleArchive(date,DEBOUNCE_MS);
+}
+
+/** Write every pending day now — used when the tab is closing or nightly sync. */
+export async function flushArchive(){
+  for(const d of Object.keys(pending)){
+    const job=pending[d];if(!job)continue;
+    if(timers[d]){clearTimeout(timers[d]);delete timers[d];}
+    if(inFlight){scheduleArchive(d,DEBOUNCE_MS);continue;}
+    delete pending[d];inFlight=true;
+    try{
+      await writeDay(job.licenseKey,d,job.sales);
+      archiveRetryAttempts[d]=0;
+    }catch(e){
+      console.warn("[Archive] flush failed for",d,"—",e&&e.message);
+      pending[d]=job;
+      archiveRetryAttempts[d]=(archiveRetryAttempts[d]||0)+1;
+      scheduleArchive(d,retryDelay(d));
+    }finally{inFlight=false;}
   }
 }
 
