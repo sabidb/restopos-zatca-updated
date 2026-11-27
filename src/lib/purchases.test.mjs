@@ -240,3 +240,10 @@ test("amount-only credit note uses inclusive calculation and signs totals negati
   assert.equal(cn.vatAmount,15);
   assert.deepEqual(signedAmounts(cn),{subtotal:-100,vatAmount:-15,total:-115,sign:-1});
 });
+
+
+test("amount-only VAT rate validation permits KSA standard and zero rate only",()=>{
+  assert.equal(validatePurchaseInvoice({supplierName:"A",totalAmount:115,amountRate:0.15}).valid,true);
+  assert.equal(validatePurchaseInvoice({supplierName:"A",totalAmount:100,amountRate:0}).valid,true);
+  assert.ok(validatePurchaseInvoice({supplierName:"A",totalAmount:100,amountRate:0.07}).errors.includes("invalid-vat-rate"));
+});
