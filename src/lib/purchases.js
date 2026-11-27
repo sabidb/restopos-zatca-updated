@@ -123,6 +123,10 @@ export function computePurchaseInvoice(inv = {}) {
     supplierInvoiceNoNorm: normInvoiceNo(inv.supplierInvoiceNo),
     invoiceDate: inv.invoiceDate ?? null,
     hasValidEInvoice: !!inv.hasValidEInvoice,
+    // Optional accountant apportionment (0..1). null/undefined ⇒ fully recoverable.
+    recoverablePortion: (inv.recoverablePortion == null || inv.recoverablePortion === "")
+      ? null
+      : Math.max(0, Math.min(1, Number(inv.recoverablePortion) || 0)),
     lines,
     subtotal,
     vatAmount,
@@ -197,6 +201,26 @@ export function inputVatEligibility(doc) {
  */
 export function isInputVatRecoverable(doc) {
   return inputVatEligibility(doc).recoverable;
+}
+
+/**
+ * Effective recoverable FRACTION (0..1) of a purchase's input VAT (AUD-02 §5.3,
+ * partial recoverability / apportionment).
+ *   • 0 when the bill is not eligible at all (fails the evidence rule) — an
+ *     ineligible bill recovers nothing regardless of any portion.
+ *   • otherwise the accountant-set `recoverablePortion` (stored as a 0..1
+ *     fraction), clamped to [0,1], defaulting to 1 (fully recoverable) when
+ *     unset. Use this for partial/mixed-use bills ONLY where the applicable VAT
+ *     rule permits it and the allocation is documented.
+ * @returns {number} 0..1
+ */
+export function recoverablePortion(doc) {
+  if (!isInputVatRecoverable(doc)) return 0;
+  const raw = doc && doc.recoverablePortion;
+  if (raw == null || raw === "") return 1;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return 1;
+  return Math.max(0, Math.min(1, n));
 }
 
 /**

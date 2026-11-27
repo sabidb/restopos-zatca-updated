@@ -10,7 +10,7 @@
 // match the live summary and the VAT engine exactly.
 // ═══════════════════════════════════════════════════════════════════
 import { vatFromInclusiveRaw } from "./tax.js";
-import { signedAmounts, isInputVatRecoverable } from "./purchases.js";
+import { signedAmounts, recoverablePortion } from "./purchases.js";
 
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const sum = (arr, f) => (arr || []).reduce((s, x) => s + (Number(f(x)) || 0), 0);
@@ -63,7 +63,10 @@ export function buildDailyReport(sales = [], purchaseDocs = [], dateStr) {
     if (String((d && d.invoiceDate) || "").slice(0, 10) !== dateStr) return;
     const a = signedAmounts(d);
     purchasesTotal += a.total; purchasesVat += a.vatAmount; purchasesNet += a.subtotal; purchasesCount++;
-    if (isInputVatRecoverable(d)) recoverableVat += a.vatAmount; else nonRecoverableVat += a.vatAmount;
+    // Partial recoverability: a documented apportionment (recoverablePortion) splits
+    // one bill's input VAT between the recoverable and non-recoverable sides.
+    const p = recoverablePortion(d);
+    recoverableVat += a.vatAmount * p; nonRecoverableVat += a.vatAmount * (1 - p);
   });
 
   return {

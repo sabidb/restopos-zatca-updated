@@ -17,7 +17,9 @@
 // (a default-off, supermarket-only toggle), so nothing here changes an existing
 // filed figure unless the merchant chooses it.
 // ═══════════════════════════════════════════════════════════════════
-import { signedAmounts, normDocType, isInputVatRecoverable } from "./purchases.js";
+import { signedAmounts, normDocType, recoverablePortion } from "./purchases.js";
+
+const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
 /**
  * @param docs    captured purchase documents (invoices + credit notes)
@@ -28,7 +30,8 @@ import { signedAmounts, normDocType, isInputVatRecoverable } from "./purchases.j
 export function purchaseDocsToVatTx(docs = [], period) {
   const out = [];
   for (const d of docs || []) {
-    if (!isInputVatRecoverable(d)) continue;                 // recoverable only (canonical rule)
+    const p = recoverablePortion(d);                         // 0 when ineligible; apportioned otherwise
+    if (p <= 0) continue;                                    // recoverable only (canonical rule)
     const ym = String(d.invoiceDate || "").slice(0, 7);
     if (period && ym !== period) continue;                   // period filter
     const s = signedAmounts(d);
@@ -40,9 +43,9 @@ export function purchaseDocsToVatTx(docs = [], period) {
       category: "STANDARD",
       description: (isCN ? "Credit note" : "Purchase invoice") + " — " +
         (d.supplierName || "supplier") + (d.supplierInvoiceNo ? " · " + d.supplierInvoiceNo : ""),
-      net: s.subtotal,
-      vat: s.vatAmount,
-      gross: s.total,
+      net: r2(s.subtotal * p),
+      vat: r2(s.vatAmount * p),
+      gross: r2(s.total * p),
       inclVAT: false,
       invoiceRef: d.supplierInvoiceNo || "",
       auto: true,
