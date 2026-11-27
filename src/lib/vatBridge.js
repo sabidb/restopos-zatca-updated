@@ -17,7 +17,7 @@
 // (a default-off, supermarket-only toggle), so nothing here changes an existing
 // filed figure unless the merchant chooses it.
 // ═══════════════════════════════════════════════════════════════════
-import { signedAmounts, normDocType } from "./purchases.js";
+import { signedAmounts, normDocType, isInputVatRecoverable } from "./purchases.js";
 
 /**
  * @param docs    captured purchase documents (invoices + credit notes)
@@ -28,7 +28,7 @@ import { signedAmounts, normDocType } from "./purchases.js";
 export function purchaseDocsToVatTx(docs = [], period) {
   const out = [];
   for (const d of docs || []) {
-    if (!d || !d.hasValidEInvoice) continue;                 // recoverable only
+    if (!isInputVatRecoverable(d)) continue;                 // recoverable only (canonical rule)
     const ym = String(d.invoiceDate || "").slice(0, 7);
     if (period && ym !== period) continue;                   // period filter
     const s = signedAmounts(d);

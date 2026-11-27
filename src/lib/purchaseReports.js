@@ -13,7 +13,7 @@
 // already-rounded totals and the final figures are re-rounded (zr2) so display
 // never shows float noise.
 // ═══════════════════════════════════════════════════════════════════
-import { signedAmounts, normDocType } from "./purchases.js";
+import { signedAmounts, normDocType, isInputVatRecoverable } from "./purchases.js";
 import { zr2 } from "./tax.js";
 
 /** Inclusive date filter on an ISO yyyy-mm-dd string. Missing bound = open end. */
@@ -48,7 +48,7 @@ export function purchaseRegister(docs = [], { from, to } = {}) {
     const s = signedAmounts(d);
     t.net += s.subtotal; t.vat += s.vatAmount; t.gross += s.total;
     if (normDocType(d.docType) === "credit_note") t.creditNotes++; else t.invoices++;
-    if (d.hasValidEInvoice) t.recoverableVat += s.vatAmount; else t.nonRecoverableVat += s.vatAmount;
+    if (isInputVatRecoverable(d)) t.recoverableVat += s.vatAmount; else t.nonRecoverableVat += s.vatAmount;
   }
   const totals = {
     net: zr2(t.net), vat: zr2(t.vat), gross: zr2(t.gross),

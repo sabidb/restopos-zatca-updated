@@ -37,7 +37,7 @@ import { initPurchaseStore, setPurchaseInvoicesLocal, loadPurchaseInvoices } fro
 import { initPOStore, setPurchaseOrdersLocal, loadPurchaseOrders } from "./lib/poStore.js";
 import { initPurchaseCloud, setPurchaseCloudLicense, purchaseDocsCloud, purchaseOrdersCloud, mergeById } from "./lib/purchaseCloud.js";
 import { purchaseDocsToVatTx } from "./lib/vatBridge.js";
-import { signedAmounts as _purSignedAmounts } from "./lib/purchases.js";
+import { signedAmounts as _purSignedAmounts, isInputVatRecoverable as _isInputVatRecoverable } from "./lib/purchases.js";
 import { buildDailyReport, datesWithActivity, dailyReportHTML, buildPeriodReport, periodReportHTML } from "./lib/dailyReport.js";
 import { getLang, setLangStore, t, dir } from "./i18n/index.js";
 import { BUSINESS_TYPES, DEFAULT_BUSINESS_TYPE, getBusinessType, bizProfile, bizFeature, manualBillingEnabled, isSupermarket } from "./config/businessTypes.js";
@@ -10083,20 +10083,23 @@ function Reports({sales,allSales,items,setSales,lang="en",license,archiveIndex={
     const startTime=sorted.length?(sorted[0].time||""):"";
     // Purchases (supplier invoices) captured for this day — totals + VAT only, so
     // the daily report shows input VAT alongside output VAT. Credit notes subtract.
-    let purchasesTotal=0,purchasesVat=0,purchasesNet=0,purchasesCount=0;
+    let purchasesTotal=0,purchasesVat=0,purchasesNet=0,purchasesCount=0,recoverableVat=0,nonRecoverableVat=0;
     try{
       const pdocs=LS.get("restopos_purchase_invoices")||[];
       pdocs.forEach(d=>{
         if(String(d&&d.invoiceDate||"").slice(0,10)!==dateStr) return;
         const s=_purSignedAmounts(d);
         purchasesTotal+=s.total; purchasesVat+=s.vatAmount; purchasesNet+=s.subtotal; purchasesCount++;
+        // Only RECOVERABLE input VAT reduces VAT payable (canonical rule) — AUD-01.
+        if(_isInputVatRecoverable(d)) recoverableVat+=s.vatAmount; else nonRecoverableVat+=s.vatAmount;
       });
     }catch(e){}
     const r2=(n)=>Math.round((Number(n)||0)*100)/100;
     return{date:dateStr,orderCount:salesArr.length,revenue,vat,discount,payBreakdown,catList,expenses:expTotal,netRevenue:revenue-expTotal,
       cashSale,cardSale,creditSale,startTime,closeTime:new Date().toLocaleTimeString("en-SA"),
       purchasesTotal:r2(purchasesTotal),purchasesVat:r2(purchasesVat),purchasesNet:r2(purchasesNet),purchasesCount,
-      netVat:r2(vat-purchasesVat)};
+      recoverableVat:r2(recoverableVat),nonRecoverableVat:r2(nonRecoverableVat),
+      netVat:r2(vat-recoverableVat)};
   }
 
   // ── Excel export ─────────────────────────────────────────────────
@@ -10520,7 +10523,7 @@ ${_brandingHTML({...REPORT_DEFAULTS,...(LS.get("restopos_report_format")||{})})}
                 <div style={{background:C.zatcaLight||C.bg,borderRadius:10,padding:"10px 14px",border:`1px solid ${C.zatca}22`}}>
                   <div style={{fontSize:12,fontWeight:700,marginBottom:6}}>🧾 Purchases & VAT {daySummaryData.purchasesCount?`· ${daySummaryData.purchasesCount} bill${daySummaryData.purchasesCount>1?"s":""}`:""}</div>
                   <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-                    {[["Purchases (incl VAT)",daySummaryData.purchasesTotal],["Input VAT",daySummaryData.purchasesVat],["Output VAT (sales)",daySummaryData.vat],["Net VAT payable",daySummaryData.netVat]].map(([l,v])=>(
+                    {[["Purchases (incl VAT)",daySummaryData.purchasesTotal],["Input VAT recorded",daySummaryData.purchasesVat],["Recoverable input VAT",daySummaryData.recoverableVat??daySummaryData.purchasesVat],...(Number(daySummaryData.nonRecoverableVat)?[["Non-recoverable (no e-invoice)",daySummaryData.nonRecoverableVat]]:[]),["Output VAT (sales)",daySummaryData.vat],["Net VAT payable",daySummaryData.netVat]].map(([l,v])=>(
                       <div key={l} style={{background:"#fff",border:`1px solid ${C.border}`,borderRadius:8,padding:"6px 10px"}}>
                         <div style={{fontSize:10,color:C.textMid,fontWeight:700}}>{l}</div>
                         <div style={{fontSize:12,fontWeight:800,color:C.zatca}}>SAR {Number(v||0).toFixed(2)}</div>
