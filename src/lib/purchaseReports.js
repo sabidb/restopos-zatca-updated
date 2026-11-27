@@ -13,7 +13,7 @@
 // already-rounded totals and the final figures are re-rounded (zr2) so display
 // never shows float noise.
 // ═══════════════════════════════════════════════════════════════════
-import { signedAmounts, normDocType, isInputVatRecoverable } from "./purchases.js";
+import { signedAmounts, normDocType, isInputVatRecoverable, inputVatEligibility, normInvoiceNo } from "./purchases.js";
 import { zr2 } from "./tax.js";
 
 /** Inclusive date filter on an ISO yyyy-mm-dd string. Missing bound = open end. */
@@ -56,6 +56,52 @@ export function purchaseRegister(docs = [], { from, to } = {}) {
     recoverableVat: zr2(t.recoverableVat), nonRecoverableVat: zr2(t.nonRecoverableVat),
   };
   return { rows, count: rows.length, totals };
+}
+
+/**
+ * Purchase exception queue (AUD-02 §5.3) — the bills that need a human's
+ * attention before their input VAT can be trusted. Pure and read-only; it flags
+ * problems, it does not change any figure. Two categories today:
+ *
+ *   • "claimed_not_recoverable" — the bill is ticked as a valid e-invoice but
+ *     fails the evidence rule (missing/invalid supplier VAT, invoice no, date).
+ *     Its input VAT is NOT being recovered; the reasons say why.
+ *   • "duplicate" — the same supplier + normalised invoice number appears on
+ *     more than one invoice (double-counting input VAT is a real tax risk).
+ *     Every member after the first is reported.
+ *
+ * @returns {Array<{id, supplierName, supplierInvoiceNo, invoiceDate, vatAmount, category, reasons:string[]}>}
+ */
+export function purchaseExceptions(docs = []) {
+  const out = [];
+  const seen = new Map(); // supplierKey|invoiceNo -> firstId, for duplicate detection
+
+  for (const d of docs || []) {
+    if (!d) continue;
+    const base = {
+      id: d.id,
+      supplierName: d.supplierName || "",
+      supplierInvoiceNo: d.supplierInvoiceNo || "",
+      invoiceDate: d.invoiceDate || "",
+      vatAmount: d.vatAmount,
+    };
+
+    // Claimed recoverable but evidence incomplete.
+    if (d.hasValidEInvoice) {
+      const el = inputVatEligibility(d);
+      if (!el.recoverable) out.push({ ...base, category: "claimed_not_recoverable", reasons: el.reasons });
+    }
+
+    // Duplicate supplier + invoice number (invoices only; a credit note may
+    // legitimately reuse a number, and it is matched to its own kind).
+    const inv = normInvoiceNo(d.supplierInvoiceNo);
+    if (inv && normDocType(d.docType) !== "credit_note") {
+      const key = supplierKey(d) + "|" + inv;
+      if (seen.has(key)) out.push({ ...base, category: "duplicate", reasons: ["duplicate-supplier-invoice-number"] });
+      else seen.set(key, d.id);
+    }
+  }
+  return out;
 }
 
 /**
