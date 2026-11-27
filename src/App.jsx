@@ -9620,7 +9620,7 @@ function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,arch
     const key=`${dateFrom}|${dateTo}`;
     if(_autoLoadedRange.current===key)return;
     _autoLoadedRange.current=key;
-    fetchCloudRange(gap.from,gap.to).catch(()=>{});
+    fetchCloudRange(gap.from,gap.to).catch(()=>{if(_autoLoadedRange.current===key)_autoLoadedRange.current="";});
   },[sales,archiveIndex,dateFrom,dateTo,fetchCloudRange]);
   const transactionDataset=uniqueSalesById(sales||[]);
   const [kotPrompt,setKotPrompt]=useState(null);const [viewInvoice,setViewInvoice]=useState(null);
