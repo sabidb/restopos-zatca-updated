@@ -94,17 +94,29 @@ const stripHeavy = (sale) => {
   return out;
 };
 
-const summarise = (sales) => {
-  let total = 0, vat = 0, n = 0;
-  for (const s of sales) {
-    if (s && s.status !== "voided" && !s.isDraft) {
-      n += 1;
-      total += Number(s.total) || 0;
-      vat += Number(s.vat) || 0;
+function uniqueArchiveSales(sales=[]){
+  const byId=new Map(),withoutId=[];
+  const time=s=>{const t=Date.parse(s?.syncUpdatedAt||s?.updatedAt||s?.lastModifiedAt||s?.modifiedAt||s?.createdAt||"");return Number.isFinite(t)?t:0;};
+  for(const s of sales||[]){
+    if(!s)continue;
+    if(s.id==null||s.id===""){withoutId.push(s);continue;}
+    const key=String(s.id),prev=byId.get(key);
+    if(!prev||time(s)>=time(prev))byId.set(key,s);
+  }
+  return [...byId.values(),...withoutId];
+}
+/** Reportable totals and a content fingerprint for archive completeness checks. */
+export function summariseSales(sales=[]){
+  const unique=uniqueArchiveSales(sales);
+  let total=0,vat=0,n=0;
+  for(const s of unique){
+    if(s&&(!s.status||s.status==="completed")&&!s.isDraft){
+      n+=1;total+=Number(s.total)||0;vat+=Number(s.vat)||0;
     }
   }
-  return { n, total: Math.round(total * 100) / 100, vat: Math.round(vat * 100) / 100 };
-};
+  const clean=unique.map(stripHeavy).sort((a,b)=>String(a?.id||"").localeCompare(String(b?.id||"")));
+  return {n,total:Math.round(total*100)/100,vat:Math.round(vat*100)/100,fingerprint:fingerprint(clean)};
+}
 
 // ── Writing ────────────────────────────────────────────────────────
 
@@ -114,7 +126,8 @@ async function writeDay(licenseKey, date, sales) {
   const scope = fps[licenseKey] || (fps[licenseKey] = {});
 
   const changed = [];
-  for (const sale of sales) {
+  const normalized=uniqueArchiveSales(sales);
+  for (const sale of normalized) {
     const id = docIdFor(sale && sale.id);
     if (!id) continue;
     const body = stripHeavy(sale);
@@ -140,10 +153,10 @@ async function writeDay(licenseKey, date, sales) {
   // The index answers "what history exists" and "is this period complete"
   // without a read per invoice. Always refreshed, even when no bill changed,
   // because a void alters the day's totals without adding a document.
-  const sum = summarise(sales);
+  const sum = summariseSales(normalized);
   await setDoc(doc(collection(db, "client_data", licenseKey, "sales_index"), "index"), {
     licenseKey,
-    days: { [date]: { n: sum.n, total: sum.total, vat: sum.vat } },
+    days: { [date]: { n: sum.n, total: sum.total, vat: sum.vat, fingerprint: sum.fingerprint } },
     updatedAt: new Date().toISOString(),
   }, { merge: true });
 
@@ -151,36 +164,57 @@ async function writeDay(licenseKey, date, sales) {
 }
 
 /** Queue a day for upload. Debounced so a lunch rush is one cycle, not fifty. */
-export function archiveSalesDay(licenseKey, date, sales) {
-  if (!fb || !licenseKey || !date) return;
-  pending[date] = { licenseKey, sales };
-  if (timers[date]) clearTimeout(timers[date]);
-  timers[date] = setTimeout(async () => {
+const archiveRetryAttempts={};
+function retryDelay(date){
+  const attempts=archiveRetryAttempts[date]||1;
+  return Math.min(300000,15000*Math.pow(2,Math.min(5,attempts-1)));
+}
+function scheduleArchive(date,delay){
+  if(timers[date])clearTimeout(timers[date]);
+  timers[date]=setTimeout(async()=>{
     delete timers[date];
-    const job = pending[date];
-    if (!job) return;
-    delete pending[date];
-    if (inFlight) { archiveSalesDay(job.licenseKey, date, job.sales); return; }
-    inFlight = true;
-    try {
-      const n = await writeDay(job.licenseKey, date, job.sales);
-      if (n) console.log(`[Archive] ${date}: ${n} bill(s) uploaded.`);
-    } catch (e) {
-      console.warn("[Archive] failed for", date, "—", e && e.message);
-      pending[date] = job;   // retry on the next change rather than losing the day
-    } finally { inFlight = false; }
-  }, DEBOUNCE_MS);
+    const job=pending[date];if(!job)return;
+    if(inFlight){scheduleArchive(date,DEBOUNCE_MS);return;}
+    delete pending[date];inFlight=true;
+    try{
+      const n=await writeDay(job.licenseKey,date,job.sales);
+      archiveRetryAttempts[date]=0;
+      if(n)console.log(`[Archive] ${date}: ${n} bill(s) uploaded.`);
+    }catch(e){
+      console.warn("[Archive] failed for",date,"—",e&&e.message);
+      pending[date]=job;
+      archiveRetryAttempts[date]=(archiveRetryAttempts[date]||0)+1;
+      scheduleArchive(date,retryDelay(date));
+    }finally{inFlight=false;}
+  },delay);
+  // In Node tests the retry timer should not keep the process alive.
+  if(timers[date]&&typeof timers[date].unref==="function")timers[date].unref();
 }
 
-/** Write every pending day now — used when the tab is closing. */
-export async function flushArchive() {
-  for (const d of Object.keys(pending)) {
-    const job = pending[d];
-    if (!job) continue;
-    delete pending[d];
-    if (timers[d]) { clearTimeout(timers[d]); delete timers[d]; }
-    try { await writeDay(job.licenseKey, d, job.sales); }
-    catch (e) { console.warn("[Archive] flush failed for", d, "—", e && e.message); }
+/** Queue a day for upload. Debounced so a lunch rush is one cycle, not fifty. */
+export function archiveSalesDay(licenseKey,date,sales){
+  if(!fb||!licenseKey||!date)return;
+  pending[date]={licenseKey,sales};
+  archiveRetryAttempts[date]=0;
+  scheduleArchive(date,DEBOUNCE_MS);
+}
+
+/** Write every pending day now — used when the tab is closing or nightly sync. */
+export async function flushArchive(){
+  for(const d of Object.keys(pending)){
+    const job=pending[d];if(!job)continue;
+    if(timers[d]){clearTimeout(timers[d]);delete timers[d];}
+    if(inFlight){scheduleArchive(d,DEBOUNCE_MS);continue;}
+    delete pending[d];inFlight=true;
+    try{
+      await writeDay(job.licenseKey,d,job.sales);
+      archiveRetryAttempts[d]=0;
+    }catch(e){
+      console.warn("[Archive] flush failed for",d,"—",e&&e.message);
+      pending[d]=job;
+      archiveRetryAttempts[d]=(archiveRetryAttempts[d]||0)+1;
+      scheduleArchive(d,retryDelay(d));
+    }finally{inFlight=false;}
   }
 }
 
@@ -329,8 +363,9 @@ export async function backfillArchive(licenseKey) {
   }
 
   const missing = Object.keys(byDay).sort().filter((date) => {
-    const cloud = index[date];
-    return !cloud || cloud.n !== summarise(byDay[date]).n;
+    const cloud = index[date],local=summariseSales(byDay[date]);
+    // Counts alone miss same-count edits (including a changed sale total/status).
+    return !cloud||cloud.n!==local.n||cloud.total!==local.total||cloud.vat!==local.vat||cloud.fingerprint!==local.fingerprint;
   });
 
   missing.slice(0, BACKFILL_DAYS_PER_RUN).forEach((date) => archiveSalesDay(licenseKey, date, byDay[date]));
