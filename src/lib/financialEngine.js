@@ -54,11 +54,40 @@ export function calculateSale(items = [], discount = 0) {
   const remaining = discountCents - allocations.reduce((s, a) => s + a.base, 0);
   const order = allocations.map((a, i) => ({ i, rem: a.rem })).sort((a,b) => (a.rem === b.rem ? a.i - b.i : (a.rem > b.rem ? -1 : 1)));
   for (let j = 0; j < remaining; j++) allocations[order[j % order.length].i].base++;
-  const computedLines = lines.map((l, i) => {
-    const inclusiveCents = l.rawLineCents - allocations[i].base;
-    const netCents = l.rateBps === 0 ? inclusiveCents : roundDivHalfUp(BigInt(inclusiveCents) * 10000n, BigInt(10000 + l.rateBps));
-    const vatCents = inclusiveCents - netCents;
-    return { ...l, discountCents: allocations[i].base, inclusiveCents, netCents, vatCents };
+  const discountedLines = lines.map((l, i) => ({
+    ...l,
+    discountCents: allocations[i].base,
+    inclusiveCents: l.rawLineCents - allocations[i].base,
+  }));
+  // Calculate VAT once per rate group, matching the transaction/report aggregate
+  // path. Per-line VAT rounding can understate a one-cent-heavy sale dramatically.
+  const groups = new Map();
+  discountedLines.forEach((line, index) => {
+    const group = groups.get(line.rateBps) || { rateBps: line.rateBps, indices: [], grossCents: 0 };
+    group.indices.push(index);
+    group.grossCents += line.inclusiveCents;
+    groups.set(line.rateBps, group);
+  });
+  const netByLine = new Array(discountedLines.length).fill(0);
+  for (const group of groups.values()) {
+    if (!group.grossCents) continue;
+    const groupNetCents = group.rateBps === 0
+      ? group.grossCents
+      : roundDivHalfUp(BigInt(group.grossCents) * 10000n, BigInt(10000 + group.rateBps));
+    const groupAllocations = group.indices.map(index => {
+      const gross = discountedLines[index].inclusiveCents;
+      const numerator = BigInt(gross) * BigInt(groupNetCents);
+      return { index, base: Number(numerator / BigInt(group.grossCents)), rem: numerator % BigInt(group.grossCents) };
+    });
+    const leftover = groupNetCents - groupAllocations.reduce((sum, a) => sum + a.base, 0);
+    groupAllocations.sort((a,b) => (a.rem === b.rem ? a.index - b.index : (a.rem > b.rem ? -1 : 1)));
+    for (let j = 0; j < leftover; j++) groupAllocations[j].base++;
+    for (const allocation of groupAllocations) netByLine[allocation.index] = allocation.base;
+  }
+  const computedLines = discountedLines.map((l, i) => {
+    const netCents = netByLine[i];
+    const vatCents = l.inclusiveCents - netCents;
+    return { ...l, netCents, vatCents };
   });
   return {
     subtotal: fromCents(subtotalCents), discount: fromCents(discountCents), total: fromCents(totalCents),
