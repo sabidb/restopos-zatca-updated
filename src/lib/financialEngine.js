@@ -11,8 +11,10 @@ const cents = (value) => {
 };
 const fromCents = (c) => c / 100;
 const roundDivHalfUp = (numerator, denominator) => {
-  if (!Number.isInteger(numerator) || !Number.isInteger(denominator) || denominator <= 0) throw new TypeError("Expected integer numerator and positive denominator");
-  return Math.floor((numerator + denominator / 2) / denominator);
+  const n = typeof numerator === "bigint" ? numerator : BigInt(numerator);
+  const d = typeof denominator === "bigint" ? denominator : BigInt(denominator);
+  if (d <= 0n) throw new TypeError("Expected positive denominator");
+  return Number((n + d / 2n) / d);
 };
 const normalizeRateBps = (rate) => {
   const n = Number(rate);
@@ -23,7 +25,7 @@ export function splitInclusiveCents(totalCents, ratePercent = 15) {
   if (!Number.isSafeInteger(totalCents) || totalCents < 0) throw new TypeError("Total must be non-negative integer cents");
   const rateBps = normalizeRateBps(ratePercent);
   if (rateBps === 0) return { netCents: totalCents, vatCents: 0, totalCents };
-  const netCents = roundDivHalfUp(totalCents * 10000, 10000 + rateBps);
+  const netCents = roundDivHalfUp(BigInt(totalCents) * 10000n, BigInt(10000 + rateBps));
   return { netCents, vatCents: totalCents - netCents, totalCents };
 }
 export function calculateSale(items = [], discount = 0) {
@@ -44,15 +46,16 @@ export function calculateSale(items = [], discount = 0) {
   if (!Number.isSafeInteger(totalCents)) throw new RangeError("Total exceeds safe cent precision");
   const allocations = lines.map(l => {
     if (!subtotalCents) return { base: 0, rem: 0 };
-    const numerator = discountCents * l.rawLineCents;
-    return { base: Math.floor(numerator / subtotalCents), rem: numerator % subtotalCents };
+    const numerator = BigInt(discountCents) * BigInt(l.rawLineCents);
+    const denominator = BigInt(subtotalCents);
+    return { base: Number(numerator / denominator), rem: numerator % denominator };
   });
   const remaining = discountCents - allocations.reduce((s, a) => s + a.base, 0);
-  const order = allocations.map((a, i) => ({ i, rem: a.rem })).sort((a,b) => b.rem - a.rem || a.i - b.i);
+  const order = allocations.map((a, i) => ({ i, rem: a.rem })).sort((a,b) => (a.rem === b.rem ? a.i - b.i : (a.rem > b.rem ? -1 : 1)));
   for (let j = 0; j < remaining; j++) allocations[order[j % order.length].i].base++;
   const computedLines = lines.map((l, i) => {
     const inclusiveCents = l.rawLineCents - allocations[i].base;
-    const netCents = l.rateBps === 0 ? inclusiveCents : roundDivHalfUp(inclusiveCents * 10000, 10000 + l.rateBps);
+    const netCents = l.rateBps === 0 ? inclusiveCents : roundDivHalfUp(BigInt(inclusiveCents) * 10000n, BigInt(10000 + l.rateBps));
     const vatCents = inclusiveCents - netCents;
     return { ...l, discountCents: allocations[i].base, inclusiveCents, netCents, vatCents };
   });
