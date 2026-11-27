@@ -34,6 +34,7 @@ export function calculateSale(items = [], discount = 0) {
     const qty = Number(item?.qty ?? item?.quantity ?? 0);
     if (!Number.isFinite(qty) || qty < 0) throw new RangeError("Quantity must be finite and non-negative");
     const unitCents = cents(item?.price ?? item?.unitPrice ?? 0);
+    if (unitCents < 0) throw new RangeError("Unit price must be non-negative");
     const rawLineCents = cents(fromCents(unitCents) * qty);
     const rateBps = normalizeRateBps(item?.vatRate ?? item?.rate ?? 15);
     return { index, id: item?.id ?? String(index), name: item?.name ?? "", qty, unitCents, rawLineCents, rateBps };
