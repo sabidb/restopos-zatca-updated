@@ -1,7 +1,7 @@
 // Golden tests for src/lib/sync.js status tracking — run with: npm test
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { initSync, syncKeyToFirestore, getSyncStatus, SYNC_FIELD_BUDGET_BYTES } from "./sync.js";
+import { initSync, syncKeyToFirestore, getSyncStatus, getPendingSyncQueue, retryPendingSync, SYNC_FIELD_BUDGET_BYTES } from "./sync.js";
 
 // Minimal Firestore handle mocks (same shape initSync expects).
 const okHandles = { db: {}, doc: () => ({}), setDoc: async () => {} };
@@ -69,4 +69,32 @@ test("transactional sync unions cloud and local sales before writing", async () 
   assert.equal(merged.length,2);
   assert.deepEqual(new Set(merged.map(s=>s.id)),new Set(["sale-cloud","sale-local"]));
   assert.equal(getSyncStatus().restopos_sales.ok,true);
+});
+
+
+test("failed sync is durably queued and retries from the current local value", async () => {
+  const original=globalThis.localStorage;
+  const store=new Map();
+  globalThis.localStorage={
+    getItem:(k)=>store.has(k)?store.get(k):null,
+    setItem:(k,v)=>store.set(k,String(v)),
+    removeItem:(k)=>store.delete(k),
+  };
+  try{
+    const key="restopos_sync_queue_test";
+    const value={v:42,updatedAt:"2026-11-28T01:00:00Z"};
+    localStorage.setItem(key,JSON.stringify(value));
+    initSync(failHandles);
+    await syncKeyToFirestore("QUEUE-LK",key,value);
+    const queued=getPendingSyncQueue().find(q=>q.licenseKey==="QUEUE-LK"&&q.key===key);
+    assert.ok(queued,"failed write remains in the local pending queue");
+    assert.equal(getSyncStatus()[key].ok,false);
+    initSync(okHandles);
+    const r=await retryPendingSync("QUEUE-LK");
+    assert.equal(r.remaining,0);
+    assert.equal(getPendingSyncQueue().some(q=>q.licenseKey==="QUEUE-LK"&&q.key===key),false);
+    assert.equal(getSyncStatus()[key].ok,true);
+  }finally{
+    if(original===undefined)delete globalThis.localStorage;else globalThis.localStorage=original;
+  }
 });

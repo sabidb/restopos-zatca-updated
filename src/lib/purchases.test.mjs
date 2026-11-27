@@ -224,3 +224,26 @@ test("duplicate detection is scoped to the same doc type", () => {
     { docType: "invoice", supplierId: "SUP-1", supplierInvoiceNo: "X1", invoiceDate: "2026-11-09", lines: [{ qty: 1, unitCost: 1 }] }, pool);
   assert.equal(inv.level, "exact");
 });
+
+
+test("amount-only inclusive grand total uses KSA VAT rounding to cents",()=>{
+  const inv=computePurchaseInvoice({supplierName:"A",totalAmount:"100.01",amountInclVat:true,amountRate:0.15});
+  assert.equal(inv.total,100.01);
+  assert.equal(inv.vatAmount,13.04);
+  assert.equal(inv.subtotal,86.97);
+  assert.equal(Math.round((inv.subtotal+inv.vatAmount)*100)/100,inv.total);
+});
+test("amount-only credit note uses inclusive calculation and signs totals negative in reports",()=>{
+  const cn=computePurchaseInvoice({supplierName:"A",docType:"credit_note",totalAmount:115,amountInclVat:true,amountRate:0.15});
+  assert.equal(cn.total,115);
+  assert.equal(cn.subtotal,100);
+  assert.equal(cn.vatAmount,15);
+  assert.deepEqual(signedAmounts(cn),{subtotal:-100,vatAmount:-15,total:-115,sign:-1});
+});
+
+
+test("amount-only VAT rate validation permits KSA standard and zero rate only",()=>{
+  assert.equal(validatePurchaseInvoice({supplierName:"A",totalAmount:115,amountRate:0.15}).valid,true);
+  assert.equal(validatePurchaseInvoice({supplierName:"A",totalAmount:100,amountRate:0}).valid,true);
+  assert.ok(validatePurchaseInvoice({supplierName:"A",totalAmount:100,amountRate:0.07}).errors.includes("invalid-vat-rate"));
+});

@@ -41,7 +41,7 @@ export function InventoryManagement({items,setItems,lang="en",initialTab="overvi
   // Feature-flagged so Restaurant Mode's Inventory screen is unchanged.
   const showPurchases=bizFeature("purchasing");
   const blankLine=()=>({name:"",qty:"",unitCost:"",rate:0.15});
-  const blankPurchase=()=>({supplierId:"",supplierName:"",supplierVatNumber:"",supplierCrNumber:"",docType:"invoice",supplierInvoiceNo:"",invoiceDate:new Date().toISOString().slice(0,10),hasValidEInvoice:false,recoverablePortion:"",notes:"",totalAmount:"",amountInclVat:true,lines:[blankLine()]});
+  const blankPurchase=()=>({supplierId:"",supplierName:"",supplierVatNumber:"",supplierCrNumber:"",docType:"invoice",supplierInvoiceNo:"",invoiceDate:new Date().toISOString().slice(0,10),hasValidEInvoice:false,recoverablePortion:"",notes:"",totalAmount:"",amountInclVat:true,amountRate:0.15,lines:[blankLine()]});
   const [purchases,setPurchases]=useState(()=>loadPurchaseInvoices());
   const [showPurchaseModal,setShowPurchaseModal]=useState(false);
   const [draft,setDraft]=useState(blankPurchase);
@@ -140,17 +140,27 @@ export function InventoryManagement({items,setItems,lang="en",initialTab="overvi
   // date) hold the save behind an explicit "save anyway" so the same supplier
   // invoice can't be entered twice by accident (which would double-count input VAT).
   function submitPurchase(){
+    const duplicate=detectDuplicatePurchase(draft,purchases);
+    if(duplicate?.duplicate&&duplicate.level==="exact"){
+      alert(_t("Exact duplicate blocked: this supplier and document number are already recorded. Verify the existing entry before saving."));
+      return;
+    }
+    if(duplicate?.duplicate&&duplicate.level==="near"&&!confirm(_t("Possible duplicate: same supplier, total and date. Save only if this is a genuinely different document.")))return;
     const v=validatePurchaseInvoice(draft);
     if(!v.valid){
       const msg={"supplier-required":_t("Choose a supplier."),"no-amount":_t("Enter a total amount, or add at least one line with a quantity."),"negative-qty":_t("Quantity can't be negative."),"negative-cost":_t("Cost can't be negative."),"negative-amount":_t("Amount can't be negative.")};
       alert(v.errors.map(e=>msg[e]||e).join("\n"));
       return;
     }
-    // Duplicate detection is NON-BLOCKING: the live banner in the modal already
-    // warned, so a one-click save always goes through (the merchant decides).
-    savePurchaseInvoice(draft);
-    setPurchases(loadPurchaseInvoices());
-    setShowPurchaseModal(false); setDupWarn(null);
+    // Persist locally first; a storage/quota failure must keep the entry open
+    // and must not start a cloud write or claim it was saved.
+    try{
+      savePurchaseInvoice(draft);
+      setPurchases(loadPurchaseInvoices());
+      setShowPurchaseModal(false); setDupWarn(null);
+    }catch(e){
+      alert("Purchase was NOT saved locally. Keep this entry open, free storage if needed, then retry. "+(e?.message||String(e)));
+    }
   }
   function removePurchase(id){ if(confirm(_t("Delete this purchase invoice")+"?")) setPurchases(deletePurchaseInvoice(id)); }
 
@@ -690,15 +700,23 @@ export function InventoryManagement({items,setItems,lang="en",initialTab="overvi
           </div>
           {suppliers.length===0&&<div style={{fontSize:12,color:C.warning,marginBottom:10}}>{_t("Add a supplier first on the Suppliers tab.")}</div>}
 
-          {/* QUICK AMOUNT — save a purchase with just supplier + a total, no line items. */}
+          {/* QUICK AMOUNT — supplier GRAND TOTAL is VAT-inclusive; show the extracted net and VAT in dedicated read-only fields. */}
           <div style={{display:"grid",gridTemplateColumns:"1.4fr 0.9fr",gap:10,marginBottom:6,alignItems:"center"}}>
-            <input type="number" value={draft.totalAmount} min={0} onChange={e=>{const v=e.target.value;setDraft(d=>({...d,totalAmount:v}));}} placeholder={_t("Quick total amount (no line items)")} style={{...inSty,fontWeight:700}}/>
-            <select value={draft.amountInclVat===false?"excl":"incl"} onChange={e=>setDraft(d=>({...d,amountInclVat:e.target.value!=="excl"}))} style={inSty}>
-              <option value="incl">{_t("VAT included")}</option>
-              <option value="excl">{_t("+ VAT on top")}</option>
+            <input type="number" value={draft.totalAmount} min={0} step="0.01" onChange={e=>{const v=e.target.value;setDraft(d=>({...d,totalAmount:v,amountInclVat:true}));}} placeholder={_t(isCN?"Credit note grand total (VAT included)":"Supplier grand total (VAT included)")} style={{...inSty,fontWeight:700}}/>
+            <select value={draft.amountRate===0?"0":"0.15"} onChange={e=>setDraft(d=>({...d,amountRate:e.target.value==="0"?0:0.15,amountInclVat:true}))} style={inSty}>
+              <option value="0.15">{_t("15% standard VAT")}</option>
+              <option value="0">{_t("0% VAT")}</option>
             </select>
           </div>
-          {amtOnly&&<div style={{fontSize:11.5,color:C.textMid,marginBottom:10,padding:"6px 10px",background:C.bg,borderRadius:8}}>{_t("Amount-only entry")} — {_t("Net")}: <strong>{fmtSAR(c.subtotal)}</strong> · {_t("Input VAT")}: <strong>{fmtSAR(c.vatAmount)}</strong> · {_t("Total")}: <strong>{fmtSAR(c.total)}</strong>. {_t("Leave the lines below empty, or fill them to itemise instead.")}</div>}
+          {amtOnly&&<div style={{display:"grid",gridTemplateColumns:"repeat(3,minmax(0,1fr))",gap:8,marginBottom:10}}>
+            {[[ _t("Pre-VAT amount"),c.subtotal ],[ _t("VAT amount"),c.vatAmount ],[ _t("Grand total"),c.total ]].map(([label,value])=>
+              <label key={label} style={{fontSize:10.5,color:C.textMid,fontWeight:700}}>
+                <div style={{marginBottom:4}}>{label}</div>
+                <input readOnly value={Number(value||0).toFixed(2)} style={{...inSty,width:"100%",fontWeight:800,background:C.bg,textAlign:"right",boxSizing:"border-box"}}/>
+              </label>
+            )}
+          </div>}
+          {amtOnly&&<div style={{fontSize:11.5,color:C.textMid,marginBottom:10,padding:"6px 10px",background:C.bg,borderRadius:8}}>{_t("Amount-only entry")} — {_t("VAT is extracted from the supplier's inclusive total using KSA 15% rounding. Credit notes use the same positive entry; reports apply the negative sign automatically.")} {_t("Leave the lines below empty, or fill them to itemise instead.")}</div>}
 
           <div style={{fontSize:12.5,fontWeight:800,margin:"6px 0 8px"}}>{_t("Lines")} <span style={{fontWeight:500,color:C.textLight,fontSize:11}}>· {_t("optional — unit cost is ex-VAT; VAT is added on top")}</span></div>
           <div style={{display:"flex",flexDirection:"column",gap:7,marginBottom:10}}>

@@ -262,6 +262,7 @@ export function validatePurchaseInvoice(inv = {}) {
   if (lines.some((l) => num(l.qty, 0) < 0)) errors.push("negative-qty");
   if (lines.some((l) => num(l.unitCost, 0) < 0)) errors.push("negative-cost");
   if (num(inv.totalAmount, 0) < 0) errors.push("negative-amount");
+  if (hasAmount && usable.length === 0 && ![0,0.15].includes(num(inv.amountRate,0.15))) errors.push("invalid-vat-rate");
 
   return { valid: errors.length === 0, errors };
 }

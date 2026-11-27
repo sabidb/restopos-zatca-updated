@@ -58,8 +58,12 @@ function _read() {
   catch { return []; }
 }
 function _writeLocal(list) {
-  try { _storage.setItem(PURCHASE_LOCAL_KEY, JSON.stringify(list)); }
-  catch (e) { /* storage full / unavailable — local write is best-effort */ }
+  if(!_storage||typeof _storage.setItem!=="function")throw new Error("Local storage unavailable");
+  const raw=JSON.stringify(list);
+  _storage.setItem(PURCHASE_LOCAL_KEY,raw);
+  if(typeof _storage.getItem==="function"&&_storage.getItem(PURCHASE_LOCAL_KEY)!==raw){
+    throw new Error("Local purchase record failed read-back verification");
+  }
 }
 
 /** All captured purchase invoices, newest first. */

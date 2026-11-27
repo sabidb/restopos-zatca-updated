@@ -4,7 +4,7 @@
 // duplicated. Uses flushArchive() to persist synchronously (no debounce timer).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { initCloudArchive, archiveSalesDay, flushArchive } from "../cloudArchive.js";
+import { initCloudArchive, archiveSalesDay, flushArchive, summariseSales } from "../cloudArchive.js";
 
 // ── localStorage shim (fingerprint cache lives here) ──────────────
 const mem = new Map();
@@ -76,4 +76,35 @@ test("a commit failure is contained (no throw, no partial write) and a retry com
   archiveSalesDay("LICC", "2026-11-22", [sale("X", 5, 0.65)]);
   await flushArchive();
   assert.equal(invoiceDocs(store, "LICC").length, 1);
+});
+
+
+test("archive summary is status-aware and deduplicates IDs",()=>{
+  const rows=[
+    sale("A",20,2.61),
+    {...sale("A",50,6.52),updatedAt:"2026-11-22T12:00:00Z"},
+    {...sale("D",100,13.04),isDraft:true},
+    {...sale("R",75,9.78),status:"refunded"},
+    {...sale("V",40,5.22),status:"voided"},
+    {...sale("P",10,1.30),status:"pending"},
+  ];
+  const s=summariseSales(rows);
+  assert.equal(s.n,1);
+  assert.equal(s.total,50);
+  assert.equal(s.vat,6.52);
+  assert.ok(s.fingerprint);
+});
+test("archive fingerprint detects same-count same-total content edits",async()=>{
+  mem.clear();const store={};initCloudArchive(makeFb(store));
+  const first=[{...sale("SAME",100,13),items:[{name:"A",qty:1,price:100}],updatedAt:"2026-11-22T10:00:00Z"}];
+  archiveSalesDay("LICD","2026-11-22",first);await flushArchive();
+  const indexKey="client_data/LICD/sales_index/index";
+  const before=store[indexKey].days["2026-11-22"].fingerprint;
+  const second=[{...sale("SAME",100,13),items:[{name:"B",qty:1,price:100}],updatedAt:"2026-11-22T11:00:00Z"}];
+  archiveSalesDay("LICD","2026-11-22",second);await flushArchive();
+  const after=store[indexKey].days["2026-11-22"].fingerprint;
+  assert.notEqual(after,before,"archive index changes even when count and totals do not");
+  const docs=invoiceDocs(store,"LICD");
+  assert.equal(docs.length,1);
+  assert.equal(store[docs[0]].items[0].name,"B");
 });

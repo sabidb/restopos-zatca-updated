@@ -106,3 +106,12 @@ test("purchase revision increments on save, delete, and cloud hydration", () => 
   deletePurchaseInvoice(a.id);
   assert.equal(getPurchaseRevision(), before + 3);
 });
+
+
+test("local storage failure aborts purchase save before cloud write",()=>{
+  const failing={getItem:()=>null,setItem:()=>{throw new Error("quota exceeded");},removeItem:()=>{}};
+  let cloudWrites=0;
+  initPurchaseStore({storage:failing,cloud:{persist:()=>{cloudWrites++;}}});
+  assert.throws(()=>savePurchaseInvoice({supplierName:"A",totalAmount:115}),/quota exceeded/);
+  assert.equal(cloudWrites,0,"cloud write is not started when local save fails");
+});
