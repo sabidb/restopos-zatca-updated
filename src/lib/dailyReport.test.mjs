@@ -10,8 +10,8 @@ const sales = [
   { id: 5, date: "2026-11-24", status: "completed", total: 46, vat: 6, payMethod: "Card", items: [] },
 ];
 const purchases = [
-  { id: "p1", invoiceDate: "2026-11-25", hasValidEInvoice: true,  subtotal: 100, vatAmount: 15, total: 115 }, // recoverable
-  { id: "p2", invoiceDate: "2026-11-25", hasValidEInvoice: true,  docType: "credit_note", subtotal: 20, vatAmount: 3, total: 23 }, // recoverable, subtracts
+  { id: "p1", invoiceDate: "2026-11-25", hasValidEInvoice: true,  supplierVatNumber: "300000000000003", supplierInvoiceNo: "A-1", subtotal: 100, vatAmount: 15, total: 115 }, // recoverable
+  { id: "p2", invoiceDate: "2026-11-25", hasValidEInvoice: true,  supplierVatNumber: "300000000000003", supplierInvoiceNo: "CN-1", docType: "credit_note", subtotal: 20, vatAmount: 3, total: 23 }, // recoverable, subtracts
   { id: "p4", invoiceDate: "2026-11-25", hasValidEInvoice: false, subtotal: 40, vatAmount: 6, total: 46 },    // NON-recoverable (no valid e-invoice)
   { id: "p3", invoiceDate: "2026-11-20", hasValidEInvoice: false, subtotal: 50, vatAmount: 7.5, total: 57.5 }, // other day, non-recoverable
 ];
@@ -59,7 +59,7 @@ test("a day with only a non-recoverable purchase: input VAT recorded but not ded
 });
 
 test("a recoverable purchase-only day CAN produce a refund (negative) net VAT", () => {
-  const recoverableOnly = [{ id: "r1", invoiceDate: "2026-11-20", hasValidEInvoice: true, subtotal: 50, vatAmount: 7.5, total: 57.5 }];
+  const recoverableOnly = [{ id: "r1", invoiceDate: "2026-11-20", hasValidEInvoice: true, supplierVatNumber: "300000000000003", supplierInvoiceNo: "R-1", subtotal: 50, vatAmount: 7.5, total: 57.5 }];
   const r = buildDailyReport([], recoverableOnly, "2026-11-20");
   assert.equal(r.recoverableVat, 7.5);
   assert.equal(r.netVat, -7.5);             // refund position: recoverable input exceeds output

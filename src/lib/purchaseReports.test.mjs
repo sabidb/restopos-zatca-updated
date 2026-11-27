@@ -4,10 +4,10 @@ import assert from "node:assert/strict";
 import { purchaseRegister, supplierBalances } from "./purchaseReports.js";
 
 const docs = [
-  { id: "I1", docType: "invoice", supplierId: "S1", supplierName: "Al Noor", invoiceDate: "2026-11-01", hasValidEInvoice: true,  subtotal: 100, vatAmount: 15, total: 115 },
+  { id: "I1", docType: "invoice", supplierId: "S1", supplierName: "Al Noor", supplierVatNumber: "300000000000003", supplierInvoiceNo: "A-1", invoiceDate: "2026-11-01", hasValidEInvoice: true,  subtotal: 100, vatAmount: 15, total: 115 },
   { id: "I2", docType: "invoice", supplierId: "S1", supplierName: "Al Noor", invoiceDate: "2026-11-10", hasValidEInvoice: false, subtotal: 40,  vatAmount: 6,  total: 46  },
-  { id: "C1", docType: "credit_note", supplierId: "S1", supplierName: "Al Noor", invoiceDate: "2026-11-12", hasValidEInvoice: true, subtotal: 20, vatAmount: 3, total: 23 },
-  { id: "I3", docType: "invoice", supplierId: "S2", supplierName: "Fresh Co", invoiceDate: "2026-10-28", hasValidEInvoice: true, subtotal: 200, vatAmount: 30, total: 230 },
+  { id: "C1", docType: "credit_note", supplierId: "S1", supplierName: "Al Noor", supplierVatNumber: "300000000000003", supplierInvoiceNo: "CN-1", invoiceDate: "2026-11-12", hasValidEInvoice: true, subtotal: 20, vatAmount: 3, total: 23 },
+  { id: "I3", docType: "invoice", supplierId: "S2", supplierName: "Fresh Co", supplierVatNumber: "300000000000003", supplierInvoiceNo: "F-1", invoiceDate: "2026-10-28", hasValidEInvoice: true, subtotal: 200, vatAmount: 30, total: 230 },
 ];
 
 // ── purchaseRegister ──────────────────────────────────────────────────────

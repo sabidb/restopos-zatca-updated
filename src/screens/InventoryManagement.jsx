@@ -10,7 +10,7 @@ import { fmtSAR, fmtDate } from "../lib/format.js";
 import { debouncedSync } from "../lib/sync.js";
 import { Card, Btn, Badge, Modal, DataTable } from "../components/ui.jsx";
 import { bizFeature } from "../config/businessTypes.js";
-import { computePurchaseInvoice, validatePurchaseInvoice, detectDuplicatePurchase, signedAmounts, normDocType } from "../lib/purchases.js";
+import { computePurchaseInvoice, validatePurchaseInvoice, detectDuplicatePurchase, signedAmounts, normDocType, inputVatEligibility } from "../lib/purchases.js";
 import { loadPurchaseInvoices, savePurchaseInvoice, deletePurchaseInvoice } from "../lib/purchaseStore.js";
 import { purchaseRegister, supplierBalances } from "../lib/purchaseReports.js";
 import { getSyncStatus, SYNC_FIELD_BUDGET_BYTES } from "../lib/sync.js";
@@ -642,6 +642,15 @@ export function InventoryManagement({items,setItems,lang="en",initialTab="overvi
               <input type="checkbox" checked={draft.hasValidEInvoice} onChange={e=>setDraft(d=>({...d,hasValidEInvoice:e.target.checked}))}/>
               {_t("Supplier issued a valid ZATCA e-invoice (input VAT recoverable)")}
             </label>
+            {/* Evidence-based eligibility (AUD-02): the tick alone no longer makes input
+                VAT recoverable — show live whether the bill carries the backing evidence. */}
+            {draft.hasValidEInvoice&&(()=>{
+              const el=inputVatEligibility(draft);
+              if(el.recoverable) return <div style={{fontSize:11,color:"#1A6B4A",marginTop:2}}>{_t("✓ Input VAT recoverable — evidence complete")}</div>;
+              const map={"invalid-supplier-vat-number":_t("a valid supplier VAT number"),"missing-invoice-number":_t("the supplier invoice number"),"missing-invoice-date":_t("the invoice date")};
+              const missing=el.reasons.filter(r=>r!=="not-marked-valid-einvoice").map(r=>map[r]||r);
+              return <div style={{fontSize:11,color:C.warning||"#B26A00",marginTop:2}}>{_t("Not recoverable yet — needs")}: {missing.join(", ")}</div>;
+            })()}
           </div>
           {suppliers.length===0&&<div style={{fontSize:12,color:C.warning,marginBottom:10}}>{_t("Add a supplier first on the Suppliers tab.")}</div>}
 
