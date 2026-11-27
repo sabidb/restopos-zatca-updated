@@ -14604,6 +14604,30 @@ function InvoiceEnhancements({sales,items,license,company}){
 }
 // ENHANCED BACKUP & RESTORE MODULE
 // ═══════════════════════════════════════════════════════════════════
+// Visible backup-health warning. Local sales remain available; this warning
+// means the cloud copy is pending or failed and retries will continue.
+function SyncFailureNotice(){
+  const [status,setStatus]=useState(()=>getSyncStatus());
+  useEffect(()=>{
+    const refresh=()=>setStatus(getSyncStatus());
+    refresh();
+    const id=setInterval(refresh,5000);
+    window.addEventListener("online",refresh);
+    window.addEventListener("restopos-sync-status",refresh);
+    return()=>{clearInterval(id);window.removeEventListener("online",refresh);window.removeEventListener("restopos-sync-status",refresh);};
+  },[]);
+  const bad=Object.values(status||{}).filter(s=>s&&s.ok!==true);
+  if(!bad.length)return null;
+  const names=bad.map(s=>s.key).filter(Boolean).slice(0,5).join(", ");
+  const detail=bad.find(s=>s.message)?.message;
+  return <div role="alert" style={{padding:"8px 12px",background:"#fff1df",borderBottom:"1px solid #d97706",color:"#7c2d12",fontSize:11.5,fontWeight:700,display:"flex",flexWrap:"wrap",gap:6,alignItems:"center"}}>
+    <span>⚠ Cloud backup pending/failed ({bad.length})</span>
+    {names&&<span style={{fontWeight:600}}>· {names}</span>}
+    <span style={{fontWeight:500}}>· Sales are saved locally; automatic retry is active.</span>
+    {detail&&<span style={{fontWeight:500,opacity:.85}}>· {detail}</span>}
+  </div>;
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // CLOUD SYNC STATUS COMPONENT
 // ═══════════════════════════════════════════════════════════════════
@@ -18432,7 +18456,7 @@ export default function App(){
         never clipped or shrunk by the UI zoom setting. */}
     <ZatcaNotifications/>
     <div dir={dir(lang)} style={{fontFamily:lang==="ar"?"'Tajawal','Plus Jakarta Sans',sans-serif":"'Plus Jakarta Sans','Tajawal',sans-serif",background:C.bg,height:"100vh",display:"flex",flexDirection:"column",overflow:"hidden",zoom:`${uiScale}%`}}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Tajawal:wght@400;500;700;800&display=swap');html,body,#root{height:100%;margin:0;padding:0;width:100%}*{box-sizing:border-box;margin:0;padding:0}::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-track{background:${C.bg}}::-webkit-scrollbar-thumb{background:${C.border};border-radius:3px}input,select{outline:none}input:focus,select:focus{border-color:${C.primary}!important}@media print{header,nav{display:none!important}}${lang==="ar"?"body,button,input,select,textarea{font-family:'Tajawal',sans-serif!important}":""}`}</style>
+      <SyncFailureNotice/><style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Tajawal:wght@400;500;700;800&display=swap');html,body,#root{height:100%;margin:0;padding:0;width:100%}*{box-sizing:border-box;margin:0;padding:0}::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-track{background:${C.bg}}::-webkit-scrollbar-thumb{background:${C.border};border-radius:3px}input,select{outline:none}input:focus,select:focus{border-color:${C.primary}!important}@media print{header,nav{display:none!important}}${lang==="ar"?"body,button,input,select,textarea{font-family:'Tajawal',sans-serif!important}":""}`}</style>
       {TRIAL&&<TrialBanner license={license} onModeChange={handleTrialModeChange} onRegister={handleRegisterFromTrial}/>}
       <div style={{display:"flex",alignItems:"stretch",flexShrink:0,zIndex:100,boxShadow:"0 2px 12px rgba(0,0,0,0.18)",minHeight:50,width:"100%",flexWrap:"nowrap"}}>
         <div style={{background:"linear-gradient(135deg,#1A3D2B 0%,#1F4D36 100%)",display:"flex",alignItems:"center",gap:8,padding:"0 12px",flexShrink:0,borderRight:"1px solid rgba(255,255,255,0.1)"}}>
