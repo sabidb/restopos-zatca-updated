@@ -5890,6 +5890,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
       date:TODAY,
       time:new Date().toLocaleTimeString("en-SA",{hour:"2-digit",minute:"2-digit"}),
       createdAt:new Date().toISOString(), // reliable sortable timestamp for Close Day period filtering
+      syncUpdatedAt:new Date().toISOString(), // conflict-resolution stamp for cross-device edits
       type:(extraData.orderType||orderType)==="dine-in"?"Dine-in":(extraData.orderType||orderType)==="takeaway"?"Takeaway":"Delivery",
       billType:extraData.billType||"normal",
       table:selectedTable,customer:customerName,customerPhone,customerAddress,
@@ -6021,8 +6022,8 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
             inv.displayNumber=zatcaInv.invoice_number; // shown as the invoice number everywhere (legal ZATCA number)
             inv.qr_string=zatcaInv.qr_string||zatcaInv.signed_qr_string||""; // store QR directly for reliable reprint/view
             const _sl=LS.get("restopos_sales")||[];
-            LS.set("restopos_sales",_sl.map(s=>s.id===inv.id?{...s,zatcaInvoiceNumber:zatcaInv.invoice_number,voucher:zatcaInv.invoice_number,displayNumber:zatcaInv.invoice_number,qr_string:inv.qr_string}:s));
-            setSales(prev=>prev.map(s=>s.id===inv.id?{...s,zatcaInvoiceNumber:zatcaInv.invoice_number,voucher:zatcaInv.invoice_number,displayNumber:zatcaInv.invoice_number,qr_string:inv.qr_string}:s));
+            LS.set("restopos_sales",_sl.map(s=>s.id===inv.id?{...s,zatcaInvoiceNumber:zatcaInv.invoice_number,voucher:zatcaInv.invoice_number,displayNumber:zatcaInv.invoice_number,qr_string:inv.qr_string,syncUpdatedAt:new Date().toISOString()}:s));
+            setSales(prev=>prev.map(s=>s.id===inv.id?{...s,zatcaInvoiceNumber:zatcaInv.invoice_number,voucher:zatcaInv.invoice_number,displayNumber:zatcaInv.invoice_number,qr_string:inv.qr_string,syncUpdatedAt:new Date().toISOString()}:s));
           }catch(e){console.warn("[ReprintLink]",e.message);}
         }
       }catch(e){
@@ -9634,7 +9635,7 @@ function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,arch
   // sale carries a ZATCA invoice number, then marks it voided. A sale that was
   // never filed (draft / pre-ZATCA) is simply marked voided.
   const doVoid=async(s)=>{
-    setSales(prev=>prev.map(x=>x.id===s.id?{...x,status:"voided"}:x));
+    setSales(prev=>prev.map(x=>x.id===s.id?{...x,status:"voided",syncUpdatedAt:new Date().toISOString()}:x));
     try{
       const reversed=await issueZatcaCreditNoteForSale(s,"Sale voided");
       if(reversed)alert("Sale voided — a ZATCA credit note was generated to reverse the reported invoice, and queued for FATOORA.");
@@ -9704,7 +9705,7 @@ function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,arch
       <div style={{display:"flex",gap:10}}>
         <Btn variant="ghost" onClick={()=>setRefundTarget(null)} style={{flex:1}}>Cancel</Btn>
         <Btn variant="danger" onClick={async()=>{
-          setSales(prev=>prev.map(s=>s.id===refundTarget.id?{...s,status:"refunded"}:s));
+          setSales(prev=>prev.map(s=>s.id===refundTarget.id?{...s,status:"refunded",syncUpdatedAt:new Date().toISOString()}:s));
           // Generate a ZATCA credit note referencing the ORIGINAL ZATCA invoice
           // (BR-KSA-17). The shared helper looks the original up by its ZATCA
           // invoice number so the credit note reverses the exact amounts filed,
@@ -11055,7 +11056,7 @@ ${_brandingHTML({...REPORT_DEFAULTS,...(LS.get("restopos_report_format")||{})})}
         onSave={(updated)=>{
           const fix=(arr)=>(arr||[]).map(d=>d.id===updated.id?{...d,...updated}:d);
           LS.set("restopos_draft_invoices",fix(LS.get("restopos_draft_invoices")));
-          setSales(prev=>prev.map(s=>s.id===updated.id?{...s,...updated}:s));
+          setSales(prev=>prev.map(s=>s.id===updated.id?{...s,...updated,syncUpdatedAt:new Date().toISOString()}:s));
           setEditingDraft(null);
         }}
       />}
