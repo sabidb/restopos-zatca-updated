@@ -6,9 +6,9 @@ Scope: POS main repository, ZATCA service, Admin repository. This is a code-arch
 ### POS — high risk
 1. **Multiple rounding paths exist.** `src/lib/tax.js` documents transaction rounding via `toFixed(2)` and a separate ZATCA half-up path. Both are explicitly behavior-preserving, not unified. This means convergence requires owner/accountant approval and golden historic fixtures.
 2. **Purchase calculation paths differ.** `src/lib/purchases.js` line-item entry uses VAT-exclusive unit cost, while amount-only entry supports VAT-inclusive grand totals. This is a different convention from VAT-inclusive POS item prices. Integration must reconcile supplier documents and keep purchase calculations distinct from sales.
-3. **Daily reports consume stored sale VAT and separately calculate category VAT from item gross.** These may differ at edge cases, discounts, mixed tax rates, or per-line rounding. A report should reconcile against the same canonical stored/derived ledger totals.
-4. **Cross-device integrity is in active PRs.** PR #81 has a sales-union/dedup/report path; #82 and #83 are similarly titled follow-ups with overlapping persistence/sync/archive/purchase changes but different file sets. They must be reconciled to avoid duplicate or conflicting work. PR #84 separately addresses an oversized legacy archive sync payload.
-5. **Cloud sync is a bounded single-document backup model for many keys, with a per-key payload budget.** A large legacy archived-sales blob can block sync for that key; PR #84 is the intended bypass and the per-invoice archive path must be verified.
+3. **Daily reports consume stored sale VAT and separately calculate category VAT from item gross.** These may differ at edge cases, discounts, mixed tax rates, or per-line rounding. A diagnostic warning has now been added to daily and period print reports; category VAT respects product tax categories, but saved sale VAT remains authoritative and the warning does not recalculate financial records.
+4. **Cross-device integrity follow-up is in main.** PR #81 and #83 are merged; PR #82 was overlapping work and is no longer open. The merged follow-up includes persistence verification, sync retry, archive fingerprint reconciliation, and purchase VAT-entry safeguards. PR #84 separately addresses an oversized legacy archive sync payload and remains under review.
+5. **Cloud sync is a bounded single-document backup model for many keys, with a per-key payload budget.** A large legacy archived-sales blob can block sync for that key; PR #84 is the intended bypass. The per-invoice archive module and PR #83 integration are present; PR #84 still requires CI and end-to-end archive/backfill verification.
 6. **Historical completeness cannot be proven by code.** Requires a live, read-only reconciliation of each client/till local records, cloud working records, archive invoices/index, transactions, report totals and VAT. No live tenant data was inspected.
 
 ### ZATCA service — high risk
@@ -21,7 +21,8 @@ Scope: POS main repository, ZATCA service, Admin repository. This is a code-arch
 11. **Admin activity logging is client-side best effort.** Source comments acknowledge it is not tamper-proof and should be moved server-side or protected by append-only rules. Financial/admin operations need stronger audit semantics.
 
 ## Work started
-- Added an isolated integer-cent financial calculation foundation with reconciliation assertions and golden tests. It is NOT yet integrated into the live POS, reports, VAT, or ZATCA invoice path.
+- Added an isolated integer-cent financial calculation foundation with reconciliation assertions and golden/edge tests. It is NOT yet integrated into live checkout, transaction VAT, ZATCA XML, or archive.
+- Added a report diagnostic: daily and period category VAT now respects product tax categories, and print reports warn when category VAT differs from saved invoice-level output VAT. Saved VAT and net payable are not changed by this warning.
 - This engine is a proposed versioned policy; it must be compared against current historic behavior and approved before adoption. No historical records are recalculated.
 
 ## Required next gates
