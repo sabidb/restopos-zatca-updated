@@ -3,7 +3,7 @@ import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import {
   initPurchaseStore, loadPurchaseInvoices, savePurchaseInvoice,
-  deletePurchaseInvoice, PURCHASE_LOCAL_KEY,
+  deletePurchaseInvoice, PURCHASE_LOCAL_KEY, getPurchaseRevision, setPurchaseInvoicesLocal,
 } from "./purchaseStore.js";
 
 // In-memory storage shim so the store is testable without a browser.
