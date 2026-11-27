@@ -19,7 +19,30 @@ import { computePurchaseInvoice } from "./purchases.js";
 export const PURCHASE_LOCAL_KEY = "restopos_purchase_invoices";
 
 let _storage = (typeof localStorage !== "undefined") ? localStorage : null;
-let _cloud = null; // PR#2: { persist(invoice, list), remove(id, list) } → subcollection
+let _cloud = null; // { persist(invoice, list), remove(id, list) } → subcollection
+let _purchaseRevision = 0;
+
+/** Revision of the local purchase-document collection. */
+export function getPurchaseRevision() { return _purchaseRevision; }
+
+/** Subscribe to purchase-document mutations; returns an unsubscribe function. */
+export function subscribePurchaseChanges(listener) {
+  if (typeof window === "undefined" || !window.addEventListener) return () => {};
+  window.addEventListener("restopos-purchase-docs-change", listener);
+  return () => window.removeEventListener("restopos-purchase-docs-change", listener);
+}
+
+/** Notify mounted reports/VAT screens after purchase-document mutations. */
+function _emitPurchaseChange(action) {
+  _purchaseRevision += 1;
+  try {
+    if (typeof window !== "undefined" && window.dispatchEvent) {
+      window.dispatchEvent(new CustomEvent("restopos-purchase-docs-change", {
+        detail: { revision: _purchaseRevision, action }
+      }));
+    }
+  } catch (e) { /* non-browser or event unsupported */ }
+}
 
 /**
  * Inject a storage backend and/or a cloud adapter. Pass nothing in production
@@ -48,6 +71,7 @@ export function loadPurchaseInvoices() { return _read(); }
  */
 export function setPurchaseInvoicesLocal(list) {
   _writeLocal(Array.isArray(list) ? list : []);
+  _emitPurchaseChange("hydrate");
   return _read();
 }
 
@@ -84,6 +108,7 @@ export function savePurchaseInvoice(inv) {
     ? list.map((x) => (x.id === stored.id ? stored : x))
     : [stored, ...list];
   _writeLocal(next);
+  _emitPurchaseChange(exists ? "update" : "create");
   // Invoke the cloud write synchronously (so a caller/test sees it fire), but
   // record its OUTCOME asynchronously so the record ends up "synced" or "failed"
   // rather than optimistically assumed-saved.
@@ -158,6 +183,7 @@ export async function flushPurchaseSync() {
 export function deletePurchaseInvoice(id) {
   const next = _read().filter((x) => x.id !== id);
   _writeLocal(next);
+  _emitPurchaseChange("delete");
   if (_cloud && typeof _cloud.remove === "function") {
     try { _cloud.remove(id, next); } catch (e) { /* cloud is best-effort */ }
   }

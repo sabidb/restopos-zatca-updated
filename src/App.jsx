@@ -33,7 +33,7 @@ import { nextCellId as _gridNextCellId } from "./lib/gridNav.js";
 import { resolveKeyOnRestore as _resolveKeyOnRestore } from "./lib/syncMerge.js";
 import { initCatalogueCloud, setCatalogueLicense, catalogueCloud, loadAllItems as loadCatalogueCloud, backfillCatalogue } from "./lib/catalogueCloud.js";
 import { catalogueSubEnabled, setCatalogueSubEnabled, CATALOGUE_FLAG_KEY } from "./lib/catalogueFlag.js";
-import { initPurchaseStore, setPurchaseInvoicesLocal, loadPurchaseInvoices, flushPurchaseSync } from "./lib/purchaseStore.js";
+import { initPurchaseStore, setPurchaseInvoicesLocal, loadPurchaseInvoices, flushPurchaseSync, subscribePurchaseChanges, getPurchaseRevision } from "./lib/purchaseStore.js";
 import { initPOStore, setPurchaseOrdersLocal, loadPurchaseOrders } from "./lib/poStore.js";
 import { initPurchaseCloud, setPurchaseCloudLicense, purchaseDocsCloud, purchaseOrdersCloud, mergeById } from "./lib/purchaseCloud.js";
 import { purchaseDocsToVatTx } from "./lib/vatBridge.js";
@@ -9865,7 +9865,9 @@ function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,arch
 // can "Save as PDF" (the app has no PDF library — same path as receipts).
 function DailyReportsTab({allSales=[],license}){
   const _money=(n)=>"SAR "+(Number(n)||0).toFixed(2);
-  const purch=useMemo(()=>{try{return loadPurchaseInvoices()||[];}catch(e){return [];}},[]);
+  const [purchaseRevision,setPurchaseRevision]=useState(()=>getPurchaseRevision());
+  useEffect(()=>subscribePurchaseChanges((ev)=>setPurchaseRevision(ev?.detail?.revision??getPurchaseRevision())),[]);
+  const purch=useMemo(()=>{try{return loadPurchaseInvoices()||[];}catch(e){return [];}},[purchaseRevision]);
   const saved=LS.get("restopos_daily_reports")||{};
   const dates=datesWithActivity(allSales,purch).slice(0,180);
   const reportFor=(date)=>(date<TODAY&&saved[date])?saved[date]:buildDailyReport(allSales,purch,date);
@@ -17970,7 +17972,9 @@ export default function App(){
     const lic3=LS.get("restopos_license_v2")?.licenseKey;
     if(lic3){debouncedSync(lic3,"restopos_sales",n);queueDaysToArchive(lic3,n,n.map(s=>s.date));}
     return n;
-  });}
+  });
+    try{window.dispatchEvent(new Event("restopos-sales-change"));}catch(e){}
+  }
   // Helper: load sales from a specific month archive
   function loadMonthSales(yearMonth){
     try{return JSON.parse(localStorage.getItem(`restopos_sales_${yearMonth}`)||"[]");}catch(e){return[];}
@@ -18737,6 +18741,10 @@ function ZATCAVatEngine({lang="en"}) {
 
   // ── State ─────────────────────────────────────────────────
   const [transactions, setTransactions] = useState([]);
+  const [purchaseRevision,setPurchaseRevision]=useState(()=>getPurchaseRevision());
+  const [salesRevision,setSalesRevision]=useState(0);
+  useEffect(()=>subscribePurchaseChanges((ev)=>setPurchaseRevision(ev?.detail?.revision??getPurchaseRevision())),[]);
+  useEffect(()=>{const h=()=>setSalesRevision(n=>n+1);window.addEventListener("restopos-sales-change",h);return()=>window.removeEventListener("restopos-sales-change",h);},[]);
   // Opt-in (default OFF), supermarket/hypermarket only: pull RECOVERABLE input
   // VAT from captured purchase documents into the return instead of re-keying.
   // Default off keeps every existing return byte-for-byte unchanged.
@@ -18916,7 +18924,7 @@ function ZATCAVatEngine({lang="en"}) {
     });
 
     return [...fromClosed, ...fromLive];
-  }, [period, transactions]); // transactions dep so a re-render after edits refreshes too
+  }, [period, transactions, salesRevision]); // refresh after sales mutations too
 
   // Captured purchase documents → recoverable input-VAT entries (opt-in).
   // Empty unless the merchant turned the toggle on, so the default return is
@@ -18925,7 +18933,7 @@ function ZATCAVatEngine({lang="en"}) {
     () => (canAutoPurchaseVat && autoPurchaseVat)
       ? purchaseDocsToVatTx(loadPurchaseInvoices(), period)
       : [],
-    [canAutoPurchaseVat, autoPurchaseVat, period, transactions]
+    [canAutoPurchaseVat, autoPurchaseVat, period, transactions, purchaseRevision]
   );
 
   // Combined list = auto sales + auto purchases (opt-in) + manual entries.
