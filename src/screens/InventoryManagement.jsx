@@ -140,6 +140,12 @@ export function InventoryManagement({items,setItems,lang="en",initialTab="overvi
   // date) hold the save behind an explicit "save anyway" so the same supplier
   // invoice can't be entered twice by accident (which would double-count input VAT).
   function submitPurchase(){
+    const duplicate=detectDuplicatePurchase(draft,purchases);
+    if(duplicate?.duplicate&&duplicate.level==="exact"){
+      alert(_t("Exact duplicate blocked: this supplier and document number are already recorded. Verify the existing entry before saving."));
+      return;
+    }
+    if(duplicate?.duplicate&&duplicate.level==="near"&&!confirm(_t("Possible duplicate: same supplier, total and date. Save only if this is a genuinely different document.")))return;
     const v=validatePurchaseInvoice(draft);
     if(!v.valid){
       const msg={"supplier-required":_t("Choose a supplier."),"no-amount":_t("Enter a total amount, or add at least one line with a quantity."),"negative-qty":_t("Quantity can't be negative."),"negative-cost":_t("Cost can't be negative."),"negative-amount":_t("Amount can't be negative.")};
