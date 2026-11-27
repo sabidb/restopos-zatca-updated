@@ -145,20 +145,76 @@ export function signedAmounts(doc = {}) {
 }
 
 /**
- * CANONICAL input-VAT recoverability rule. The ONE place the whole app decides
- * whether a captured purchase's input VAT may be recovered. KSA lets a buyer
- * recover input VAT only when the supplier issued a valid ZATCA e-invoice, so
- * today that is the hasValidEInvoice flag. Every report path (daily report, VAT
- * bridge, purchase register) MUST call this rather than read the flag directly,
- * so the recoverable figure can never diverge between screens again.
+ * Shape check for a Saudi VAT registration number: 15 digits, starting and
+ * ending with 3. Spaces are ignored.
  *
- * NOTE: this is deliberately the single seam a later, evidence-based eligibility
- * model (supplier VAT validation, uploaded invoice, review state) will replace —
- * change the rule here and every report follows.
+ * ⚠️ SHAPE ONLY. This validates the documented format, NOT the internal
+ * check-digit / Luhn rule, which must be confirmed against ZATCA before it is
+ * treated as authoritative. A number can pass this and still be invalid; it is
+ * a guard against obvious junk (a blank, a CR number, a typo'd length), not a
+ * proof of a real registration.
+ * @returns {boolean}
+ */
+export function isValidSaudiVatNumber(v) {
+  const s = String(v ?? "").replace(/\s+/g, "");
+  return /^3\d{13}3$/.test(s);
+}
+
+/**
+ * Input-VAT eligibility for a captured purchase, with the reasons it is or is
+ * not recoverable. This is the evidence-based rule (AUD-02): a user ticking
+ * "supplier issued a valid e-invoice" is NECESSARY but no longer SUFFICIENT —
+ * the record must also carry the evidence that backs the claim (a valid-format
+ * supplier VAT number, the supplier's invoice number, and the invoice date).
+ * No checkbox alone makes input tax recoverable.
+ *
+ * Reasons use stable codes so the UI can explain exactly what is missing:
+ *   not-marked-valid-einvoice | invalid-supplier-vat-number
+ *   missing-invoice-number    | missing-invoice-date
+ *
+ * @returns {{ recoverable: boolean, reasons: string[] }}
+ */
+export function inputVatEligibility(doc) {
+  const reasons = [];
+  if (!doc || !doc.hasValidEInvoice) reasons.push("not-marked-valid-einvoice");
+  if (!isValidSaudiVatNumber(doc && doc.supplierVatNumber)) reasons.push("invalid-supplier-vat-number");
+  if (!String((doc && doc.supplierInvoiceNo) ?? "").trim()) reasons.push("missing-invoice-number");
+  if (!String((doc && doc.invoiceDate) ?? "").trim()) reasons.push("missing-invoice-date");
+  return { recoverable: reasons.length === 0, reasons };
+}
+
+/**
+ * CANONICAL input-VAT recoverability rule. The ONE place the whole app decides
+ * whether a captured purchase's input VAT may be recovered. Every report path
+ * (daily report, VAT bridge, purchase register) MUST call this rather than read
+ * any flag directly, so the recoverable figure can never diverge between screens.
+ *
+ * Backed by inputVatEligibility (evidence-based, AUD-02): applied uniformly to
+ * ALL purchases — existing records are re-evaluated under the same rule, so a
+ * bill ticked recoverable but lacking a valid supplier VAT number / invoice
+ * number / date is no longer counted.
  * @returns {boolean}
  */
 export function isInputVatRecoverable(doc) {
-  return !!(doc && doc.hasValidEInvoice);
+  return inputVatEligibility(doc).recoverable;
+}
+
+/**
+ * Lists purchases the OLD checkbox-only rule counted as recoverable but the new
+ * evidence rule does not — so the change to existing data is visible, not
+ * silent. Each entry carries the reasons it is now disallowed.
+ * @returns {Array<{id,supplierName,supplierInvoiceNo,vatAmount,reasons:string[]}>}
+ */
+export function recoverabilityDelta(docs = []) {
+  return (docs || [])
+    .filter((d) => d && d.hasValidEInvoice && !isInputVatRecoverable(d))
+    .map((d) => ({
+      id: d.id,
+      supplierName: d.supplierName || "",
+      supplierInvoiceNo: d.supplierInvoiceNo || "",
+      vatAmount: d.vatAmount,
+      reasons: inputVatEligibility(d).reasons,
+    }));
 }
 
 /**
