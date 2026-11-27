@@ -11,8 +11,8 @@ import { debouncedSync } from "../lib/sync.js";
 import { Card, Btn, Badge, Modal, DataTable } from "../components/ui.jsx";
 import { bizFeature } from "../config/businessTypes.js";
 import { computePurchaseInvoice, validatePurchaseInvoice, detectDuplicatePurchase, signedAmounts, normDocType, inputVatEligibility } from "../lib/purchases.js";
-import { loadPurchaseInvoices, savePurchaseInvoice, deletePurchaseInvoice } from "../lib/purchaseStore.js";
-import { purchaseRegister, supplierBalances } from "../lib/purchaseReports.js";
+import { loadPurchaseInvoices, savePurchaseInvoice, deletePurchaseInvoice, unsyncedPurchaseCount } from "../lib/purchaseStore.js";
+import { purchaseRegister, supplierBalances, purchaseExceptions } from "../lib/purchaseReports.js";
 import { getSyncStatus, SYNC_FIELD_BUDGET_BYTES } from "../lib/sync.js";
 import { catalogueSubEnabled, setCatalogueSubEnabled } from "../lib/catalogueFlag.js";
 import { computePO, matchThreeWay, addReceipt } from "../lib/purchaseOrders.js";
@@ -487,10 +487,20 @@ export function InventoryManagement({items,setItems,lang="en",initialTab="overvi
         const st=getSyncStatus();
         const entries=Object.values(st);
         const problems=entries.filter(e=>!e.ok);
+        const unsyncedPur=unsyncedPurchaseCount();
         const budgetKB=Math.round(SYNC_FIELD_BUDGET_BYTES/1024);
         const kb=b=>Math.round((b||0)/1024);
         const fmtAt=a=>{try{return new Date(a).toLocaleString("en-SA",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"});}catch{return "—";}};
         return(<div style={{display:"flex",flexDirection:"column",gap:14}}>
+          <Card>
+            <div style={{fontSize:14,fontWeight:800,marginBottom:8}}>🧾 {_t("Purchase bills sync")}</div>
+            <div style={{padding:"12px 14px",borderRadius:10,fontSize:13,fontWeight:600,
+              background:unsyncedPur?C.warningLight:C.successLight,color:unsyncedPur?C.warning:C.success}}>
+              {unsyncedPur
+                ? `⚠️ ${unsyncedPur} ${_t("purchase bill(s) not yet confirmed in the cloud — they are saved on this device and will retry automatically when online.")}`
+                : _t("✅ All captured purchase bills are confirmed in the cloud.")}
+            </div>
+          </Card>
           <Card>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap"}}>
               <div style={{fontSize:14,fontWeight:800}}>☁️ {_t("Cloud Backup Health")}</div>
@@ -549,6 +559,8 @@ export function InventoryManagement({items,setItems,lang="en",initialTab="overvi
       {showPurchases&&tab==="preports"&&(()=>{
         const reg=purchaseRegister(purchases,{from:repFrom||undefined,to:repTo||undefined});
         const bals=supplierBalances(purchases,{from:repFrom||undefined,to:repTo||undefined});
+        const exceptions=purchaseExceptions(purchases);
+        const exReason={"not-marked-valid-einvoice":_t("not marked as a valid e-invoice"),"invalid-supplier-vat-number":_t("missing/invalid supplier VAT number"),"missing-invoice-number":_t("missing invoice number"),"missing-invoice-date":_t("missing invoice date"),"duplicate-supplier-invoice-number":_t("duplicate supplier invoice number")};
         const inSty={padding:"8px 10px",border:`1px solid ${C.border}`,borderRadius:8,fontFamily:"inherit",fontSize:13,background:"#fff"};
         const stat=(label,value,color,sub)=>(
           <div style={{background:"#fff",border:`1px solid ${C.border}`,borderLeft:`4px solid ${color}`,borderRadius:12,padding:"12px 14px",flex:1,minWidth:150}}>
@@ -575,6 +587,18 @@ export function InventoryManagement({items,setItems,lang="en",initialTab="overvi
             {stat(_t("Net Payable"),fmtSAR(reg.totals.gross),C.primary,_t("Invoices minus credit notes"))}
           </div>
           {reg.totals.nonRecoverableVat>0&&<div style={{fontSize:11.5,color:C.warning,padding:"8px 12px",background:C.warningLight,borderRadius:8}}>⚠️ {fmtSAR(reg.totals.nonRecoverableVat)} {_t("of input VAT is NOT recoverable — those suppliers were not marked as having issued a valid ZATCA e-invoice.")}</div>}
+
+          {exceptions.length>0&&<Card>
+            <div style={{fontSize:13,fontWeight:800,marginBottom:4,color:C.danger}}>⚠️ {_t("Needs attention")} ({exceptions.length})</div>
+            <div style={{fontSize:11,color:C.textMid,marginBottom:10}}>{_t("These bills claim recoverable input VAT but are missing evidence, or look like duplicates. Fix them, or their VAT is (correctly) left out of the recoverable total.")}</div>
+            <DataTable headers={[_t("Supplier"),_t("Doc #"),_t("Date"),_t("VAT"),_t("Issue")]} rows={exceptions.slice(0,200).map(e=>[
+              e.supplierName||"—", e.supplierInvoiceNo||"—", e.invoiceDate?fmtDate(e.invoiceDate):"—",
+              fmtSAR(e.vatAmount),
+              e.category==="duplicate"
+                ? <Badge color={C.danger} bg={C.dangerLight}>{_t("Possible duplicate")}</Badge>
+                : <span style={{fontSize:11}}>{e.reasons.map(r=>exReason[r]||r).join(", ")}</span>
+            ])}/>
+          </Card>}
 
           <Card>
             <div style={{fontSize:13,fontWeight:800,marginBottom:10}}>🏭 {_t("Supplier Balances")} ({bals.length})</div>
