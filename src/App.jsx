@@ -14029,8 +14029,7 @@ function FinancialReports({sales,items,license,lang="en",archiveIndex={},fetchCl
         // Quarter-to-date sales are sourced from the complete hydrated/archive
         // sales set, not the currently selected transaction date range.
         const now=new Date();
-        const qStart=new Date(now.getFullYear(),Math.floor(now.getMonth()/3)*3,1);
-        const quarterSales=(allSalesData||sales||[]).filter(s=>s&&!s.isDraft&&(!s.status||s.status==="completed")&&s.date>=qStart.toISOString().slice(0,10)&&s.date<=TODAY);
+        const qStart=new Date(now.getFullYear(),Math.floor(now.getMonth()/3)*3,1);\n        const qStartDate=`${qStart.getFullYear()}-${String(qStart.getMonth()+1).padStart(2,"0")}-${String(qStart.getDate()).padStart(2,"0")}`;\n        const quarterSales=uniqueSalesById(allSalesData||sales||[]).filter(s=>s&&!s.isDraft&&(!s.status||s.status==="completed")&&s.date>=qStartDate&&s.date<=TODAY);
         const quarterSalesBeforeVat=quarterSales.reduce((sum,s)=>sum+(Number(s.subtotal)||Math.max(0,(Number(s.total)||0)-(Number(s.vat)||0))),0);
         const quarterVat=quarterSales.reduce((sum,s)=>sum+(Number(s.vat)||0),0);
         // Monthly breakdown
