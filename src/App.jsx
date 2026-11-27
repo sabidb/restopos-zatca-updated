@@ -28,7 +28,7 @@ import { discountManual, discountPromo, totalAfterDiscount, cashChange, isCashSh
 import ImportWizard from "./components/ImportWizard.jsx";
 import { TODAY } from "./lib/date.js";
 import { logActivity } from "./lib/activity.js";
-import { initSync, debouncedSync, syncKeyToFirestore, getSyncStatus } from "./lib/sync.js";
+import { initSync, debouncedSync, syncKeyToFirestore, getSyncStatus, retryPendingSync } from "./lib/sync.js";
 import { nextCellId as _gridNextCellId } from "./lib/gridNav.js";
 import { resolveKeyOnRestore as _resolveKeyOnRestore } from "./lib/syncMerge.js";
 import { initCatalogueCloud, setCatalogueLicense, catalogueCloud, loadAllItems as loadCatalogueCloud, backfillCatalogue } from "./lib/catalogueCloud.js";
@@ -17587,10 +17587,15 @@ export default function App(){
       }
     }
 
+    const lic=LS.get("restopos_license_v2")?.licenseKey;
+    // Durable local queue: retry cloud keys on reconnect, app startup and the
+    // periodic safety tick. Failed writes remain queued across browser reloads.
+    if(lic)retryPendingSync(lic).catch(e=>console.warn("[Sync] retry queue:",e?.message));
     // 1. Trigger when connection just came back
     if(justCameOnline){
       flushPendingInvoices();
       flushPurchaseSync().catch(()=>{});   // retry unsynced purchase bills too (AUD-03)
+      if(lic)retryPendingSync(lic).catch(e=>console.warn("[Sync] reconnect retry:",e?.message));
     }
 
     // 2. Also trigger on mount (in case app starts online with pending invoices)
@@ -17599,7 +17604,10 @@ export default function App(){
 
     // 3. Periodic safety check every 2 minutes
     const interval=setInterval(()=>{
-      if(navigator.onLine){flushPendingInvoices();flushPurchaseSync().catch(()=>{});}
+      if(navigator.onLine){
+        flushPendingInvoices();flushPurchaseSync().catch(()=>{});
+        if(lic)retryPendingSync(lic).catch(e=>console.warn("[Sync] periodic retry:",e?.message));
+      }
     },120000);
 
     // NIGHTLY UTILITY SYNC — once per local calendar day, beginning at 23:55.
