@@ -2,6 +2,12 @@
 Date: 2026-11-28
 Scope: POS main repository, ZATCA service, Admin repository. This is a code-architecture audit; no live tenant data or two-device reconciliation was performed.
 
+## Dependency security finding (2026-11-28)
+- POS CI install reported **28 vulnerabilities: 1 critical, 10 high, 15 moderate, 2 low**. The POS package declares Vite 5 (`^5.0.8`), an unsupported vulnerable line.
+- Admin also declares Vite 5 (`^5.0.8`); no exact Admin npm-audit count has been captured yet.
+- Current Vite advisory GHSA-p4f5-76q4-ffq7 affects Vite 4.0.0 through 6.4.5 and describes critical dev-server RCE only when the development server is explicitly network-exposed. The fixed Vite 6 line begins at 6.4.6. Production builds/deployments are not the affected dev-server condition, but dev servers must not be exposed to the network.
+- Tracking issues: POS #87 and Admin #17. Exact lockfile audit reports, compatible upgrades, regenerated locks, tests/build/preview, and an audit gate remain outstanding. No dependency upgrade has been applied yet.
+
 ## Findings (confirmed from repository source)
 ### POS — high risk
 1. **Multiple rounding paths exist.** `src/lib/tax.js` documents transaction rounding via `toFixed(2)` and a separate ZATCA half-up path. Both are explicitly behavior-preserving, not unified. This means convergence requires owner/accountant approval and golden historic fixtures.
