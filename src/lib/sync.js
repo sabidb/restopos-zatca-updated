@@ -12,14 +12,18 @@ export function initSync({db,doc,setDoc,runTransaction}){_db=db;_doc=doc;_setDoc
 const _syncTimers={};
 const PENDING_SYNC_KEY="restopos_sync_pending_v1";
 const _memoryQueue={};
+let _queueInitialized=false;
 function queueId(licenseKey,key){return String(licenseKey)+"::"+String(key);}
 function readQueue(){
-  let persisted={};try{persisted=JSON.parse(localStorage.getItem(PENDING_SYNC_KEY)||"{}")||{};}catch(_){persisted={};}
-  return {..._memoryQueue,...persisted};
+  if(!_queueInitialized){
+    let persisted={};try{persisted=JSON.parse(localStorage.getItem(PENDING_SYNC_KEY)||"{}")||{};}catch(_){persisted={};}
+    Object.assign(_memoryQueue,persisted);_queueInitialized=true;
+  }
+  return {..._memoryQueue};
 }
 function writeQueue(queue){
   Object.keys(_memoryQueue).forEach(k=>delete _memoryQueue[k]);
-  Object.assign(_memoryQueue,queue||{});
+  Object.assign(_memoryQueue,queue||{});_queueInitialized=true;
   try{localStorage.setItem(PENDING_SYNC_KEY,JSON.stringify(queue||{}));return true;}catch(e){console.warn("[Sync] pending queue could not persist locally:",e?.message);return false;}
 }
 function updateQueueEntry(licenseKey,key,patch={},reset=false){
@@ -57,9 +61,8 @@ export function getSyncStatus(){
   for(const q of Object.values(readQueue())){
     const id=q.key;
     if(!id)continue;
-    if(!out[id]||out[id].ok!==true){
-      out[id]={key:id,ok:false,reason:q.blocked?"oversize":"pending",message:q.lastError||"Waiting for cloud sync",queuedAt:q.queuedAt,attempts:q.attempts||0,blocked:!!q.blocked};
-    }
+    // A pending queue entry supersedes any stale last-success status.
+    out[id]={key:id,ok:false,reason:q.blocked?"oversize":"pending",message:q.lastError||"Waiting for cloud sync",queuedAt:q.queuedAt,attempts:q.attempts||0,blocked:!!q.blocked};
   }
   return out;
 }
