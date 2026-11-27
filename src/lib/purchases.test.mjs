@@ -231,7 +231,7 @@ test("amount-only inclusive grand total uses KSA VAT rounding to cents",()=>{
   assert.equal(inv.total,100.01);
   assert.equal(inv.vatAmount,13.04);
   assert.equal(inv.subtotal,86.97);
-  assert.equal(inv.subtotal+inv.vatAmount,inv.total);
+  assert.equal(Math.round((inv.subtotal+inv.vatAmount)*100)/100,inv.total);
 });
 test("amount-only credit note uses inclusive calculation and signs totals negative in reports",()=>{
   const cn=computePurchaseInvoice({supplierName:"A",docType:"credit_note",totalAmount:115,amountInclVat:true,amountRate:0.15});
