@@ -49,3 +49,24 @@ test("no license key is a no-op (nothing recorded)", async () => {
   await syncKeyToFirestore("", "restopos_should_not_appear", [{ d: 4 }]);
   assert.equal(getSyncStatus().restopos_should_not_appear, undefined);
 });
+
+
+test("transactional sync unions cloud and local sales before writing", async () => {
+  let written = null;
+  const cloud = [{id:"sale-cloud",total:80,updatedAt:"2026-11-28T01:00:00Z"}];
+  const txHandles = {
+    db: {},
+    doc: () => ({}),
+    setDoc: async () => {},
+    runTransaction: async (_db, callback) => callback({
+      get: async () => ({exists:()=>true,data:()=>({restopos_sales:JSON.stringify(cloud)})}),
+      set: (_ref, payload) => { written = payload; }
+    })
+  };
+  initSync(txHandles);
+  await syncKeyToFirestore("LK", "restopos_sales", [{id:"sale-local",total:50,updatedAt:"2026-11-28T02:00:00Z"}]);
+  const merged = JSON.parse(written.restopos_sales);
+  assert.equal(merged.length,2);
+  assert.deepEqual(new Set(merged.map(s=>s.id)),new Set(["sale-cloud","sale-local"]));
+  assert.equal(getSyncStatus().restopos_sales.ok,true);
+});
