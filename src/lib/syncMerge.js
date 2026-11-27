@@ -80,8 +80,18 @@ export function mergeRecordsById(localArr, cloudArr) {
 export function resolveKeyOnRestore(key, localParsed, cloudParsed, localUpdatedAt, cloudUpdatedAt) {
   if (isRecordArrayKey(key)) {
     const merged = mergeRecordsById(localParsed, cloudParsed);
-    const before = Array.isArray(localParsed) ? localParsed.length : -1;
-    return { value: merged, changed: merged.length !== before };
+    const local = Array.isArray(localParsed) ? localParsed : [];
+    // Length-only comparison misses same-count updates, such as a sale total
+    // edited on another till. Persist the union whenever record content differs.
+    let changed = merged.length !== local.length;
+    if (!changed) {
+      for (let i = 0; i < merged.length; i++) {
+        try {
+          if (JSON.stringify(merged[i]) !== JSON.stringify(local[i])) { changed = true; break; }
+        } catch (_) { changed = true; break; }
+      }
+    }
+    return { value: merged, changed };
   }
   // Non-record key: prefer cloud only if it is newer than local.
   if (localParsed == null) return { value: cloudParsed, changed: cloudParsed != null };
