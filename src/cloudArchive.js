@@ -94,17 +94,29 @@ const stripHeavy = (sale) => {
   return out;
 };
 
-const summarise = (sales) => {
-  let total = 0, vat = 0, n = 0;
-  for (const s of sales) {
-    if (s && s.status !== "voided" && !s.isDraft) {
-      n += 1;
-      total += Number(s.total) || 0;
-      vat += Number(s.vat) || 0;
+function uniqueArchiveSales(sales=[]){
+  const byId=new Map(),withoutId=[];
+  const time=s=>{const t=Date.parse(s?.syncUpdatedAt||s?.updatedAt||s?.lastModifiedAt||s?.modifiedAt||s?.createdAt||"");return Number.isFinite(t)?t:0;};
+  for(const s of sales||[]){
+    if(!s)continue;
+    if(s.id==null||s.id===""){withoutId.push(s);continue;}
+    const key=String(s.id),prev=byId.get(key);
+    if(!prev||time(s)>=time(prev))byId.set(key,s);
+  }
+  return [...byId.values(),...withoutId];
+}
+/** Reportable totals and a content fingerprint for archive completeness checks. */
+export function summariseSales(sales=[]){
+  const unique=uniqueArchiveSales(sales);
+  let total=0,vat=0,n=0;
+  for(const s of unique){
+    if(s&&(!s.status||s.status==="completed")&&!s.isDraft){
+      n+=1;total+=Number(s.total)||0;vat+=Number(s.vat)||0;
     }
   }
-  return { n, total: Math.round(total * 100) / 100, vat: Math.round(vat * 100) / 100 };
-};
+  const clean=unique.map(stripHeavy).sort((a,b)=>String(a?.id||"").localeCompare(String(b?.id||"")));
+  return {n,total:Math.round(total*100)/100,vat:Math.round(vat*100)/100,fingerprint:fingerprint(clean)};
+}
 
 // ── Writing ────────────────────────────────────────────────────────
 
@@ -114,7 +126,8 @@ async function writeDay(licenseKey, date, sales) {
   const scope = fps[licenseKey] || (fps[licenseKey] = {});
 
   const changed = [];
-  for (const sale of sales) {
+  const normalized=uniqueArchiveSales(sales);
+  for (const sale of normalized) {
     const id = docIdFor(sale && sale.id);
     if (!id) continue;
     const body = stripHeavy(sale);
@@ -140,10 +153,10 @@ async function writeDay(licenseKey, date, sales) {
   // The index answers "what history exists" and "is this period complete"
   // without a read per invoice. Always refreshed, even when no bill changed,
   // because a void alters the day's totals without adding a document.
-  const sum = summarise(sales);
+  const sum = summariseSales(normalized);
   await setDoc(doc(collection(db, "client_data", licenseKey, "sales_index"), "index"), {
     licenseKey,
-    days: { [date]: { n: sum.n, total: sum.total, vat: sum.vat } },
+    days: { [date]: { n: sum.n, total: sum.total, vat: sum.vat, fingerprint: sum.fingerprint } },
     updatedAt: new Date().toISOString(),
   }, { merge: true });
 
@@ -329,8 +342,9 @@ export async function backfillArchive(licenseKey) {
   }
 
   const missing = Object.keys(byDay).sort().filter((date) => {
-    const cloud = index[date];
-    return !cloud || cloud.n !== summarise(byDay[date]).n;
+    const cloud = index[date],local=summariseSales(byDay[date]);
+    // Counts alone miss same-count edits (including a changed sale total/status).
+    return !cloud||cloud.n!==local.n||cloud.total!==local.total||cloud.vat!==local.vat||cloud.fingerprint!==local.fingerprint;
   });
 
   missing.slice(0, BACKFILL_DAYS_PER_RUN).forEach((date) => archiveSalesDay(licenseKey, date, byDay[date]));
