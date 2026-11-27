@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildDailyReport, datesWithActivity, dailyReportHTML, buildPeriodReport, periodReportHTML } from "./dailyReport.js";
+import { buildDailyReport, datesWithActivity, dailyReportHTML, buildPeriodReport, periodReportHTML, uniqueSalesById } from "./dailyReport.js";
 
 const sales = [
   { id: 1, date: "2026-11-25", status: "completed", total: 115, vat: 15, payMethod: "Card", items: [{ category: "Dairy", qty: 2, price: 57.5 }] },
@@ -110,4 +110,26 @@ test("dailyReportHTML renders shop info, net VAT and escapes", () => {
   assert.match(html, /VAT 300/);
   assert.match(html, /NET VAT PAYABLE/);
   assert.match(html, /00:00–23:59/);
+});
+
+
+test("duplicate sale IDs from local, cloud and archive copies count once", () => {
+  const duplicateCopies = [
+    { id: "sale-1", date: "2026-11-27", status: "completed", total: 100, vat: 13.04, createdAt: "2026-11-27T10:00:00Z" },
+    { id: "sale-1", date: "2026-11-27", status: "completed", total: 100, vat: 13.04, createdAt: "2026-11-27T10:00:00Z" },
+    { id: "sale-2", date: "2026-11-27", status: "completed", total: 50, vat: 6.52 }
+  ];
+  assert.equal(uniqueSalesById(duplicateCopies).length, 2);
+  const report = buildDailyReport(duplicateCopies, [], "2026-11-27");
+  assert.equal(report.orderCount, 2);
+  assert.equal(report.revenue, 150);
+  assert.equal(report.vat, 19.56);
+});
+
+test("duplicate same-id records prefer newer edit timestamp", () => {
+  const duplicates = [
+    { id: "sale-1", date: "2026-11-27", status: "completed", total: 100, vat: 13.04, updatedAt: "2026-11-27T10:00:00Z" },
+    { id: "sale-1", date: "2026-11-27", status: "completed", total: 120, vat: 15.65, updatedAt: "2026-11-27T11:00:00Z" }
+  ];
+  assert.equal(buildDailyReport(duplicates, [], "2026-11-27").revenue, 120);
 });

@@ -34,7 +34,7 @@ export function isRecordArrayKey(key) {
 }
 
 function recTime(r) {
-  const t = Date.parse(r?.updatedAt || r?.createdAt || (r?.date ? r.date + " " + (r.time || "") : "") || "");
+  const t = Date.parse(r?.syncUpdatedAt || r?.lastModifiedAt || r?.modifiedAt || r?.updatedAt || r?.createdAt || (r?.date ? r.date + " " + (r.time || "") : "") || "");
   return Number.isFinite(t) ? t : 0;
 }
 
@@ -55,7 +55,9 @@ export function mergeRecordsById(localArr, cloudArr) {
     if (r && r.id != null && r.id !== "") {
       const k = String(r.id);
       const prev = byId.get(k);
-      if (!prev || recTime(r) >= recTime(prev)) byId.set(k, r);
+      // Preserve local on timestamp ties: a cloud copy with no reliable edit timestamp
+      // must not overwrite a local edit merely because it was processed second.
+      if (!prev || recTime(r) > recTime(prev)) byId.set(k, r);
     } else {
       let s; try { s = JSON.stringify(r); } catch (_) { s = null; }
       if (s == null || !looseSeen.has(s)) { looseSeen.add(s); loose.push(r); }
@@ -78,8 +80,18 @@ export function mergeRecordsById(localArr, cloudArr) {
 export function resolveKeyOnRestore(key, localParsed, cloudParsed, localUpdatedAt, cloudUpdatedAt) {
   if (isRecordArrayKey(key)) {
     const merged = mergeRecordsById(localParsed, cloudParsed);
-    const before = Array.isArray(localParsed) ? localParsed.length : -1;
-    return { value: merged, changed: merged.length !== before };
+    const local = Array.isArray(localParsed) ? localParsed : [];
+    // Length-only comparison misses same-count updates, such as a sale total
+    // edited on another till. Persist the union whenever record content differs.
+    let changed = merged.length !== local.length;
+    if (!changed) {
+      for (let i = 0; i < merged.length; i++) {
+        try {
+          if (JSON.stringify(merged[i]) !== JSON.stringify(local[i])) { changed = true; break; }
+        } catch (_) { changed = true; break; }
+      }
+    }
+    return { value: merged, changed };
   }
   // Non-record key: prefer cloud only if it is newer than local.
   if (localParsed == null) return { value: cloudParsed, changed: cloudParsed != null };

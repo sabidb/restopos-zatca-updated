@@ -15,6 +15,19 @@ import { signedAmounts, recoverablePortion } from "./purchases.js";
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const sum = (arr, f) => (arr || []).reduce((s, x) => s + (Number(f(x)) || 0), 0);
 
+/** Deduplicate duplicate copies of a sale archived and synced from multiple devices. */
+export function uniqueSalesById(sales = []) {
+  const byId = new Map();
+  const noId = [];
+  const time = (s) => { const t = Date.parse(s?.syncUpdatedAt || s?.lastModifiedAt || s?.modifiedAt || s?.updatedAt || s?.createdAt || ""); return Number.isFinite(t) ? t : 0; };
+  for (const sale of sales || []) {
+    if (!sale || sale.id == null || sale.id === "") { noId.push(sale); continue; }
+    const key = String(sale.id), prev = byId.get(key);
+    if (!prev || time(sale) > time(prev)) byId.set(key, sale);
+  }
+  return [...byId.values(), ...noId];
+}
+
 /** A completed, non-draft sale dated on `dateStr`. */
 function isDaySale(s, dateStr) {
   return s && s.date === dateStr && (!s.status || s.status === "completed") && !s.isDraft;
@@ -27,7 +40,7 @@ function isDaySale(s, dateStr) {
  * @param {string} dateStr     "YYYY-MM-DD"
  */
 export function buildDailyReport(sales = [], purchaseDocs = [], dateStr) {
-  const daySales = (sales || []).filter((s) => isDaySale(s, dateStr));
+  const daySales = uniqueSalesById(sales).filter((s) => isDaySale(s, dateStr));
   const revenue = r2(sum(daySales, (s) => s.total));
   const vat = r2(sum(daySales, (s) => s.vat)); // output VAT
   const net = r2(revenue - vat);
@@ -99,8 +112,9 @@ export function datesWithActivity(sales = [], purchaseDocs = []) {
  * generator so a merchant can pull a week / month / any range as one PDF.
  */
 export function buildPeriodReport(sales = [], purchaseDocs = [], fromStr, toStr) {
-  const dates = datesWithActivity(sales, purchaseDocs).filter((d) => d >= fromStr && d <= toStr).sort();
-  const days = dates.map((d) => buildDailyReport(sales, purchaseDocs, d));
+  const uniqueSales = uniqueSalesById(sales);
+  const dates = datesWithActivity(uniqueSales, purchaseDocs).filter((d) => d >= fromStr && d <= toStr).sort();
+  const days = dates.map((d) => buildDailyReport(uniqueSales, purchaseDocs, d));
   const sumBy = (f) => r2(days.reduce((s, d) => s + (Number(f(d)) || 0), 0));
   const payBreakdown = {}, catMap = {};
   for (const d of days) {

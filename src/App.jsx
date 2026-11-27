@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { initializeApp } from "firebase/app";
-import { getFirestore, collection, query, where, getDocs, updateDoc, doc, addDoc, getDoc, onSnapshot, setDoc, deleteDoc, orderBy, limit, startAfter, arrayUnion, writeBatch, deleteField, connectFirestoreEmulator } from "firebase/firestore";
+import { getFirestore, collection, query, where, getDocs, updateDoc, doc, addDoc, getDoc, onSnapshot, setDoc, deleteDoc, orderBy, limit, startAfter, arrayUnion, writeBatch, deleteField, connectFirestoreEmulator, runTransaction } from "firebase/firestore";
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken, connectAuthEmulator } from "firebase/auth";
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { isTrial, isTrialBuild, trialMeta, trialLicense, trialDaysLeft, trialExpired,
@@ -28,7 +28,7 @@ import { discountManual, discountPromo, totalAfterDiscount, cashChange, isCashSh
 import ImportWizard from "./components/ImportWizard.jsx";
 import { TODAY } from "./lib/date.js";
 import { logActivity } from "./lib/activity.js";
-import { initSync, debouncedSync, syncKeyToFirestore } from "./lib/sync.js";
+import { initSync, debouncedSync, syncKeyToFirestore, getSyncStatus } from "./lib/sync.js";
 import { nextCellId as _gridNextCellId } from "./lib/gridNav.js";
 import { resolveKeyOnRestore as _resolveKeyOnRestore } from "./lib/syncMerge.js";
 import { initCatalogueCloud, setCatalogueLicense, catalogueCloud, loadAllItems as loadCatalogueCloud, backfillCatalogue } from "./lib/catalogueCloud.js";
@@ -38,7 +38,7 @@ import { initPOStore, setPurchaseOrdersLocal, loadPurchaseOrders } from "./lib/p
 import { initPurchaseCloud, setPurchaseCloudLicense, purchaseDocsCloud, purchaseOrdersCloud, mergeById } from "./lib/purchaseCloud.js";
 import { purchaseDocsToVatTx } from "./lib/vatBridge.js";
 import { signedAmounts as _purSignedAmounts, isInputVatRecoverable as _isInputVatRecoverable } from "./lib/purchases.js";
-import { buildDailyReport, datesWithActivity, dailyReportHTML, buildPeriodReport, periodReportHTML } from "./lib/dailyReport.js";
+import { buildDailyReport, datesWithActivity, dailyReportHTML, buildPeriodReport, periodReportHTML, uniqueSalesById } from "./lib/dailyReport.js";
 import { sha256HexSync } from "./lib/sha256.js";
 import { getLang, setLangStore, t, dir } from "./i18n/index.js";
 import { BUSINESS_TYPES, DEFAULT_BUSINESS_TYPE, getBusinessType, bizProfile, bizFeature, manualBillingEnabled, isSupermarket } from "./config/businessTypes.js";
@@ -157,7 +157,7 @@ initCatalogueCloud({ db, doc, setDoc, deleteDoc, collection, getDocs, writeBatch
 function catalogueSubOn(){ return catalogueSubEnabled(); }
 // Debounced per-key cloud backup engine (src/lib/sync.js). Inject the Firestore
 // handles the same way; must come after db exists, before any screen renders.
-initSync({ db, doc, setDoc });
+initSync({ db, doc, setDoc, runTransaction });
 // Purchase documents & orders persist to Firestore SUBCOLLECTIONS (one document
 // each), never the capped client_data document — the same shape as the sales
 // archive. The adapters plug into the local stores' cloud seam; the active
@@ -9609,7 +9609,20 @@ function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,arch
   // Supermarket defaults the view to the last 7 days (restaurant keeps TODAY).
   // Only the *displayed* range changes — every invoice is still stored and
   // reachable by widening the date filter (ZATCA retention is untouched).
-  const [tab,setTab]=useState("sales");const [dateFrom,setDateFrom]=useState(()=>bizProfile().posLayout==="scan"?new Date(Date.now()-6*864e5).toISOString().slice(0,10):TODAY);const [dateTo,setDateTo]=useState(TODAY);const [search,setSearch]=useState("");const [refundTarget,setRefundTarget]=useState(null);
+  const [tab,setTab]=useState("sales");const [dateFrom,setDateFrom]=useState(TODAY);const [dateTo,setDateTo]=useState(TODAY);const [search,setSearch]=useState("");const [refundTarget,setRefundTarget]=useState(null);
+  const _autoLoadedRange=useRef("");
+  // Automatically retrieve archive invoices for the selected transaction range.
+  // Manual CloudGapBar remains as a visible recovery control if a fetch fails.
+  useEffect(()=>{
+    if(!fetchCloudRange||!dateFrom||!dateTo)return;
+    const gap=cloudGapOf(sales,archiveIndex,dateFrom,dateTo);
+    if(!gap.days.length)return;
+    const key=`${dateFrom}|${dateTo}`;
+    if(_autoLoadedRange.current===key)return;
+    _autoLoadedRange.current=key;
+    fetchCloudRange(gap.from,gap.to).catch(()=>{if(_autoLoadedRange.current===key)_autoLoadedRange.current="";});
+  },[sales,archiveIndex,dateFrom,dateTo,fetchCloudRange]);
+  const transactionDataset=uniqueSalesById(sales||[]);
   const [kotPrompt,setKotPrompt]=useState(null);const [viewInvoice,setViewInvoice]=useState(null);
   const [debitTarget,setDebitTarget]=useState(null);const [debitReason,setDebitReason]=useState("");const [debitAmount,setDebitAmount]=useState("");const [debitBusy,setDebitBusy]=useState(false);
   // Manager-approval gate for void/refund. requiresApproval() is false unless
@@ -9630,12 +9643,12 @@ function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,arch
       alert("⚠️ Sale marked voided, but the ZATCA credit note could not be generated. The reported invoice is NOT yet reversed — retry from the ZATCA queue.");
     }
   };
-  const dateFiltered=sales.filter(s=>s.date>=dateFrom&&s.date<=dateTo);
-  const _filteredRaw=search.trim()?sales.filter(s=>s.id?.toLowerCase().includes(search.toLowerCase())||s.date?.includes(search)||s.type?.toLowerCase().includes(search.toLowerCase())||s.payMethod?.toLowerCase().includes(search.toLowerCase())):dateFiltered;
+  const dateFiltered=transactionDataset.filter(s=>s.date>=dateFrom&&s.date<=dateTo);
+  const _filteredRaw=search.trim()?transactionDataset.filter(s=>String(s.id||"").toLowerCase().includes(search.toLowerCase())||s.date?.includes(search)||s.type?.toLowerCase().includes(search.toLowerCase())||s.payMethod?.toLowerCase().includes(search.toLowerCase())):dateFiltered;
   // Newest sale on top → sort by reliable createdAt (fallback to date+time), descending.
   const _saleSortTs=s=>{ if(s.createdAt){const t=new Date(s.createdAt).getTime();if(!isNaN(t))return t;} const t2=new Date(`${s.date||""} ${s.time||""}`).getTime(); return isNaN(t2)?0:t2; };
   const filtered=[..._filteredRaw].sort((a,b)=>_saleSortTs(b)-_saleSortTs(a));
-  const total=filtered.reduce((s,o)=>s+o.total,0);const vat=filtered.reduce((s,o)=>s+o.vat,0);
+  const reportable=filtered.filter(o=>!o.isDraft&&(!o.status||o.status==="completed"));const total=reportable.reduce((s,o)=>s+(Number(o.total)||0),0);const vat=reportable.reduce((s,o)=>s+(Number(o.vat)||0),0);
   return(<div>
     {/* Manager-approval gate — only appears for types that require it. */}
     {pendingApproval&&<ApprovalGate action={pendingApproval.action} license={license}
@@ -9770,10 +9783,10 @@ function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,arch
     </Card>
     <div style={{display:"flex",gap:8,marginBottom:20,flexWrap:"wrap"}}>{[["sales","💳 Sales"],["payments","💰 Payments"],["saved","💾 Saved Invoices"],["kot","🍽 KOT"],["zatca","⬛ ZATCA Invoices"]].map(([id,label])=><button key={id} onClick={()=>setTab(id)} style={{padding:"8px 16px",borderRadius:8,border:`1.5px solid ${tab===id?C.primary:C.border}`,background:tab===id?C.primaryLight:"#fff",color:tab===id?C.primary:C.textMid,fontFamily:"inherit",fontSize:13,fontWeight:600,cursor:"pointer"}}>{label}</button>)}</div>
     {tab==="sales"&&<div style={{display:"flex",flexDirection:"column",gap:16}}>
-      {!search&&<Card><CloudGapBar sales={sales} archiveIndex={archiveIndex} from={dateFrom} to={dateTo}
+      {!search&&<Card><CloudGapBar sales={transactionDataset} archiveIndex={archiveIndex} from={dateFrom} to={dateTo}
         fetchCloudRange={fetchCloudRange} cloudLoading={cloudLoading} cloudError={cloudError}
         whatFollows="these figures" showComplete={false}/>
-      <div style={{display:"flex",gap:12,alignItems:"flex-end",flexWrap:"wrap"}}><Inp label="From" value={dateFrom} onChange={setDateFrom} type="date"/><Inp label="To" value={dateTo} onChange={setDateTo} type="date"/><div style={{marginLeft:"auto"}}><div style={{fontSize:12,color:C.textMid}}>{filtered.length} orders · VAT: {fmtSAR(vat)}</div><div style={{fontSize:20,fontWeight:800,color:C.primary}}>{fmtSAR(total)}</div></div></div></Card>}
+      <div style={{display:"flex",gap:12,alignItems:"flex-end",flexWrap:"wrap"}}><Inp label="From" value={dateFrom} onChange={setDateFrom} type="date"/><Inp label="To" value={dateTo} onChange={setDateTo} type="date"/><div style={{marginLeft:"auto"}}><div style={{fontSize:12,color:C.textMid}}>{reportable.length} completed orders · VAT: {fmtSAR(vat)}</div><div style={{fontSize:20,fontWeight:800,color:C.primary}}>{fmtSAR(total)}</div></div></div></Card>}
       {filtered.length===0?<Card><div style={{textAlign:"center",padding:"40px 0",color:C.textMid}}><div style={{fontSize:40,marginBottom:12}}>🧾</div><div style={{fontSize:15,fontWeight:700}}>No orders yet</div></div></Card>
       :<Card><DataTable headers={["Invoice","Date","Time","Type","Method","Total","Status","Actions"]} rows={filtered.slice(0,100).map(s=>[<span style={{fontFamily:"monospace",fontSize:12,color:C.primary,fontWeight:700}}>{s.displayNumber||s.id}</span>,s.date,s.time,s.type,s.payMethod,<strong>{fmtSAR(s.total)}</strong>,<Badge color={s.status==="completed"?C.success:s.status==="voided"?C.danger:C.warning} bg={s.status==="completed"?C.successLight:s.status==="voided"?C.dangerLight:C.warningLight}>{s.status}</Badge>,<div style={{display:"flex",gap:4,flexWrap:"wrap"}}><Btn size="sm" variant="outline" onClick={()=>setKotPrompt(s)}>🖨️ Print</Btn>{s.status==="completed"&&<><Btn size="sm" variant="ghost" onClick={()=>{if(requiresApproval("sale.refund",license)){setPendingApproval({action:"sale.refund",onApproved:()=>setRefundTarget(s)});}else{setRefundTarget(s);}}}>Refund</Btn><Btn size="sm" variant="danger" onClick={()=>{if(requiresApproval("sale.void",license)){setPendingApproval({action:"sale.void",onApproved:()=>doVoid(s)});}else{if(confirm("Void?"))doVoid(s);}}}>Void</Btn><Btn size="sm" variant="ghost" onClick={()=>{setDebitTarget(s);setDebitReason("");setDebitAmount("");}}>Debit Note</Btn></>}<Btn size="sm" variant="outline" onClick={()=>setViewInvoice(s)}>👁️ View</Btn></div>])} emptyMsg="No orders found"/></Card>}
     </div>}
@@ -9951,7 +9964,7 @@ function Reports({sales,allSales,items,setSales,lang="en",license,archiveIndex={
   const [viewInvoice,setViewInvoice]=useState(null); // invoice being viewed in modal
   const [kotPrompt,setKotPrompt]=useState(null); // sale pending the "print KOT?" choice
   const [txSearch,setTxSearch]=useState("");
-  const [txFrom,setTxFrom]=useState(()=>{const d=new Date();d.setDate(1);return d.toISOString().slice(0,10);});
+  const [txFrom,setTxFrom]=useState(TODAY);
   const [txTo,setTxTo]=useState(TODAY);
   const [selectedDay,setSelectedDay]=useState(null); // for Day History detail view
   const [pushingFatoora,setPushingFatoora]=useState(false);
@@ -9960,7 +9973,7 @@ function Reports({sales,allSales,items,setSales,lang="en",license,archiveIndex={
   const dayLog=LS.get("restopos_daylog")||{};
   const closedDays=LS.get("restopos_closed_days")||[];
   const paperWidth=(LS.get("restopos_invoice_format")?.paperWidth||"80mm");
-  const allSalesData=allSales||sales||[];
+  const allSalesData=uniqueSalesById(allSales||sales||[]);
   const filtered=allSalesData.filter(s=>s.date>=dateFrom&&s.date<=dateTo&&!s.isDraft);
 
   // ── What this range is missing ──────────────────────────────────────
@@ -14013,6 +14026,14 @@ function FinancialReports({sales,items,license,lang="en",archiveIndex={},fetchCl
         const vatRevTotal=vatSales.reduce((s,o)=>s+(o.total||0),0);
         const vatCollectedTotal=vatSales.reduce((s,o)=>s+(o.vat||0),0);
         const vatRevenueExcl=vatRevTotal-vatCollectedTotal;
+        // Quarter-to-date sales are sourced from the complete hydrated/archive
+        // sales set, not the currently selected transaction date range.
+        const now=new Date();
+        const qStart=new Date(now.getFullYear(),Math.floor(now.getMonth()/3)*3,1);
+        const qStartDate=`${qStart.getFullYear()}-${String(qStart.getMonth()+1).padStart(2,"0")}-${String(qStart.getDate()).padStart(2,"0")}`;
+        const quarterSales=uniqueSalesById(allSalesData||sales||[]).filter(s=>s&&!s.isDraft&&(!s.status||s.status==="completed")&&s.date>=qStartDate&&s.date<=TODAY);
+        const quarterSalesBeforeVat=quarterSales.reduce((sum,s)=>sum+(Number(s.subtotal)||Math.max(0,(Number(s.total)||0)-(Number(s.vat)||0))),0);
+        const quarterVat=quarterSales.reduce((sum,s)=>sum+(Number(s.vat)||0),0);
         // Monthly breakdown
         const vatByMonth={};
         vatSales.forEach(s=>{
@@ -14023,10 +14044,8 @@ function FinancialReports({sales,items,license,lang="en",archiveIndex={},fetchCl
           vatByMonth[ym].vat+=s.vat||0;
         });
         const vatRows=Object.values(vatByMonth).sort((a,b)=>b.month.localeCompare(a.month));
-        // Current quarter VAT
-        const now=new Date();
-        const qStart=new Date(now.getFullYear(),Math.floor(now.getMonth()/3)*3,1);
-        const qVat=vatSales.filter(s=>s.date&&new Date(s.date)>=qStart).reduce((s,o)=>s+(o.vat||0),0);
+        // Quarter-to-date VAT comes from all quarter sales, not selected range.
+        const qVat=quarterVat;
 
         async function pushToFatoora(){
           if(!confirm("Submit VAT report to ZATCA FATOORA for this period?\n\nThis will report all unreported invoices via the Railway microservice."))return;
@@ -14080,6 +14099,7 @@ function FinancialReports({sales,items,license,lang="en",archiveIndex={},fetchCl
             {/* VAT KPIs */}
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(190px,1fr))",gap:12}}>
               <StatCard icon="💰" label="Revenue (incl. VAT)" value={fmtSAR(vatRevTotal)} color={C.primary} bg={C.primaryLight}/>
+              <StatCard icon="📆" label="Quarter Sales (before VAT)" value={fmtSAR(quarterSalesBeforeVat)} color={C.success} bg={C.successLight}/>
               <StatCard icon="🏷️" label="Revenue (excl. VAT)" value={fmtSAR(vatRevenueExcl)} color={C.info} bg={C.infoLight}/>
               <StatCard icon="🧾" label="VAT Collected" value={fmtSAR(vatCollectedTotal)} color={C.zatca} bg={C.zatcaLight}/>
               <StatCard icon="⚠️" label="VAT Payable (All Time)" value={fmtSAR(vatCollectedTotal)} color={C.danger} bg={C.dangerLight}/>
@@ -17582,7 +17602,47 @@ export default function App(){
       if(navigator.onLine){flushPendingInvoices();flushPurchaseSync().catch(()=>{});}
     },120000);
 
-    return()=>{cancelled=true;clearInterval(interval);};
+    // NIGHTLY UTILITY SYNC — once per local calendar day, beginning at 23:55.
+    // Catch up if the app is still open after 23:55; persist the day marker
+    // after a successful sync so failures can retry.
+    const nightlySync=async()=>{
+      if(!navigator.onLine)return;
+      const lic=LS.get("restopos_license_v2")?.licenseKey;
+      if(!lic)return;
+      const now=new Date();
+      const day=now.getFullYear()+"-"+String(now.getMonth()+1).padStart(2,"0")+"-"+String(now.getDate()).padStart(2,"0");
+      const marker="restopos_nightly_sync_day";
+      if(localStorage.getItem(marker)===day)return;
+      const attemptKey="restopos_nightly_sync_attempt";
+      let attempt={};try{attempt=JSON.parse(localStorage.getItem(attemptKey)||"{}");}catch(_){}
+      if(attempt.date===day&&now.getTime()-Number(attempt.at||0)<300000)return;
+      localStorage.setItem(attemptKey,JSON.stringify({date:day,at:now.getTime()}));
+      try{
+        const salesToday=(LS.get("restopos_sales")||[]).filter(s=>s.date===day&&!s.isDraft);
+        archiveSalesDay(lic,day,salesToday);
+        await Promise.all(SYNC_KEYS.map(async key=>{
+          const raw=localStorage.getItem(key);
+          if(raw)await syncKeyToFirestore(lic,key,JSON.parse(raw));
+        }));
+        const failedKeys=SYNC_KEYS.filter(key=>localStorage.getItem(key)&&getSyncStatus()[key]?.ok!==true);
+        await flushArchive();
+        await flushPendingInvoices();
+        await flushPurchaseSync();
+        if(failedKeys.length)throw new Error("Failed cloud keys: "+failedKeys.join(", "));
+        localStorage.setItem(marker,day);
+        localStorage.setItem("restopos_last_nightly_utility_sync",JSON.stringify({date:day,at:new Date().toISOString(),ok:true,failedKeys:[]}));
+        console.info("[Nightly Utility Sync] completed at 23:55+ local time");
+      }catch(e){
+        localStorage.setItem("restopos_last_nightly_utility_sync",JSON.stringify({date:day,at:new Date().toISOString(),ok:false,error:e?.message||String(e)}));
+        console.error("[Nightly Utility Sync] failed; will retry",e);
+      }
+    };
+    const nightlyInterval=setInterval(()=>{
+      const now=new Date();
+      if(now.getHours()===23&&now.getMinutes()>=55)nightlySync();
+    },20000);
+
+    return()=>{cancelled=true;clearInterval(interval);clearInterval(nightlyInterval);};
   },[justCameOnline]);
   // ═══════════════════════════════════════════════════════════════════
 

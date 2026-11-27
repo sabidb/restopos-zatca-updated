@@ -5,8 +5,9 @@
 // so this module has no direct Firebase import. App.jsx calls initSync once
 // after the Firestore db is created, before any screen can render.
 // ═══════════════════════════════════════════════════════════════════
-let _db=null,_doc=null,_setDoc=null;
-export function initSync({db,doc,setDoc}){_db=db;_doc=doc;_setDoc=setDoc;}
+let _db=null,_doc=null,_setDoc=null,_runTransaction=null;
+import { mergeRecordsById, isRecordArrayKey } from "./syncMerge.js";
+export function initSync({db,doc,setDoc,runTransaction}){_db=db;_doc=doc;_setDoc=setDoc;_runTransaction=runTransaction;}
 
 const _syncTimers={};
 export function debouncedSync(licenseKey,key,data){
@@ -49,13 +50,24 @@ export async function syncKeyToFirestore(licenseKey,key,data){
       return;
     }
     const docRef=_doc(_db,"client_data",licenseKey);
-    // Use setDoc with merge so we don't overwrite other keys
-    await _setDoc(docRef,{
-      [key]:json,
-      [`${key}_updatedAt`]:new Date().toISOString(),
-      licenseKey,
-      lastSyncAt:new Date().toISOString(),
-    },{merge:true});
+    const updatedAt=new Date().toISOString();
+    // Merge record arrays transactionally to prevent concurrent tills from
+    // replacing one another with stale local snapshots.
+    if(_runTransaction && isRecordArrayKey(key)){
+      await _runTransaction(_db,async tx=>{
+        const snap=await tx.get(docRef);
+        const cloudRaw=snap.exists()?snap.data()?.[key]:null;
+        let cloudParsed=[];
+        try{cloudParsed=cloudRaw?JSON.parse(cloudRaw):[];}catch(_){cloudParsed=[];}
+        const merged=mergeRecordsById(Array.isArray(data)?data:[],Array.isArray(cloudParsed)?cloudParsed:[]);
+        const mergedJson=JSON.stringify(merged);
+        const mergedSize=new TextEncoder().encode(mergedJson).length;
+        if(mergedSize>MAX_SYNC_FIELD_BYTES)throw new Error(`Merged ${key} exceeds sync budget (${mergedSize} bytes)`);
+        tx.set(docRef,{[key]:mergedJson,[`${key}_updatedAt`]:updatedAt,licenseKey,lastSyncAt:updatedAt},{merge:true});
+      });
+    }else{
+      await _setDoc(docRef,{[key]:json,[`${key}_updatedAt`]:updatedAt,licenseKey,lastSyncAt:updatedAt},{merge:true});
+    }
     _syncStatus[key]={key,ok:true,sizeBytes:size,at:new Date().toISOString()};
   }catch(e){
     // Louder than a warning: this is the client's backup failing.
