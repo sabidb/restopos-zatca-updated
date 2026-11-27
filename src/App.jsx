@@ -29,7 +29,7 @@ import ImportWizard from "./components/ImportWizard.jsx";
 import { TODAY } from "./lib/date.js";
 import { logActivity } from "./lib/activity.js";
 import { initSync, debouncedSync, syncKeyToFirestore, getSyncStatus, retryPendingSync } from "./lib/sync.js";
-import { getDeviceInvoicePrefix, buildSaleInvoiceId, buildDraftInvoiceId } from "./lib/saleId.js";
+import { getDeviceInvoicePrefix, buildSaleInvoiceId, buildDraftInvoiceId, buildZatcaInvoiceNumber } from "./lib/saleId.js";
 import { nextCellId as _gridNextCellId } from "./lib/gridNav.js";
 import { resolveKeyOnRestore as _resolveKeyOnRestore } from "./lib/syncMerge.js";
 import { initCatalogueCloud, setCatalogueLicense, catalogueCloud, loadAllItems as loadCatalogueCloud, backfillCatalogue } from "./lib/catalogueCloud.js";
@@ -908,7 +908,7 @@ async function exportZatcaArchive({from,to}={}){
 
 async function generateZATCAInvoice({seller_name,seller_vat,seller_address,seller_cr="",seller_city="",items=[],is_credit_note=false,is_debit_note=false,original_invoice_number="",credit_note_reason="",debit_note_reason="",invoice_type="B2C",buyer_name="",buyer_vat="",buyer_street="",buyer_building="",buyer_district="",buyer_city="",buyer_postal_code="",payMethod="Cash",discount=0}) {
   const icv = invoiceStorage.getNextCounter();
-  const invoice_number = `INV-${String(icv).padStart(6,"0")}`;
+  const invoice_number = buildZatcaInvoiceNumber(icv,getDeviceInvoicePrefix()); // per-device sequence prefix avoids cross-till IRN collisions
   const timestamp = new Date().toISOString();
   const uuid = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   // Discounts (manual, promo, loyalty) arrive as one VAT-inclusive lump sum
