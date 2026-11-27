@@ -14,7 +14,8 @@ const PENDING_SYNC_KEY="restopos_sync_pending_v1";
 const _memoryQueue={};
 function queueId(licenseKey,key){return String(licenseKey)+"::"+String(key);}
 function readQueue(){
-  try{return JSON.parse(localStorage.getItem(PENDING_SYNC_KEY)||"{}")||{};}catch(_){return {..._memoryQueue};}
+  let persisted={};try{persisted=JSON.parse(localStorage.getItem(PENDING_SYNC_KEY)||"{}")||{};}catch(_){persisted={};}
+  return {..._memoryQueue,...persisted};
 }
 function writeQueue(queue){
   Object.keys(_memoryQueue).forEach(k=>delete _memoryQueue[k]);
