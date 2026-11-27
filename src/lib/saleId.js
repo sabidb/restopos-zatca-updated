@@ -22,6 +22,9 @@ export function getDeviceInvoicePrefix(storage=globalThis.localStorage){
 export function buildSaleInvoiceId(vno,prefix){
   return `INV-${String(prefix||"000000").toUpperCase()}-${Number(vno)||0}`;
 }
+export function buildZatcaInvoiceNumber(icv,prefix){
+  return `INV-${String(prefix||"000000").toUpperCase()}-${String(Number(icv)||0).padStart?String(Number(icv)||0).padStart(6,"0"):String(Number(icv)||0)`;
+}
 export function buildDraftInvoiceId(vno,letter,prefix){
   return `D-${String(prefix||"000000").toUpperCase()}-${Number(vno)||0}${String(letter||"A").toUpperCase()}`;
 }
