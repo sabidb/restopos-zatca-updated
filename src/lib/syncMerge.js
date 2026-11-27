@@ -55,7 +55,9 @@ export function mergeRecordsById(localArr, cloudArr) {
     if (r && r.id != null && r.id !== "") {
       const k = String(r.id);
       const prev = byId.get(k);
-      // Preserve local on timestamp ties: a cloud copy with no reliable edit timestamp\n      // must not overwrite a local edit merely because it was processed second.\n      if (!prev || recTime(r) > recTime(prev)) byId.set(k, r);
+      // Preserve local on timestamp ties: a cloud copy with no reliable edit timestamp
+      // must not overwrite a local edit merely because it was processed second.
+      if (!prev || recTime(r) > recTime(prev)) byId.set(k, r);
     } else {
       let s; try { s = JSON.stringify(r); } catch (_) { s = null; }
       if (s == null || !looseSeen.has(s)) { looseSeen.add(s); loose.push(r); }
