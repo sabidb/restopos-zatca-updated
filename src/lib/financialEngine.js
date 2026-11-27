@@ -5,7 +5,9 @@
 const cents = (value) => {
   const n = Number(value);
   if (!Number.isFinite(n)) throw new TypeError("Money value must be finite");
-  const rounded = Math.sign(n) * Math.floor(Math.abs(n) * 100 + 0.5);\n  if (!Number.isSafeInteger(rounded)) throw new RangeError("Money value exceeds safe cent precision");\n  return rounded;
+  const rounded = Math.sign(n) * Math.floor(Math.abs(n) * 100 + 0.5);
+  if (!Number.isSafeInteger(rounded)) throw new RangeError("Money value exceeds safe cent precision");
+  return rounded;
 };
 const fromCents = (c) => c / 100;
 const roundDivHalfUp = (numerator, denominator) => {
@@ -34,10 +36,12 @@ export function calculateSale(items = [], discount = 0) {
     const rateBps = normalizeRateBps(item?.vatRate ?? item?.rate ?? 15);
     return { index, id: item?.id ?? String(index), name: item?.name ?? "", qty, unitCents, rawLineCents, rateBps };
   });
-  const subtotalCents = lines.reduce((s, l) => s + l.rawLineCents, 0);\n  if (!Number.isSafeInteger(subtotalCents)) throw new RangeError("Subtotal exceeds safe cent precision");
+  const subtotalCents = lines.reduce((s, l) => s + l.rawLineCents, 0);
+  if (!Number.isSafeInteger(subtotalCents)) throw new RangeError("Subtotal exceeds safe cent precision");
   const discountCents = cents(discount);
   if (discountCents < 0 || discountCents > subtotalCents) throw new RangeError("Discount must be between zero and subtotal");
-  const totalCents = subtotalCents - discountCents;\n  if (!Number.isSafeInteger(totalCents)) throw new RangeError("Total exceeds safe cent precision");
+  const totalCents = subtotalCents - discountCents;
+  if (!Number.isSafeInteger(totalCents)) throw new RangeError("Total exceeds safe cent precision");
   const allocations = lines.map(l => {
     if (!subtotalCents) return { base: 0, rem: 0 };
     const numerator = discountCents * l.rawLineCents;
