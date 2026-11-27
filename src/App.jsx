@@ -29,6 +29,7 @@ import ImportWizard from "./components/ImportWizard.jsx";
 import { TODAY } from "./lib/date.js";
 import { logActivity } from "./lib/activity.js";
 import { initSync, debouncedSync, syncKeyToFirestore, getSyncStatus, retryPendingSync } from "./lib/sync.js";
+import { getDeviceInvoicePrefix, buildSaleInvoiceId, buildDraftInvoiceId } from "./lib/saleId.js";
 import { nextCellId as _gridNextCellId } from "./lib/gridNav.js";
 import { resolveKeyOnRestore as _resolveKeyOnRestore } from "./lib/syncMerge.js";
 import { initCatalogueCloud, setCatalogueLicense, catalogueCloud, loadAllItems as loadCatalogueCloud, backfillCatalogue } from "./lib/catalogueCloud.js";
@@ -4200,7 +4201,7 @@ function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1
           borderRadius:"18px 18px 0 0",flexShrink:0,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
           <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
             <div style={{color:"#fff",fontSize:15,fontWeight:800}}>💳 Charge & Payment</div>
-            <div style={{padding:"3px 10px",background:"rgba(255,255,255,0.15)",borderRadius:20,fontSize:11,color:"rgba(255,255,255,0.9)",fontWeight:700}}>🧾 INV-{vno}</div>
+            <div style={{padding:"3px 10px",background:"rgba(255,255,255,0.15)",borderRadius:20,fontSize:11,color:"rgba(255,255,255,0.9)",fontWeight:700}}>🧾 INV-{getDeviceInvoicePrefix()}-{vno}</div>
             <PendingReportBadge/>
             <div style={{padding:"3px 10px",background:"rgba(255,255,255,0.12)",borderRadius:20,fontSize:11,color:"rgba(255,255,255,0.8)",fontWeight:700}}>🎫 Token {isDraft?getDailyToken():getDailyToken()+1}</div>
             <div style={{padding:"3px 10px",background:"rgba(255,255,255,0.08)",borderRadius:20,fontSize:11,color:"rgba(255,255,255,0.5)"}}>{new Date().toLocaleTimeString("en-SA",{hour:"2-digit",minute:"2-digit"})}</div>
@@ -5880,13 +5881,13 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
       const todayDrafts=drafts.filter(d=>d.date===TODAY&&d.baseVno===vno);
       const letters="ABCDEFGHIJKLMNOPQRSTUVWXYZ";
       const nextLetter=letters[Math.min(todayDrafts.length,25)]||"Z";
-      invoiceId="D-"+vno+nextLetter;
+      invoiceId=buildDraftInvoiceId(vno,nextLetter,getDeviceInvoicePrefix());
     }else{
       // Normal: increment vno FIRST then use it
       const newVno=vno+1;
       LS.set("restopos_vno",newVno);
       setVno(newVno);
-      invoiceId="INV-"+newVno; // Use newVno not vno
+      invoiceId=buildSaleInvoiceId(newVno,getDeviceInvoicePrefix()); // device prefix prevents cross-till ID collisions
     }
     // Daily token: only normal (completed) invoices get one. Drafts do not increment it.
     const dailyToken=treatAsDraft?getDailyToken():bumpDailyToken();
