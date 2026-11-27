@@ -2592,7 +2592,7 @@ const CHANGELOG=[
     badgeColor:"#1A6B4A",
     notes:[
       "🔐 New device approval — logging in from a device that hasn't been used before now requires admin approval. Correct username + password alone is no longer enough on a new device.",
-      "⏳ New \"Waiting for Approval\" screen that auto-signs-in the moment you approve the device from the admin panel — no manual refresh needed",
+      "⏳ New "Waiting for Approval" screen that auto-signs-in the moment you approve the device from the admin panel — no manual refresh needed",
       "📱 Each device is identified and labelled (OS · browser) so you can recognise it in the admin approval list",
       "✅ Already-approved devices log in instantly as before; approval is remembered until you revoke it",
     ]
@@ -2616,10 +2616,10 @@ const CHANGELOG=[
     notes:[
       "🎯 ZATCA reporting status consolidated into ONE place — Transactions → ZATCA Invoices — plus the existing Dashboard widgets. Removed the duplicate ZATCA Tools tab from Settings → Advanced.",
       "📡 The background FATOORA auto-sync now shows a real live banner (was tracked internally but never displayed before) — see exactly when invoices are syncing, and how many succeeded/failed",
-      "🕐 New persisted \"Last auto-sync\" line — survives even after the live banner clears or the app reloads, so you always know when invoices last synced",
+      "🕐 New persisted "Last auto-sync" line — survives even after the live banner clears or the app reloads, so you always know when invoices last synced",
       "🚨 Added the Urgent (near 24h deadline) count to the ZATCA Invoices header stats — previously only on the Dashboard",
       "🔢 ICV counter + hash chain diagnostics moved from Settings into Transactions → ZATCA Invoices, alongside the invoice list",
-      "🐛 Fixed stale help text pointing to a renamed screen (\"Invoices → ZATCA History\" → \"Transactions → ZATCA Invoices\")",
+      "🐛 Fixed stale help text pointing to a renamed screen ("Invoices → ZATCA History" → "Transactions → ZATCA Invoices")",
     ]
   },
   {
@@ -9648,7 +9648,7 @@ function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,arch
   // Newest sale on top → sort by reliable createdAt (fallback to date+time), descending.
   const _saleSortTs=s=>{ if(s.createdAt){const t=new Date(s.createdAt).getTime();if(!isNaN(t))return t;} const t2=new Date(`${s.date||""} ${s.time||""}`).getTime(); return isNaN(t2)?0:t2; };
   const filtered=[..._filteredRaw].sort((a,b)=>_saleSortTs(b)-_saleSortTs(a));
-  const reportable=filtered.filter(o=>!o.isDraft&&(!o.status||o.status===\"completed\"));const total=reportable.reduce((s,o)=>s+(Number(o.total)||0),0);const vat=reportable.reduce((s,o)=>s+(Number(o.vat)||0),0);
+  const reportable=filtered.filter(o=>!o.isDraft&&(!o.status||o.status==="completed"));const total=reportable.reduce((s,o)=>s+(Number(o.total)||0),0);const vat=reportable.reduce((s,o)=>s+(Number(o.vat)||0),0);
   return(<div>
     {/* Manager-approval gate — only appears for types that require it. */}
     {pendingApproval&&<ApprovalGate action={pendingApproval.action} license={license}
@@ -14029,7 +14029,9 @@ function FinancialReports({sales,items,license,lang="en",archiveIndex={},fetchCl
         // Quarter-to-date sales are sourced from the complete hydrated/archive
         // sales set, not the currently selected transaction date range.
         const now=new Date();
-        const qStart=new Date(now.getFullYear(),Math.floor(now.getMonth()/3)*3,1);\n        const qStartDate=`${qStart.getFullYear()}-${String(qStart.getMonth()+1).padStart(2,"0")}-${String(qStart.getDate()).padStart(2,"0")}`;\n        const quarterSales=uniqueSalesById(allSalesData||sales||[]).filter(s=>s&&!s.isDraft&&(!s.status||s.status==="completed")&&s.date>=qStartDate&&s.date<=TODAY);
+        const qStart=new Date(now.getFullYear(),Math.floor(now.getMonth()/3)*3,1);
+        const qStartDate=`${qStart.getFullYear()}-${String(qStart.getMonth()+1).padStart(2,"0")}-${String(qStart.getDate()).padStart(2,"0")}`;
+        const quarterSales=uniqueSalesById(allSalesData||sales||[]).filter(s=>s&&!s.isDraft&&(!s.status||s.status==="completed")&&s.date>=qStartDate&&s.date<=TODAY);
         const quarterSalesBeforeVat=quarterSales.reduce((sum,s)=>sum+(Number(s.subtotal)||Math.max(0,(Number(s.total)||0)-(Number(s.vat)||0))),0);
         const quarterVat=quarterSales.reduce((sum,s)=>sum+(Number(s.vat)||0),0);
         // Monthly breakdown
