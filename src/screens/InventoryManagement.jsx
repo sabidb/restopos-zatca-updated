@@ -41,7 +41,7 @@ export function InventoryManagement({items,setItems,lang="en",initialTab="overvi
   // Feature-flagged so Restaurant Mode's Inventory screen is unchanged.
   const showPurchases=bizFeature("purchasing");
   const blankLine=()=>({name:"",qty:"",unitCost:"",rate:0.15});
-  const blankPurchase=()=>({supplierId:"",supplierName:"",supplierVatNumber:"",supplierCrNumber:"",docType:"invoice",supplierInvoiceNo:"",invoiceDate:new Date().toISOString().slice(0,10),hasValidEInvoice:false,notes:"",totalAmount:"",amountInclVat:true,lines:[blankLine()]});
+  const blankPurchase=()=>({supplierId:"",supplierName:"",supplierVatNumber:"",supplierCrNumber:"",docType:"invoice",supplierInvoiceNo:"",invoiceDate:new Date().toISOString().slice(0,10),hasValidEInvoice:false,recoverablePortion:"",notes:"",totalAmount:"",amountInclVat:true,lines:[blankLine()]});
   const [purchases,setPurchases]=useState(()=>loadPurchaseInvoices());
   const [showPurchaseModal,setShowPurchaseModal]=useState(false);
   const [draft,setDraft]=useState(blankPurchase);
@@ -675,6 +675,18 @@ export function InventoryManagement({items,setItems,lang="en",initialTab="overvi
               const missing=el.reasons.filter(r=>r!=="not-marked-valid-einvoice").map(r=>map[r]||r);
               return <div style={{fontSize:11,color:C.warning||"#B26A00",marginTop:2}}>{_t("Not recoverable yet — needs")}: {missing.join(", ")}</div>;
             })()}
+            {/* Partial recoverability (AUD-02 §5.3): only for an eligible bill, and only
+                where a documented mixed-use apportionment applies. Blank = 100%. */}
+            {draft.hasValidEInvoice&&inputVatEligibility(draft).recoverable&&(
+              <label style={{display:"flex",alignItems:"center",gap:6,fontSize:11,color:C.textMid,marginTop:2,flexWrap:"wrap"}}>
+                {_t("Recoverable portion")}:
+                <input type="number" min={0} max={100} step={1}
+                  value={(draft.recoverablePortion==null||draft.recoverablePortion==="")?"":Math.round(Number(draft.recoverablePortion)*100)}
+                  onChange={e=>{const v=e.target.value;setDraft(d=>({...d,recoverablePortion:v===""?"":Math.max(0,Math.min(1,(Number(v)||0)/100))}));}}
+                  placeholder="100" style={{width:60,padding:"4px 6px",border:`1px solid ${C.border}`,borderRadius:6,fontFamily:"inherit",fontSize:12}}/>%
+                <span style={{fontSize:10,color:C.textLight}}>{_t("(blank = 100%; lower only for documented mixed-use apportionment)")}</span>
+              </label>
+            )}
           </div>
           {suppliers.length===0&&<div style={{fontSize:12,color:C.warning,marginBottom:10}}>{_t("Add a supplier first on the Suppliers tab.")}</div>}
 
