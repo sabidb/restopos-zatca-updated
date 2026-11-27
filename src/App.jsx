@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { initializeApp } from "firebase/app";
-import { getFirestore, collection, query, where, getDocs, updateDoc, doc, addDoc, getDoc, onSnapshot, setDoc, deleteDoc, orderBy, limit, startAfter, arrayUnion, writeBatch, deleteField, connectFirestoreEmulator } from "firebase/firestore";
+import { getFirestore, collection, query, where, getDocs, updateDoc, doc, addDoc, getDoc, onSnapshot, setDoc, deleteDoc, orderBy, limit, startAfter, arrayUnion, writeBatch, deleteField, connectFirestoreEmulator, runTransaction } from "firebase/firestore";
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken, connectAuthEmulator } from "firebase/auth";
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { isTrial, isTrialBuild, trialMeta, trialLicense, trialDaysLeft, trialExpired,
@@ -157,7 +157,7 @@ initCatalogueCloud({ db, doc, setDoc, deleteDoc, collection, getDocs, writeBatch
 function catalogueSubOn(){ return catalogueSubEnabled(); }
 // Debounced per-key cloud backup engine (src/lib/sync.js). Inject the Firestore
 // handles the same way; must come after db exists, before any screen renders.
-initSync({ db, doc, setDoc });
+initSync({ db, doc, setDoc, runTransaction });
 // Purchase documents & orders persist to Firestore SUBCOLLECTIONS (one document
 // each), never the capped client_data document — the same shape as the sales
 // archive. The adapters plug into the local stores' cloud seam; the active
