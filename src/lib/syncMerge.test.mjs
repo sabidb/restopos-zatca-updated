@@ -69,4 +69,17 @@ test("resolveKeyOnRestore keeps local config unless cloud is newer", () => {
 });
 
 
-test("same-count sales merge detects updated totals and requests local persistence", () => {\n  const local = [{ id: "sale-1", total: 100, updatedAt: "2026-11-27T10:00:00Z" }];\n  const cloud = [{ id: "sale-1", total: 125, updatedAt: "2026-11-27T11:00:00Z" }];\n  const result = resolveKeyOnRestore("restopos_sales", local, cloud);\n  assert.equal(result.changed, true);\n  assert.equal(result.value.length, 1);\n  assert.equal(result.value[0].total, 125);\n});\n\ntest("local wins when same-id records have equal or missing timestamps", () => {\n  const local = [{ id: "sale-1", total: 120, date: "2026-11-27", time: "10:00" }];\n  const cloud = [{ id: "sale-1", total: 100, date: "2026-11-27", time: "10:00" }];\n  assert.equal(mergeRecordsById(local, cloud)[0].total, 120);\n});\n
+test("same-count sales merge detects updated totals and requests local persistence", () => {
+  const local = [{ id: "sale-1", total: 100, updatedAt: "2026-11-27T10:00:00Z" }];
+  const cloud = [{ id: "sale-1", total: 125, updatedAt: "2026-11-27T11:00:00Z" }];
+  const result = resolveKeyOnRestore("restopos_sales", local, cloud);
+  assert.equal(result.changed, true);
+  assert.equal(result.value.length, 1);
+  assert.equal(result.value[0].total, 125);
+});
+
+test("local wins when same-id records have equal or missing timestamps", () => {
+  const local = [{ id: "sale-1", total: 120, date: "2026-11-27", time: "10:00" }];
+  const cloud = [{ id: "sale-1", total: 100, date: "2026-11-27", time: "10:00" }];
+  assert.equal(mergeRecordsById(local, cloud)[0].total, 120);
+});
