@@ -639,7 +639,10 @@ const fatooraQueue = {
   getQueue() { try{return JSON.parse(localStorage.getItem(ZATCA_QUEUE_KEY)||"[]");}catch{return[];} },
   markSent(n) { localStorage.setItem(ZATCA_QUEUE_KEY,JSON.stringify(this.getQueue().map(q=>q.invoice_number===n?{...q,status:"reported",sent_at:new Date().toISOString()}:q))); },
   markFailed(n) { localStorage.setItem(ZATCA_QUEUE_KEY,JSON.stringify(this.getQueue().map(q=>q.invoice_number===n?{...q,status:"failed",attempts:(q.attempts||0)+1}:q))); },
-  getUrgent() { const cutoff=Date.now()-23*60*60*1000; return this.getQueue().filter(q=>q.status!=="reported"&&new Date(q.queued_at).getTime()<cutoff); }
+  getUrgent() { const cutoff=Date.now()-23*60*60*1000; return this.getQueue().filter(q=>q.status!=="reported"&&new Date(q.queued_at).getTime()<cutoff); },
+  // Past the 24-hour ZATCA reporting window — a real compliance miss, not just
+  // "approaching". A subset of getUrgent(); surfaced as its own critical alert.
+  getOverdue() { const cutoff=Date.now()-24*60*60*1000; return this.getQueue().filter(q=>q.status!=="reported"&&new Date(q.queued_at).getTime()<cutoff); }
 };
 
 // Whether this terminal has completed ZATCA Phase 2 activation. A merchant
@@ -984,7 +987,7 @@ async function issueZatcaCreditNoteForSale(sale, reason) {
 
 const zatcaUtils = {
   validateVATNumber(v){return /^3\d{14}$/.test(v);},
-  getQueueStatus(){const q=fatooraQueue.getQueue();return{total:q.length,reported:q.filter(x=>x.status==="reported").length,pending:q.filter(x=>x.status==="pending").length,urgent:fatooraQueue.getUrgent().length};},
+  getQueueStatus(){const q=fatooraQueue.getQueue();return{total:q.length,reported:q.filter(x=>x.status==="reported").length,pending:q.filter(x=>x.status==="pending").length,urgent:fatooraQueue.getUrgent().length,overdue:fatooraQueue.getOverdue().length};},
   downloadXML(inv){const xml=inv.signed_xml||generateUBLXML(inv);const blob=new Blob([xml],{type:"application/xml"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`${inv.invoice_number}${inv.signed_xml?"_signed":""}.xml`;a.click();URL.revokeObjectURL(url);},
   getAllInvoices(){return invoiceStorage.getAll();}
 };
@@ -9781,11 +9784,19 @@ function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,arch
         <div style={{width:36,height:36,background:C.zatcaLight,borderRadius:10,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>⬛</div>
         <div><div style={{fontSize:15,fontWeight:800,color:C.text}}>ZATCA Invoice Engine</div><div style={{fontSize:12,color:C.textMid}}>ICV counter · SHA-256 hash chain · UBL 2.1 XML · FATOORA queue</div></div>
         <div style={{marginLeft:"auto",display:"flex",gap:8,flexWrap:"wrap"}}>
-          {[["Total",zatcaUtils.getQueueStatus().total,C.zatca],["Reported",zatcaUtils.getQueueStatus().reported,C.success],["Pending",zatcaUtils.getQueueStatus().pending,C.warning],["Urgent",zatcaUtils.getQueueStatus().urgent,C.danger]].map(([l,v,col])=>(
+          {[["Total",zatcaUtils.getQueueStatus().total,C.zatca],["Reported",zatcaUtils.getQueueStatus().reported,C.success],["Pending",zatcaUtils.getQueueStatus().pending,C.warning],["Urgent",zatcaUtils.getQueueStatus().urgent,C.danger],["Overdue",zatcaUtils.getQueueStatus().overdue,C.danger]].map(([l,v,col])=>(
             <div key={l} style={{background:C.bg,borderRadius:8,padding:"6px 12px",textAlign:"center"}}><div style={{fontSize:18,fontWeight:800,color:col}}>{v}</div><div style={{fontSize:10,color:C.textLight}}>{l}</div></div>
           ))}
         </div>
       </div>
+
+      {/* Overdue-reporting alert (plan §7.8): simplified invoices past the 24h window.
+          A critical compliance miss, so it gets a prominent banner, not just the header stat. */}
+      {isPhase2Active()&&zatcaUtils.getQueueStatus().overdue>0&&(()=>{const n=zatcaUtils.getQueueStatus().overdue;return(
+        <div style={{marginBottom:14,padding:"12px 16px",borderRadius:10,fontSize:13,fontWeight:700,display:"flex",alignItems:"center",gap:10,background:C.dangerLight,border:`1px solid ${C.danger}`,color:C.danger}}>
+          <span style={{fontSize:16}}>🚨</span>
+          <span>{n} {n===1?"invoice is":"invoices are"} PAST the 24-hour ZATCA reporting deadline. Report {n===1?"it":"them"} now below (📡 Report to FATOORA). Reporting keeps retrying automatically, but a persistent failure needs action.</span>
+        </div>);})()}
 
       {/* Live auto-sync banner — real state from the background FATOORA retry job, not a placeholder. */}
       {autoSyncStatus&&<div style={{marginBottom:14,padding:"12px 16px",borderRadius:10,fontSize:13,fontWeight:700,display:"flex",alignItems:"center",gap:10,
