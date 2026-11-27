@@ -14,6 +14,11 @@ jobs:
           cache: npm
       - name: Install
         run: npm ci
+      # The VAT, purchase, tax-category and ZATCA hash-chain logic lives in
+      # src/lib/*.test.mjs. These guard the numbers on every client's till, so
+      # they run on every push and pull request — a red suite blocks the build.
+      - name: Unit tests (src/lib)
+        run: npm test
       - name: Build frontend
         run: npm run build
       - name: Syntax-check Cloud Functions
