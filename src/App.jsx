@@ -39,6 +39,7 @@ import { initPurchaseCloud, setPurchaseCloudLicense, purchaseDocsCloud, purchase
 import { purchaseDocsToVatTx } from "./lib/vatBridge.js";
 import { signedAmounts as _purSignedAmounts, isInputVatRecoverable as _isInputVatRecoverable } from "./lib/purchases.js";
 import { buildDailyReport, datesWithActivity, dailyReportHTML, buildPeriodReport, periodReportHTML } from "./lib/dailyReport.js";
+import { sha256HexSync } from "./lib/sha256.js";
 import { getLang, setLangStore, t, dir } from "./i18n/index.js";
 import { BUSINESS_TYPES, DEFAULT_BUSINESS_TYPE, getBusinessType, bizProfile, bizFeature, manualBillingEnabled, isSupermarket } from "./config/businessTypes.js";
 import { rolesForProfile, DEFAULT_PINS } from "./config/roles.js";
@@ -272,9 +273,17 @@ function generateZATCABase64(opts) { return generatePhase1QR(opts); }
 // SHA-256 + HASH CHAIN (Web Crypto API)
 // ═══════════════════════════════════════════════════════════════════
 async function sha256(text) {
-  const data = new TextEncoder().encode(text);
-  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
-  return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, "0")).join("");
+  // Web Crypto is fast but only exists in a secure context (HTTPS/localhost).
+  // On a till served over plain HTTP, crypto.subtle is unavailable — fall back
+  // to a byte-identical pure-JS SHA-256 (lib/sha256.js) so the hash chain stays
+  // cryptographically valid. NEVER a weak/non-crypto hash (AUD-04).
+  try {
+    const data = new TextEncoder().encode(text);
+    const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+    return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, "0")).join("");
+  } catch (e) {
+    return sha256HexSync(text);
+  }
 }
 async function sha256Base64(text) {
   const hex = await sha256(text);
@@ -920,20 +929,11 @@ async function generateZATCAInvoice({seller_name,seller_vat,seller_address,selle
   // standard (B2B) document — street, city and postal code are mandatory, and a
   // clearance request without them is rejected.
   const partial = {invoice_number,uuid,timestamp,icv,seller_name,seller_vat,seller_address,seller_cr,seller_city,items,subtotal,vat_amount,total,prev_invoice_hash,is_credit_note,is_debit_note,original_invoice_number,credit_note_reason,debit_note_reason,invoice_type,is_b2b:invoice_type==="B2B",buyer_name,buyer_vat,buyer_street,buyer_building,buyer_district,buyer_city,buyer_postal_code,payMethod,discount,original_gross:parseFloat(grossInclusive.toFixed(2)),tax_exemption_reason_code:(LS.get("restopos_tax_exemption_code")||""),tax_exemption_reason:(LS.get("restopos_tax_exemption_reason")||"")};
-  // Hashing uses Web Crypto (needs HTTPS). If it ever fails, fall back to a
-  // deterministic non-crypto hash so the invoice, QR and number STILL complete
-  // and link — a missing hash must never block the QR/number from being stored.
-  let invoice_hash, invoice_hash_base64;
-  try{
-    invoice_hash = await sha256(buildHashInput(partial));
-    invoice_hash_base64 = await sha256Base64(buildHashInput(partial));
-  }catch(hashErr){
-    console.warn("[ZATCA] hash fallback:",hashErr?.message);
-    const seed=buildHashInput(partial);
-    let h=0;for(let i=0;i<seed.length;i++){h=((h<<5)-h+seed.charCodeAt(i))|0;}
-    invoice_hash=("0".repeat(64)+(h>>>0).toString(16)).slice(-64);
-    invoice_hash_base64=tlvToBase64(new Uint8Array(invoice_hash.match(/.{1,2}/g).map(b=>parseInt(b,16))));
-  }
+  // sha256() uses Web Crypto when available and a byte-identical pure-JS SHA-256
+  // otherwise (secure and non-secure contexts both produce a REAL SHA-256), so the
+  // hash chain is always cryptographically valid — no weak fallback (AUD-04).
+  const invoice_hash = await sha256(buildHashInput(partial));
+  const invoice_hash_base64 = await sha256Base64(buildHashInput(partial));
   const qr_string = generatePhase1QR({sellerName:seller_name,vatNumber:seller_vat,timestamp,total,vatAmount:vat_amount});
   const invoice = {...partial,invoice_hash,invoice_hash_base64,qr_string,ecdsa_signature:null,ecdsa_public_key:null,zatca_reported:false,phase:1};
   invoiceStorage.save(invoice);
