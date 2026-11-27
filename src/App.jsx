@@ -17635,6 +17635,7 @@ export default function App(){
       }catch(e){
         localStorage.setItem("restopos_last_nightly_utility_sync",JSON.stringify({date:day,at:new Date().toISOString(),ok:false,error:e?.message||String(e)}));
         console.error("[Nightly Utility Sync] failed; will retry",e);
+      }
     };
     const nightlyInterval=setInterval(()=>{
       const now=new Date();
