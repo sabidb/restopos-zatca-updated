@@ -145,6 +145,23 @@ export function signedAmounts(doc = {}) {
 }
 
 /**
+ * CANONICAL input-VAT recoverability rule. The ONE place the whole app decides
+ * whether a captured purchase's input VAT may be recovered. KSA lets a buyer
+ * recover input VAT only when the supplier issued a valid ZATCA e-invoice, so
+ * today that is the hasValidEInvoice flag. Every report path (daily report, VAT
+ * bridge, purchase register) MUST call this rather than read the flag directly,
+ * so the recoverable figure can never diverge between screens again.
+ *
+ * NOTE: this is deliberately the single seam a later, evidence-based eligibility
+ * model (supplier VAT validation, uploaded invoice, review state) will replace —
+ * change the rule here and every report follows.
+ * @returns {boolean}
+ */
+export function isInputVatRecoverable(doc) {
+  return !!(doc && doc.hasValidEInvoice);
+}
+
+/**
  * Validate a purchase invoice for capture. Returns { valid, errors[] }.
  * Rules are the minimum that makes the document a usable AP/VAT record.
  */

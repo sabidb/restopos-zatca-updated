@@ -10,7 +10,7 @@
 // match the live summary and the VAT engine exactly.
 // ═══════════════════════════════════════════════════════════════════
 import { vatFromInclusiveRaw } from "./tax.js";
-import { signedAmounts } from "./purchases.js";
+import { signedAmounts, isInputVatRecoverable } from "./purchases.js";
 
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const sum = (arr, f) => (arr || []).reduce((s, x) => s + (Number(f(x)) || 0), 0);
@@ -53,11 +53,17 @@ export function buildDailyReport(sales = [], purchaseDocs = [], dateStr) {
     .map((c) => ({ ...c, revenue: r2(c.revenue), vat: r2(c.vat) }))
     .sort((a, b) => b.revenue - a.revenue);
 
+  // purchasesVat is ALL input VAT recorded (informational). recoverableVat is the
+  // subset the buyer may actually reclaim — the canonical rule (isInputVatRecoverable)
+  // — and ONLY that subset reduces VAT payable. Treating every entered purchase VAT
+  // as deductible overstated the deduction and understated the tax owed (AUD-01).
   let purchasesTotal = 0, purchasesVat = 0, purchasesNet = 0, purchasesCount = 0;
+  let recoverableVat = 0, nonRecoverableVat = 0;
   (purchaseDocs || []).forEach((d) => {
     if (String((d && d.invoiceDate) || "").slice(0, 10) !== dateStr) return;
     const a = signedAmounts(d);
     purchasesTotal += a.total; purchasesVat += a.vatAmount; purchasesNet += a.subtotal; purchasesCount++;
+    if (isInputVatRecoverable(d)) recoverableVat += a.vatAmount; else nonRecoverableVat += a.vatAmount;
   });
 
   return {
@@ -68,9 +74,11 @@ export function buildDailyReport(sales = [], purchaseDocs = [], dateStr) {
     payBreakdown, catList,
     purchasesTotal: r2(purchasesTotal),
     purchasesVat: r2(purchasesVat),
+    recoverableVat: r2(recoverableVat),
+    nonRecoverableVat: r2(nonRecoverableVat),
     purchasesNet: r2(purchasesNet),
     purchasesCount,
-    netVat: r2(vat - purchasesVat), // VAT payable = output − input
+    netVat: r2(vat - recoverableVat), // VAT payable = output − RECOVERABLE input
   };
 }
 
@@ -100,14 +108,16 @@ export function buildPeriodReport(sales = [], purchaseDocs = [], fromStr, toStr)
     }
   }
   const vat = sumBy((d) => d.vat), purchasesVat = sumBy((d) => d.purchasesVat);
+  const recoverableVat = sumBy((d) => d.recoverableVat), nonRecoverableVat = sumBy((d) => d.nonRecoverableVat);
   return {
     from: fromStr, to: toStr, dayCount: days.length,
     orderCount: days.reduce((s, d) => s + d.orderCount, 0),
     qty: days.reduce((s, d) => s + d.qty, 0),
     revenue: sumBy((d) => d.revenue), vat, net: sumBy((d) => d.net), discount: sumBy((d) => d.discount),
     purchasesTotal: sumBy((d) => d.purchasesTotal), purchasesVat, purchasesNet: sumBy((d) => d.purchasesNet),
+    recoverableVat, nonRecoverableVat,
     purchasesCount: days.reduce((s, d) => s + d.purchasesCount, 0),
-    netVat: r2(vat - purchasesVat),
+    netVat: r2(vat - recoverableVat),
     payBreakdown, catList: Object.values(catMap).sort((a, b) => b.revenue - a.revenue),
     days: days.map((d) => ({ date: d.date, orderCount: d.orderCount, revenue: d.revenue, vat: d.vat, netVat: d.netVat })),
   };
@@ -148,9 +158,11 @@ h2{font-size:13px;margin:0 0 6px}</style></head><body>
 <div class="card net"><h2>VAT</h2><table>
   ${row("Output VAT (on sales)", money(report.vat))}
   ${row("Purchases (incl VAT)" + (report.purchasesCount ? ` — ${report.purchasesCount} bill(s)` : ""), money(report.purchasesTotal))}
-  ${row("Input VAT (on purchases)", money(report.purchasesVat))}
+  ${row("Input VAT recorded (on purchases)", money(report.purchasesVat))}
+  ${row("Recoverable input VAT", money(report.recoverableVat ?? report.purchasesVat))}
+  ${Number(report.nonRecoverableVat) ? row("Non-recoverable input VAT (no valid e-invoice)", money(report.nonRecoverableVat)) : ""}
   ${row("NET VAT PAYABLE", money(report.netVat), true)}
-</table><div class="sub" style="margin-top:6px">Net VAT payable = output VAT on sales − input VAT on purchases.</div></div>
+</table><div class="sub" style="margin-top:6px">Net VAT payable = output VAT on sales − <b>recoverable</b> input VAT. Input VAT is recoverable only when the supplier issued a valid ZATCA e-invoice; this is an estimate, not a filed VAT return.</div></div>
 <div class="card"><h2>Payments</h2><table>${pays.length ? pays.map(([k, v]) => row(k, money(v))).join("") : row("—", money(0))}</table></div>
 ${cats.length ? `<div class="card"><h2>By category</h2><table><tr><th>Category</th><th style="text-align:right">Qty</th><th style="text-align:right">Revenue</th><th style="text-align:right">VAT</th></tr>
 ${cats.map((c) => `<tr><td>${esc(c.cat)}</td><td style="text-align:right">${c.qty}</td><td style="text-align:right">${money(c.revenue)}</td><td style="text-align:right">${money(c.vat)}</td></tr>`).join("")}</table></div>` : ""}
@@ -191,9 +203,11 @@ tfoot td{font-weight:800;border-top:2px solid #ccc}</style></head><body>
 <div class="card net"><h2>VAT</h2><table>
   ${row("Output VAT (on sales)", money(report.vat))}
   ${row("Purchases (incl VAT)" + (report.purchasesCount ? ` — ${report.purchasesCount} bill(s)` : ""), money(report.purchasesTotal))}
-  ${row("Input VAT (on purchases)", money(report.purchasesVat))}
+  ${row("Input VAT recorded (on purchases)", money(report.purchasesVat))}
+  ${row("Recoverable input VAT", money(report.recoverableVat ?? report.purchasesVat))}
+  ${Number(report.nonRecoverableVat) ? row("Non-recoverable input VAT (no valid e-invoice)", money(report.nonRecoverableVat)) : ""}
   ${row("NET VAT PAYABLE", money(report.netVat), true)}
-</table><div class="sub" style="margin-top:6px">Net VAT payable = output VAT on sales − input VAT on purchases.</div></div>
+</table><div class="sub" style="margin-top:6px">Net VAT payable = output VAT on sales − <b>recoverable</b> input VAT. Input VAT is recoverable only when the supplier issued a valid ZATCA e-invoice; this is an estimate, not a filed VAT return.</div></div>
 <div class="card"><h2>Payments</h2><table>${pays.length ? pays.map(([k, v]) => row(k, money(v))).join("") : row("—", money(0))}</table></div>
 ${days.length ? `<div class="card"><h2>By day</h2><table><tr><th>Date</th><th style="text-align:right">Orders</th><th style="text-align:right">Revenue</th><th style="text-align:right">VAT</th><th style="text-align:right">Net VAT</th></tr>
 ${days.map((d) => `<tr><td>${esc(d.date)}</td><td style="text-align:right">${d.orderCount}</td><td style="text-align:right">${money(d.revenue)}</td><td style="text-align:right">${money(d.vat)}</td><td style="text-align:right">${money(d.netVat)}</td></tr>`).join("")}

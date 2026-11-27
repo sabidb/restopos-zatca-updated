@@ -10,9 +10,10 @@ const sales = [
   { id: 5, date: "2026-11-24", status: "completed", total: 46, vat: 6, payMethod: "Card", items: [] },
 ];
 const purchases = [
-  { id: "p1", invoiceDate: "2026-11-25", subtotal: 100, vatAmount: 15, total: 115 },
-  { id: "p2", invoiceDate: "2026-11-25", docType: "credit_note", subtotal: 20, vatAmount: 3, total: 23 }, // subtracts
-  { id: "p3", invoiceDate: "2026-11-20", subtotal: 50, vatAmount: 7.5, total: 57.5 },                     // other day
+  { id: "p1", invoiceDate: "2026-11-25", hasValidEInvoice: true,  subtotal: 100, vatAmount: 15, total: 115 }, // recoverable
+  { id: "p2", invoiceDate: "2026-11-25", hasValidEInvoice: true,  docType: "credit_note", subtotal: 20, vatAmount: 3, total: 23 }, // recoverable, subtracts
+  { id: "p4", invoiceDate: "2026-11-25", hasValidEInvoice: false, subtotal: 40, vatAmount: 6, total: 46 },    // NON-recoverable (no valid e-invoice)
+  { id: "p3", invoiceDate: "2026-11-20", hasValidEInvoice: false, subtotal: 50, vatAmount: 7.5, total: 57.5 }, // other day, non-recoverable
 ];
 
 test("totals exclude voided and draft sales", () => {
@@ -23,12 +24,22 @@ test("totals exclude voided and draft sales", () => {
   assert.equal(r.net, 120);
 });
 
-test("purchases net credit notes and compute input + net VAT", () => {
+test("purchases net credit notes; only RECOVERABLE input VAT reduces net VAT (AUD-01)", () => {
   const r = buildDailyReport(sales, purchases, "2026-11-25");
-  assert.equal(r.purchasesCount, 2);
-  assert.equal(r.purchasesTotal, 92);   // 115 − 23
-  assert.equal(r.purchasesVat, 12);     // 15 − 3  (input VAT)
-  assert.equal(r.netVat, 6);            // output 18 − input 12
+  assert.equal(r.purchasesCount, 3);          // p1, p2, p4
+  assert.equal(r.purchasesTotal, 138);        // 115 − 23 + 46
+  assert.equal(r.purchasesVat, 18);           // 15 − 3 + 6  (ALL input VAT recorded)
+  assert.equal(r.recoverableVat, 12);         // 15 − 3  (valid e-invoice only)
+  assert.equal(r.nonRecoverableVat, 6);       // p4 has no valid e-invoice
+  assert.equal(r.netVat, 6);                  // output 18 − RECOVERABLE 12 (NOT − 18)
+});
+
+test("a purchase with no valid e-invoice is NOT deducted from net VAT (AUD-01)", () => {
+  // The whole bug: a non-recoverable purchase must not lower the tax owed.
+  const r = buildDailyReport(sales, purchases, "2026-11-25");
+  const allInputDeducted = r.vat - r.purchasesVat; // the OLD, wrong formula
+  assert.equal(allInputDeducted, 0);              // old formula would have said 0 payable
+  assert.equal(r.netVat, 6);                      // correct: the SAR 6 non-recoverable VAT stays owed
 });
 
 test("payment and category breakdowns", () => {
@@ -38,11 +49,20 @@ test("payment and category breakdowns", () => {
   assert.deepEqual(r.catList.map((c) => c.cat), ["Dairy", "Bakery"]);
 });
 
-test("a day with only purchases still reports (negative net VAT possible)", () => {
+test("a day with only a non-recoverable purchase: input VAT recorded but not deducted", () => {
   const r = buildDailyReport(sales, purchases, "2026-11-20");
   assert.equal(r.orderCount, 0);
-  assert.equal(r.purchasesVat, 7.5);
-  assert.equal(r.netVat, -7.5); // refund position: input VAT exceeds output
+  assert.equal(r.purchasesVat, 7.5);        // recorded
+  assert.equal(r.recoverableVat, 0);        // not a valid e-invoice → nothing recoverable
+  assert.equal(r.nonRecoverableVat, 7.5);
+  assert.equal(r.netVat, 0);                // no output, no recoverable input → 0 (NOT −7.5)
+});
+
+test("a recoverable purchase-only day CAN produce a refund (negative) net VAT", () => {
+  const recoverableOnly = [{ id: "r1", invoiceDate: "2026-11-20", hasValidEInvoice: true, subtotal: 50, vatAmount: 7.5, total: 57.5 }];
+  const r = buildDailyReport([], recoverableOnly, "2026-11-20");
+  assert.equal(r.recoverableVat, 7.5);
+  assert.equal(r.netVat, -7.5);             // refund position: recoverable input exceeds output
 });
 
 test("datesWithActivity lists sale and purchase days, newest first, no voids/drafts-only", () => {
@@ -63,8 +83,9 @@ test("buildPeriodReport aggregates a date range with per-day rows", () => {
   assert.equal(r.orderCount, 3);          // 2 on the 25th + 1 on the 24th
   assert.equal(r.revenue, 184);           // 138 + 46
   assert.equal(r.vat, 24);                // 18 + 6  (output)
-  assert.equal(r.purchasesVat, 12);       // only 25th has purchases (15 − 3)
-  assert.equal(r.netVat, 12);             // 24 − 12
+  assert.equal(r.purchasesVat, 18);       // only 25th has purchases (15 − 3 + 6, all recorded)
+  assert.equal(r.recoverableVat, 12);     // only the valid-e-invoice subset
+  assert.equal(r.netVat, 12);             // 24 − RECOVERABLE 12
   assert.deepEqual(r.days.map((d) => d.date), ["2026-11-24", "2026-11-25"]); // ascending
 });
 
@@ -72,7 +93,7 @@ test("buildPeriodReport excludes out-of-range days", () => {
   const r = buildPeriodReport(sales, purchases, "2026-11-25", "2026-11-25");
   assert.equal(r.dayCount, 1);
   assert.equal(r.orderCount, 2);
-  assert.equal(r.purchasesTotal, 92);
+  assert.equal(r.purchasesTotal, 138);
 });
 
 test("periodReportHTML renders the range, a by-day table and net VAT", () => {
