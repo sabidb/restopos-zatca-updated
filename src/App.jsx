@@ -2592,7 +2592,7 @@ const CHANGELOG=[
     badgeColor:"#1A6B4A",
     notes:[
       "🔐 New device approval — logging in from a device that hasn't been used before now requires admin approval. Correct username + password alone is no longer enough on a new device.",
-      "⏳ New "Waiting for Approval" screen that auto-signs-in the moment you approve the device from the admin panel — no manual refresh needed",
+      "⏳ New \"Waiting for Approval\" screen that auto-signs-in the moment you approve the device from the admin panel — no manual refresh needed",
       "📱 Each device is identified and labelled (OS · browser) so you can recognise it in the admin approval list",
       "✅ Already-approved devices log in instantly as before; approval is remembered until you revoke it",
     ]
@@ -2616,10 +2616,10 @@ const CHANGELOG=[
     notes:[
       "🎯 ZATCA reporting status consolidated into ONE place — Transactions → ZATCA Invoices — plus the existing Dashboard widgets. Removed the duplicate ZATCA Tools tab from Settings → Advanced.",
       "📡 The background FATOORA auto-sync now shows a real live banner (was tracked internally but never displayed before) — see exactly when invoices are syncing, and how many succeeded/failed",
-      "🕐 New persisted "Last auto-sync" line — survives even after the live banner clears or the app reloads, so you always know when invoices last synced",
+      "🕐 New persisted \"Last auto-sync\" line — survives even after the live banner clears or the app reloads, so you always know when invoices last synced",
       "🚨 Added the Urgent (near 24h deadline) count to the ZATCA Invoices header stats — previously only on the Dashboard",
       "🔢 ICV counter + hash chain diagnostics moved from Settings into Transactions → ZATCA Invoices, alongside the invoice list",
-      "🐛 Fixed stale help text pointing to a renamed screen ("Invoices → ZATCA History" → "Transactions → ZATCA Invoices")",
+      "🐛 Fixed stale help text pointing to a renamed screen (\"Invoices → ZATCA History\" → \"Transactions → ZATCA Invoices\")",
     ]
   },
   {
