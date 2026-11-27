@@ -28,7 +28,7 @@ import { discountManual, discountPromo, totalAfterDiscount, cashChange, isCashSh
 import ImportWizard from "./components/ImportWizard.jsx";
 import { TODAY } from "./lib/date.js";
 import { logActivity } from "./lib/activity.js";
-import { initSync, debouncedSync, syncKeyToFirestore } from "./lib/sync.js";
+import { initSync, debouncedSync, syncKeyToFirestore, getSyncStatus } from "./lib/sync.js";
 import { nextCellId as _gridNextCellId } from "./lib/gridNav.js";
 import { resolveKeyOnRestore as _resolveKeyOnRestore } from "./lib/syncMerge.js";
 import { initCatalogueCloud, setCatalogueLicense, catalogueCloud, loadAllItems as loadCatalogueCloud, backfillCatalogue } from "./lib/catalogueCloud.js";
@@ -17607,23 +17607,33 @@ export default function App(){
       if(!navigator.onLine)return;
       const lic=LS.get("restopos_license_v2")?.licenseKey;
       if(!lic)return;
-      const day=new Date().toLocaleDateString("en-CA");
+      const now=new Date();
+      const day=now.getFullYear()+"-"+String(now.getMonth()+1).padStart(2,"0")+"-"+String(now.getDate()).padStart(2,"0");
       const marker="restopos_nightly_sync_day";
       if(localStorage.getItem(marker)===day)return;
-      localStorage.setItem(marker,day);
+      const attemptKey="restopos_nightly_sync_attempt";
+      let attempt={};try{attempt=JSON.parse(localStorage.getItem(attemptKey)||"{}");}catch(_){}
+      if(attempt.date===day&&now.getTime()-Number(attempt.at||0)<300000)return;
+      localStorage.setItem(attemptKey,JSON.stringify({date:day,at:now.getTime()}));
       try{
         const salesToday=(LS.get("restopos_sales")||[]).filter(s=>s.date===day&&!s.isDraft);
         archiveSalesDay(lic,day,salesToday);
         await Promise.all(SYNC_KEYS.map(async key=>{
           const raw=localStorage.getItem(key);
-          if(raw){try{await syncKeyToFirestore(lic,key,JSON.parse(raw));}catch(e){}}
+          if(raw)await syncKeyToFirestore(lic,key,JSON.parse(raw));
         }));
+        const failedKeys=SYNC_KEYS.filter(key=>localStorage.getItem(key)&&getSyncStatus()[key]?.ok!==true);
         await flushArchive();
         await flushPendingInvoices();
         await flushPurchaseSync();
-        localStorage.setItem("restopos_last_nightly_utility_sync",JSON.stringify({date:day,at:new Date().toISOString(),ok:true}));
+        if(failedKeys.length)throw new Error("Failed cloud keys: "+failedKeys.join(", "));
+        localStorage.setItem(marker,day);
+        localStorage.setItem("restopos_last_nightly_utility_sync",JSON.stringify({date:day,at:new Date().toISOString(),ok:true,failedKeys:[]}));
         console.info("[Nightly Utility Sync] completed at 23:55+ local time");
       }catch(e){
+        localStorage.setItem("restopos_last_nightly_utility_sync",JSON.stringify({date:day,at:new Date().toISOString(),ok:false,error:e?.message||String(e)}));
+        console.error("[Nightly Utility Sync] failed; will retry",e);
+      }atch(e){
         localStorage.setItem("restopos_last_nightly_utility_sync",JSON.stringify({date:day,at:new Date().toISOString(),ok:false,error:e?.message||String(e)}));
         console.error("[Nightly Utility Sync] failed",e);
       }
