@@ -33,7 +33,7 @@ import { nextCellId as _gridNextCellId } from "./lib/gridNav.js";
 import { resolveKeyOnRestore as _resolveKeyOnRestore } from "./lib/syncMerge.js";
 import { initCatalogueCloud, setCatalogueLicense, catalogueCloud, loadAllItems as loadCatalogueCloud, backfillCatalogue } from "./lib/catalogueCloud.js";
 import { catalogueSubEnabled, setCatalogueSubEnabled, CATALOGUE_FLAG_KEY } from "./lib/catalogueFlag.js";
-import { initPurchaseStore, setPurchaseInvoicesLocal, loadPurchaseInvoices } from "./lib/purchaseStore.js";
+import { initPurchaseStore, setPurchaseInvoicesLocal, loadPurchaseInvoices, flushPurchaseSync } from "./lib/purchaseStore.js";
 import { initPOStore, setPurchaseOrdersLocal, loadPurchaseOrders } from "./lib/poStore.js";
 import { initPurchaseCloud, setPurchaseCloudLicense, purchaseDocsCloud, purchaseOrdersCloud, mergeById } from "./lib/purchaseCloud.js";
 import { purchaseDocsToVatTx } from "./lib/vatBridge.js";
@@ -17557,14 +17557,16 @@ export default function App(){
     // 1. Trigger when connection just came back
     if(justCameOnline){
       flushPendingInvoices();
+      flushPurchaseSync().catch(()=>{});   // retry unsynced purchase bills too (AUD-03)
     }
 
     // 2. Also trigger on mount (in case app starts online with pending invoices)
     flushPendingInvoices();
+    flushPurchaseSync().catch(()=>{});
 
     // 3. Periodic safety check every 2 minutes
     const interval=setInterval(()=>{
-      if(navigator.onLine)flushPendingInvoices();
+      if(navigator.onLine){flushPendingInvoices();flushPurchaseSync().catch(()=>{});}
     },120000);
 
     return()=>{cancelled=true;clearInterval(interval);};
@@ -17693,6 +17695,8 @@ export default function App(){
         const havePO=new Set(cloudPOs.map(d=>d&&d.id));
         localDocs.filter(d=>d&&!haveDoc.has(d.id)).forEach(d=>purchaseDocsCloud.persist(d));
         localPOs.filter(d=>d&&!havePO.has(d.id)).forEach(d=>purchaseOrdersCloud.persist(d));
+        // Reconcile per-record cloud-sync status and retry anything still pending/failed (AUD-03).
+        await flushPurchaseSync();
       }catch(e){console.warn("[PurchaseCloud] hydrate failed:",e.message);}
     },9500);
 

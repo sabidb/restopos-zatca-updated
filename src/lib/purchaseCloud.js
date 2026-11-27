@@ -29,17 +29,23 @@ export function setPurchaseCloudLicense(key) { _licenseKey = key || null; }
 
 function ready() { return !!(fb && _licenseKey); }
 
+// Returns true on a confirmed cloud write, false otherwise (not ready, bad
+// input, or a failed write). The caller uses this to track per-record sync
+// state and retry — a cloud failure must never break local capture, but it must
+// no longer be swallowed and forgotten (AUD-03).
 async function persistOne(coll, item) {
-  if (!ready() || !item || item.id == null) return;
+  if (!ready() || !item || item.id == null) return false;
   try {
     await fb.setDoc(fb.doc(fb.db, "client_data", _licenseKey, coll, String(item.id)), item);
-  } catch (e) { console.error("[PurchaseCloud] persist", coll, "failed:", e.message); }
+    return true;
+  } catch (e) { console.error("[PurchaseCloud] persist", coll, "failed:", e.message); return false; }
 }
 async function removeOne(coll, id) {
-  if (!ready() || id == null) return;
+  if (!ready() || id == null) return false;
   try {
     await fb.deleteDoc(fb.doc(fb.db, "client_data", _licenseKey, coll, String(id)));
-  } catch (e) { console.error("[PurchaseCloud] delete", coll, "failed:", e.message); }
+    return true;
+  } catch (e) { console.error("[PurchaseCloud] delete", coll, "failed:", e.message); return false; }
 }
 async function loadColl(coll) {
   if (!ready()) return [];

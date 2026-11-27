@@ -71,6 +71,12 @@ export function savePurchaseInvoice(inv) {
     id: inv.id || newInvoiceId(),
     createdAt: inv.createdAt || now,
     updatedAt: now,
+    // Sync state travels WITH the record so a failed cloud write is durable and
+    // visible, not swallowed (AUD-03). "pending" until the cloud confirms;
+    // "synced" once it does; "failed" if the write errored (retried later).
+    // With no cloud adapter the record is purely local — not counted as unsynced.
+    syncStatus: (_cloud && typeof _cloud.persist === "function") ? "pending" : "local",
+    syncError: null,
   };
   const list = _read();
   const exists = list.some((x) => x.id === stored.id);
@@ -78,10 +84,74 @@ export function savePurchaseInvoice(inv) {
     ? list.map((x) => (x.id === stored.id ? stored : x))
     : [stored, ...list];
   _writeLocal(next);
+  // Invoke the cloud write synchronously (so a caller/test sees it fire), but
+  // record its OUTCOME asynchronously so the record ends up "synced" or "failed"
+  // rather than optimistically assumed-saved.
   if (_cloud && typeof _cloud.persist === "function") {
-    try { _cloud.persist(stored, next); } catch (e) { /* cloud is best-effort */ }
+    try {
+      Promise.resolve(_cloud.persist(stored, next))
+        .then((ok) => _applySyncResult(stored.id, ok !== false))
+        .catch(() => _applySyncResult(stored.id, false));
+    } catch (e) { _applySyncResult(stored.id, false); }
   }
   return stored;
+}
+
+// Records whose input VAT / supplier bill has not been confirmed saved to the
+// cloud — the ones at risk of loss if this device is cleared.
+export function pendingSyncIds(list = _read()) {
+  return (list || [])
+    .filter((x) => x && (x.syncStatus === "pending" || x.syncStatus === "failed"))
+    .map((x) => x.id);
+}
+
+/** How many captured purchases are not yet confirmed in the cloud. */
+export function unsyncedPurchaseCount() { return pendingSyncIds().length; }
+
+// Stamp one record's sync outcome and persist locally. Re-reads around the
+// write so a concurrent save during an await is not clobbered.
+function _applySyncResult(id, ok) {
+  const cur = _read();
+  const i = cur.findIndex((x) => x && x.id === id);
+  if (i < 0) return;
+  cur[i] = {
+    ...cur[i],
+    syncStatus: ok ? "synced" : "failed",
+    syncError: ok ? null : "cloud write failed",
+    lastSyncAttempt: new Date().toISOString(),
+  };
+  _writeLocal(cur);
+  _emitSync();
+}
+
+function _emitSync() {
+  try {
+    if (typeof window !== "undefined" && window.dispatchEvent) {
+      window.dispatchEvent(new CustomEvent("restopos-purchase-sync", { detail: { pending: pendingSyncIds().length } }));
+    }
+  } catch (e) { /* non-browser or event unsupported */ }
+}
+
+/**
+ * Retry every purchase not yet confirmed in the cloud (pending or failed).
+ * Idempotent and safe to call on reconnect, after hydration, or on a timer.
+ * Returns a summary. A no-op (noCloud) when no cloud adapter is configured.
+ */
+export async function flushPurchaseSync() {
+  if (!_cloud || typeof _cloud.persist !== "function") {
+    return { noCloud: true, synced: 0, failed: 0, pending: 0 };
+  }
+  let synced = 0, failed = 0;
+  for (const id of pendingSyncIds()) {
+    const cur = _read();
+    const rec = cur.find((x) => x && x.id === id);
+    if (!rec) continue;
+    let ok = false;
+    try { ok = (await Promise.resolve(_cloud.persist(rec, cur))) !== false; } catch (e) { ok = false; }
+    _applySyncResult(id, ok);
+    ok ? synced++ : failed++;
+  }
+  return { synced, failed, pending: pendingSyncIds().length };
 }
 
 /** Delete a purchase invoice by id. Returns the remaining list. */
