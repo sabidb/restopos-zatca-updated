@@ -17604,7 +17604,7 @@ export default function App(){
 
     // NIGHTLY UTILITY SYNC — once per local calendar day, beginning at 23:55.
     // Catch up if the app is still open after 23:55; persist the day marker
-    // before work starts so a reload cannot duplicate the nightly sync.
+    // after a successful sync so failures can retry.
     const nightlySync=async()=>{
       if(!navigator.onLine)return;
       const lic=LS.get("restopos_license_v2")?.licenseKey;
@@ -17635,10 +17635,6 @@ export default function App(){
       }catch(e){
         localStorage.setItem("restopos_last_nightly_utility_sync",JSON.stringify({date:day,at:new Date().toISOString(),ok:false,error:e?.message||String(e)}));
         console.error("[Nightly Utility Sync] failed; will retry",e);
-      }atch(e){
-        localStorage.setItem("restopos_last_nightly_utility_sync",JSON.stringify({date:day,at:new Date().toISOString(),ok:false,error:e?.message||String(e)}));
-        console.error("[Nightly Utility Sync] failed",e);
-      }
     };
     const nightlyInterval=setInterval(()=>{
       const now=new Date();
