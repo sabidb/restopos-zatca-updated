@@ -28,7 +28,8 @@ import { discountManual, discountPromo, totalAfterDiscount, cashChange, isCashSh
 import ImportWizard from "./components/ImportWizard.jsx";
 import { TODAY } from "./lib/date.js";
 import { logActivity } from "./lib/activity.js";
-import { initSync, debouncedSync, syncKeyToFirestore, getSyncStatus } from "./lib/sync.js";
+import { initSync, debouncedSync, syncKeyToFirestore, getSyncStatus, retryPendingSync } from "./lib/sync.js";
+import { getDeviceInvoicePrefix, buildSaleInvoiceId, buildDraftInvoiceId } from "./lib/saleId.js";
 import { nextCellId as _gridNextCellId } from "./lib/gridNav.js";
 import { resolveKeyOnRestore as _resolveKeyOnRestore } from "./lib/syncMerge.js";
 import { initCatalogueCloud, setCatalogueLicense, catalogueCloud, loadAllItems as loadCatalogueCloud, backfillCatalogue } from "./lib/catalogueCloud.js";
@@ -3999,6 +4000,8 @@ function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1
   const [buyerCity,setBuyerCity]=useState("");
   const [buyerPostal,setBuyerPostal]=useState("");
   const [buyerError,setBuyerError]=useState("");
+  const [saveError,setSaveError]=useState("");
+  const [confirming,setConfirming]=useState(false);
   useEffect(()=>{ if(total>=1000) setIsB2B(true); },[total]);
   // Cash denomination tracker
   const [denominations,setDenominations]=useState({});
@@ -4122,8 +4125,8 @@ function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1
   }
 
   // ── Confirm ───────────────────────────────────────────────────────
-  function handleConfirm(shouldPrint=true){
-    if(!canConfirm)return;
+  async function handleConfirm(shouldPrint=true){
+    if(!canConfirm||confirming)return;
     // A B2B invoice is submitted to ZATCA for clearance as a standard tax
     // invoice, which legally requires the buyer's identity AND their National
     // Address. ZATCA rejects a clearance request missing any of them, and an
@@ -4143,8 +4146,8 @@ function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1
       // address is required.
       if(buyerVat.trim() && !/^3\d{13}3$/.test(buyerVat.trim())){setBuyerError("VAT number must be 15 digits, starting and ending with 3.");return;}
     }
-    setBuyerError("");
-    localStorage.setItem("restopos_print_save_pref",String(shouldPrint));
+    setBuyerError("");setSaveError("");setConfirming(true);
+    try{localStorage.setItem("restopos_print_save_pref",String(shouldPrint));}catch(_){}
     const payInfo={
       method,
       given:method==="Cash"?cashFloat:method==="Both"?bothCash:finalTotal,
@@ -4152,20 +4155,26 @@ function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1
       cardAmount:method==="Both"?bothCard:method==="Card"?finalTotal:0,
       cashAmount:method==="Both"?bothCash:method==="Cash"?cashFloat:0,
     };
-    // CLOSE IMMEDIATELY — don't wait for async operations
-    onClose();
-    // Fire and forget the async confirm
-    onConfirm(
-      payInfo.method,payInfo.given,payInfo.change,
-      appliedPromo,totalDiscountAmt,finalTotal,finalVat,
-      shouldPrint,payInfo,manualDiscountAmt,promoDiscountAmt,
-      isDraft,
-      {customerName:custName,customerPhone:custPhone,invoiceNote,orderType:localOrderType,billType:localBillType,
-       loyaltyRedeemed:(loyaltyRules&&loyaltyCustomer)?loyaltyRedeemPts:0,
-       isB2B,buyerName:buyerName.trim(),buyerVat:buyerVat.trim(),
-       buyerStreet:buyerStreet.trim(),buyerBuilding:buyerBuilding.trim(),
-       buyerDistrict:buyerDistrict.trim(),buyerCity:buyerCity.trim(),buyerPostal:buyerPostal.trim()}
-    );
+    // Close only after the sale is verified locally. Failed local persistence
+    // leaves checkout open, with the cart intact and a visible retry message.
+    try{
+      await onConfirm(
+        payInfo.method,payInfo.given,payInfo.change,
+        appliedPromo,totalDiscountAmt,finalTotal,finalVat,
+        shouldPrint,payInfo,manualDiscountAmt,promoDiscountAmt,
+        isDraft,
+        {customerName:custName,customerPhone:custPhone,invoiceNote,orderType:localOrderType,billType:localBillType,
+         loyaltyRedeemed:(loyaltyRules&&loyaltyCustomer)?loyaltyRedeemPts:0,
+         isB2B,buyerName:buyerName.trim(),buyerVat:buyerVat.trim(),
+         buyerStreet:buyerStreet.trim(),buyerBuilding:buyerBuilding.trim(),
+         buyerDistrict:buyerDistrict.trim(),buyerCity:buyerCity.trim(),buyerPostal:buyerPostal.trim(),
+         onSaved:()=>{setConfirming(false);onClose();},
+         onSaveFailed:msg=>{setConfirming(false);setSaveError(msg);}}
+      );
+    }catch(e){
+      setConfirming(false);
+      setSaveError("Sale could not be saved. Keep checkout open and retry. "+(e?.message||String(e)));
+    }
   }
 
   // Supermarket till only: pressing Enter confirms the sale with print + save,
@@ -4192,7 +4201,7 @@ function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1
           borderRadius:"18px 18px 0 0",flexShrink:0,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
           <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
             <div style={{color:"#fff",fontSize:15,fontWeight:800}}>💳 Charge & Payment</div>
-            <div style={{padding:"3px 10px",background:"rgba(255,255,255,0.15)",borderRadius:20,fontSize:11,color:"rgba(255,255,255,0.9)",fontWeight:700}}>🧾 INV-{vno}</div>
+            <div style={{padding:"3px 10px",background:"rgba(255,255,255,0.15)",borderRadius:20,fontSize:11,color:"rgba(255,255,255,0.9)",fontWeight:700}}>🧾 INV-{getDeviceInvoicePrefix()}-{vno}</div>
             <PendingReportBadge/>
             <div style={{padding:"3px 10px",background:"rgba(255,255,255,0.12)",borderRadius:20,fontSize:11,color:"rgba(255,255,255,0.8)",fontWeight:700}}>🎫 Token {isDraft?getDailyToken():getDailyToken()+1}</div>
             <div style={{padding:"3px 10px",background:"rgba(255,255,255,0.08)",borderRadius:20,fontSize:11,color:"rgba(255,255,255,0.5)"}}>{new Date().toLocaleTimeString("en-SA",{hour:"2-digit",minute:"2-digit"})}</div>
@@ -4506,7 +4515,7 @@ function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1
               </button>
             </div>
 
-            {/* Error */}
+            {saveError&&<div style={{padding:"9px 12px",background:"#FDE8E8",border:"1px solid #D94040",borderRadius:8,fontSize:11.5,fontWeight:700,color:"#D94040",textAlign:"center"}}>⛔ {saveError}</div>}
             {!canConfirm&&method==="Cash"&&(
               <div style={{padding:"8px 12px",background:"#FDE8E8",border:"1px solid #D94040",borderRadius:8,fontSize:11,fontWeight:700,color:"#D94040",textAlign:"center"}}>
                 {cashFloat===0?"⚠️ Enter cash amount":"⚠️ Cash given is less than total by SAR "+(finalTotal-cashFloat).toFixed(2)}
@@ -4523,14 +4532,14 @@ function PaymentModal({total,subtotal,vat,promos,onConfirm,onClose,license,vno=1
 
             {/* Action buttons — sit right under the keypad, larger for easy tapping */}
             <div style={{display:"flex",gap:10,marginTop:12}}>
-              <button onClick={()=>handleConfirm(false)} disabled={!canConfirm}
-                style={{flex:1,padding:"20px 8px",background:canConfirm?"#2176AE":"#ccc",
+              <button onClick={()=>handleConfirm(false)} disabled={!canConfirm||confirming}
+                style={{flex:1,padding:"20px 8px",background:canConfirm&&!confirming?"#2176AE":"#ccc",
                   color:"#fff",border:"none",borderRadius:14,fontSize:16,fontWeight:800,
                   cursor:canConfirm?"pointer":"not-allowed",fontFamily:"inherit"}}>
                 💾 Save Bill
               </button>
-              <button onClick={()=>handleConfirm(true)} disabled={!canConfirm}
-                style={{flex:2,padding:"20px",background:canConfirm?"linear-gradient(135deg,#1A6B4A,#0F4A30)":"#ccc",
+              <button onClick={()=>handleConfirm(true)} disabled={!canConfirm||confirming}
+                style={{flex:2,padding:"20px",background:canConfirm&&!confirming?"linear-gradient(135deg,#1A6B4A,#0F4A30)":"#ccc",
                   color:"#fff",border:"none",borderRadius:14,fontSize:19,fontWeight:900,
                   cursor:canConfirm?"pointer":"not-allowed",fontFamily:"inherit",
                   boxShadow:canConfirm?"0 4px 16px rgba(26,107,74,0.3)":"none"}}>
@@ -5872,13 +5881,13 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
       const todayDrafts=drafts.filter(d=>d.date===TODAY&&d.baseVno===vno);
       const letters="ABCDEFGHIJKLMNOPQRSTUVWXYZ";
       const nextLetter=letters[Math.min(todayDrafts.length,25)]||"Z";
-      invoiceId="D-"+vno+nextLetter;
+      invoiceId=buildDraftInvoiceId(vno,nextLetter,getDeviceInvoicePrefix());
     }else{
       // Normal: increment vno FIRST then use it
       const newVno=vno+1;
       LS.set("restopos_vno",newVno);
       setVno(newVno);
-      invoiceId="INV-"+newVno; // Use newVno not vno
+      invoiceId=buildSaleInvoiceId(newVno,getDeviceInvoicePrefix()); // device prefix prevents cross-till ID collisions
     }
     // Daily token: only normal (completed) invoices get one. Drafts do not increment it.
     const dailyToken=treatAsDraft?getDailyToken():bumpDailyToken();
@@ -5890,6 +5899,7 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
       date:TODAY,
       time:new Date().toLocaleTimeString("en-SA",{hour:"2-digit",minute:"2-digit"}),
       createdAt:new Date().toISOString(), // reliable sortable timestamp for Close Day period filtering
+      syncUpdatedAt:new Date().toISOString(), // conflict-resolution stamp for cross-device edits
       type:(extraData.orderType||orderType)==="dine-in"?"Dine-in":(extraData.orderType||orderType)==="takeaway"?"Takeaway":"Delivery",
       billType:extraData.billType||"normal",
       table:selectedTable,customer:customerName,customerPhone,customerAddress,
@@ -5920,7 +5930,21 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
     // Step 1: Save to localStorage IMMEDIATELY (synchronous)
     const _currentSales=LS.get("restopos_sales")||[];
     const _newSales=[..._currentSales,inv];
-    LS.set("restopos_sales",_newSales);
+    // Never show checkout success unless the sale is synchronously persisted and
+    // read back from local storage. Quota/security errors leave the payment modal
+    // open with an actionable message so the cashier can retry without losing cart.
+    try{
+      LS.set("restopos_sales",_newSales);
+      const verified=LS.get("restopos_sales");
+      if(!Array.isArray(verified)||!verified.some(s=>s&&s.id===inv.id))throw new Error("Sale could not be verified in local storage.");
+    }catch(e){
+      const msg="Sale was NOT saved locally. Keep this till open, free local storage if needed, then retry. "+(e?.message||String(e));
+      extraData.onSaveFailed?.(msg);
+      setPrintBanner({type:"error",msg:"SALE NOT SAVED",detail:msg});
+      setTimeout(()=>setPrintBanner(null),10000);
+      return;
+    }
+    extraData.onSaved?.();
     // Step 2: Update React state so UI reflects new sale
     setSales(prev=>{
       // Already saved to LS above; just update React state with the new array
@@ -6021,8 +6045,8 @@ function POS({items,setItems,sales,setSales,tables,setTables,promos,license,lang
             inv.displayNumber=zatcaInv.invoice_number; // shown as the invoice number everywhere (legal ZATCA number)
             inv.qr_string=zatcaInv.qr_string||zatcaInv.signed_qr_string||""; // store QR directly for reliable reprint/view
             const _sl=LS.get("restopos_sales")||[];
-            LS.set("restopos_sales",_sl.map(s=>s.id===inv.id?{...s,zatcaInvoiceNumber:zatcaInv.invoice_number,voucher:zatcaInv.invoice_number,displayNumber:zatcaInv.invoice_number,qr_string:inv.qr_string}:s));
-            setSales(prev=>prev.map(s=>s.id===inv.id?{...s,zatcaInvoiceNumber:zatcaInv.invoice_number,voucher:zatcaInv.invoice_number,displayNumber:zatcaInv.invoice_number,qr_string:inv.qr_string}:s));
+            LS.set("restopos_sales",_sl.map(s=>s.id===inv.id?{...s,zatcaInvoiceNumber:zatcaInv.invoice_number,voucher:zatcaInv.invoice_number,displayNumber:zatcaInv.invoice_number,qr_string:inv.qr_string,syncUpdatedAt:new Date().toISOString()}:s));
+            setSales(prev=>prev.map(s=>s.id===inv.id?{...s,zatcaInvoiceNumber:zatcaInv.invoice_number,voucher:zatcaInv.invoice_number,displayNumber:zatcaInv.invoice_number,qr_string:inv.qr_string,syncUpdatedAt:new Date().toISOString()}:s));
           }catch(e){console.warn("[ReprintLink]",e.message);}
         }
       }catch(e){
@@ -9634,7 +9658,7 @@ function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,arch
   // sale carries a ZATCA invoice number, then marks it voided. A sale that was
   // never filed (draft / pre-ZATCA) is simply marked voided.
   const doVoid=async(s)=>{
-    setSales(prev=>prev.map(x=>x.id===s.id?{...x,status:"voided"}:x));
+    setSales(prev=>prev.map(x=>x.id===s.id?{...x,status:"voided",syncUpdatedAt:new Date().toISOString()}:x));
     try{
       const reversed=await issueZatcaCreditNoteForSale(s,"Sale voided");
       if(reversed)alert("Sale voided — a ZATCA credit note was generated to reverse the reported invoice, and queued for FATOORA.");
@@ -9704,7 +9728,7 @@ function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,arch
       <div style={{display:"flex",gap:10}}>
         <Btn variant="ghost" onClick={()=>setRefundTarget(null)} style={{flex:1}}>Cancel</Btn>
         <Btn variant="danger" onClick={async()=>{
-          setSales(prev=>prev.map(s=>s.id===refundTarget.id?{...s,status:"refunded"}:s));
+          setSales(prev=>prev.map(s=>s.id===refundTarget.id?{...s,status:"refunded",syncUpdatedAt:new Date().toISOString()}:s));
           // Generate a ZATCA credit note referencing the ORIGINAL ZATCA invoice
           // (BR-KSA-17). The shared helper looks the original up by its ZATCA
           // invoice number so the credit note reverses the exact amounts filed,
@@ -11055,7 +11079,7 @@ ${_brandingHTML({...REPORT_DEFAULTS,...(LS.get("restopos_report_format")||{})})}
         onSave={(updated)=>{
           const fix=(arr)=>(arr||[]).map(d=>d.id===updated.id?{...d,...updated}:d);
           LS.set("restopos_draft_invoices",fix(LS.get("restopos_draft_invoices")));
-          setSales(prev=>prev.map(s=>s.id===updated.id?{...s,...updated}:s));
+          setSales(prev=>prev.map(s=>s.id===updated.id?{...s,...updated,syncUpdatedAt:new Date().toISOString()}:s));
           setEditingDraft(null);
         }}
       />}
@@ -17587,10 +17611,15 @@ export default function App(){
       }
     }
 
+    const lic=LS.get("restopos_license_v2")?.licenseKey;
+    // Durable local queue: retry cloud keys on reconnect, app startup and the
+    // periodic safety tick. Failed writes remain queued across browser reloads.
+    if(lic)retryPendingSync(lic).catch(e=>console.warn("[Sync] retry queue:",e?.message));
     // 1. Trigger when connection just came back
     if(justCameOnline){
       flushPendingInvoices();
       flushPurchaseSync().catch(()=>{});   // retry unsynced purchase bills too (AUD-03)
+      if(lic)retryPendingSync(lic).catch(e=>console.warn("[Sync] reconnect retry:",e?.message));
     }
 
     // 2. Also trigger on mount (in case app starts online with pending invoices)
@@ -17599,7 +17628,10 @@ export default function App(){
 
     // 3. Periodic safety check every 2 minutes
     const interval=setInterval(()=>{
-      if(navigator.onLine){flushPendingInvoices();flushPurchaseSync().catch(()=>{});}
+      if(navigator.onLine){
+        flushPendingInvoices();flushPurchaseSync().catch(()=>{});
+        if(lic)retryPendingSync(lic).catch(e=>console.warn("[Sync] periodic retry:",e?.message));
+      }
     },120000);
 
     // NIGHTLY UTILITY SYNC — once per local calendar day, beginning at 23:55.
