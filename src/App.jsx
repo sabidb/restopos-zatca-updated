@@ -9643,8 +9643,8 @@ function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,arch
       alert("⚠️ Sale marked voided, but the ZATCA credit note could not be generated. The reported invoice is NOT yet reversed — retry from the ZATCA queue.");
     }
   };
-  const dateFiltered=sales.filter(s=>s.date>=dateFrom&&s.date<=dateTo);
-  const _filteredRaw=search.trim()?sales.filter(s=>s.id?.toLowerCase().includes(search.toLowerCase())||s.date?.includes(search)||s.type?.toLowerCase().includes(search.toLowerCase())||s.payMethod?.toLowerCase().includes(search.toLowerCase())):dateFiltered;
+  const dateFiltered=transactionDataset.filter(s=>s.date>=dateFrom&&s.date<=dateTo);
+  const _filteredRaw=search.trim()?transactionDataset.filter(s=>String(s.id||"").toLowerCase().includes(search.toLowerCase())||s.date?.includes(search)||s.type?.toLowerCase().includes(search.toLowerCase())||s.payMethod?.toLowerCase().includes(search.toLowerCase())):dateFiltered;
   // Newest sale on top → sort by reliable createdAt (fallback to date+time), descending.
   const _saleSortTs=s=>{ if(s.createdAt){const t=new Date(s.createdAt).getTime();if(!isNaN(t))return t;} const t2=new Date(`${s.date||""} ${s.time||""}`).getTime(); return isNaN(t2)?0:t2; };
   const filtered=[..._filteredRaw].sort((a,b)=>_saleSortTs(b)-_saleSortTs(a));
