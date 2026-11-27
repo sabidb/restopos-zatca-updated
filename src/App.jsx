@@ -38,7 +38,7 @@ import { initPOStore, setPurchaseOrdersLocal, loadPurchaseOrders } from "./lib/p
 import { initPurchaseCloud, setPurchaseCloudLicense, purchaseDocsCloud, purchaseOrdersCloud, mergeById } from "./lib/purchaseCloud.js";
 import { purchaseDocsToVatTx } from "./lib/vatBridge.js";
 import { signedAmounts as _purSignedAmounts, isInputVatRecoverable as _isInputVatRecoverable } from "./lib/purchases.js";
-import { buildDailyReport, datesWithActivity, dailyReportHTML, buildPeriodReport, periodReportHTML } from "./lib/dailyReport.js";
+import { buildDailyReport, datesWithActivity, dailyReportHTML, buildPeriodReport, periodReportHTML, uniqueSalesById } from "./lib/dailyReport.js";
 import { sha256HexSync } from "./lib/sha256.js";
 import { getLang, setLangStore, t, dir } from "./i18n/index.js";
 import { BUSINESS_TYPES, DEFAULT_BUSINESS_TYPE, getBusinessType, bizProfile, bizFeature, manualBillingEnabled, isSupermarket } from "./config/businessTypes.js";
@@ -9610,6 +9610,19 @@ function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,arch
   // Only the *displayed* range changes — every invoice is still stored and
   // reachable by widening the date filter (ZATCA retention is untouched).
   const [tab,setTab]=useState("sales");const [dateFrom,setDateFrom]=useState(TODAY);const [dateTo,setDateTo]=useState(TODAY);const [search,setSearch]=useState("");const [refundTarget,setRefundTarget]=useState(null);
+  const _autoLoadedRange=useRef("");
+  // Automatically retrieve archive invoices for the selected transaction range.
+  // Manual CloudGapBar remains as a visible recovery control if a fetch fails.
+  useEffect(()=>{
+    if(!fetchCloudRange||!dateFrom||!dateTo)return;
+    const gap=cloudGapOf(sales,archiveIndex,dateFrom,dateTo);
+    if(!gap.days.length)return;
+    const key=`${dateFrom}|${dateTo}`;
+    if(_autoLoadedRange.current===key)return;
+    _autoLoadedRange.current=key;
+    fetchCloudRange(gap.from,gap.to).catch(()=>{});
+  },[sales,archiveIndex,dateFrom,dateTo,fetchCloudRange]);
+  const transactionDataset=uniqueSalesById(sales||[]);
   const [kotPrompt,setKotPrompt]=useState(null);const [viewInvoice,setViewInvoice]=useState(null);
   const [debitTarget,setDebitTarget]=useState(null);const [debitReason,setDebitReason]=useState("");const [debitAmount,setDebitAmount]=useState("");const [debitBusy,setDebitBusy]=useState(false);
   // Manager-approval gate for void/refund. requiresApproval() is false unless
@@ -9635,7 +9648,7 @@ function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,arch
   // Newest sale on top → sort by reliable createdAt (fallback to date+time), descending.
   const _saleSortTs=s=>{ if(s.createdAt){const t=new Date(s.createdAt).getTime();if(!isNaN(t))return t;} const t2=new Date(`${s.date||""} ${s.time||""}`).getTime(); return isNaN(t2)?0:t2; };
   const filtered=[..._filteredRaw].sort((a,b)=>_saleSortTs(b)-_saleSortTs(a));
-  const total=filtered.reduce((s,o)=>s+o.total,0);const vat=filtered.reduce((s,o)=>s+o.vat,0);
+  const reportable=filtered.filter(o=>!o.isDraft&&(!o.status||o.status===\"completed\"));const total=reportable.reduce((s,o)=>s+(Number(o.total)||0),0);const vat=reportable.reduce((s,o)=>s+(Number(o.vat)||0),0);
   return(<div>
     {/* Manager-approval gate — only appears for types that require it. */}
     {pendingApproval&&<ApprovalGate action={pendingApproval.action} license={license}
@@ -9770,7 +9783,7 @@ function Transactions({sales,setSales,license,lang="en",autoSyncStatus=null,arch
     </Card>
     <div style={{display:"flex",gap:8,marginBottom:20,flexWrap:"wrap"}}>{[["sales","💳 Sales"],["payments","💰 Payments"],["saved","💾 Saved Invoices"],["kot","🍽 KOT"],["zatca","⬛ ZATCA Invoices"]].map(([id,label])=><button key={id} onClick={()=>setTab(id)} style={{padding:"8px 16px",borderRadius:8,border:`1.5px solid ${tab===id?C.primary:C.border}`,background:tab===id?C.primaryLight:"#fff",color:tab===id?C.primary:C.textMid,fontFamily:"inherit",fontSize:13,fontWeight:600,cursor:"pointer"}}>{label}</button>)}</div>
     {tab==="sales"&&<div style={{display:"flex",flexDirection:"column",gap:16}}>
-      {!search&&<Card><CloudGapBar sales={sales} archiveIndex={archiveIndex} from={dateFrom} to={dateTo}
+      {!search&&<Card><CloudGapBar sales={transactionDataset} archiveIndex={archiveIndex} from={dateFrom} to={dateTo}
         fetchCloudRange={fetchCloudRange} cloudLoading={cloudLoading} cloudError={cloudError}
         whatFollows="these figures" showComplete={false}/>
       <div style={{display:"flex",gap:12,alignItems:"flex-end",flexWrap:"wrap"}}><Inp label="From" value={dateFrom} onChange={setDateFrom} type="date"/><Inp label="To" value={dateTo} onChange={setDateTo} type="date"/><div style={{marginLeft:"auto"}}><div style={{fontSize:12,color:C.textMid}}>{filtered.length} orders · VAT: {fmtSAR(vat)}</div><div style={{fontSize:20,fontWeight:800,color:C.primary}}>{fmtSAR(total)}</div></div></div></Card>}
