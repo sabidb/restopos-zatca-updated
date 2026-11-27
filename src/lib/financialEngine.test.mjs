@@ -16,3 +16,5 @@ test("discount allocation handles cent-level ties deterministically",()=>{const 
 
 test("aggregate VAT rounding matches existing transaction path for standard-rate totals",()=>{for(const amount of [0.01,0.05,0.35,1,10,23,35,115,999.99]){const r=calculateSale([{qty:1,price:amount}],0);assert.equal(r.vat,vatFromInclusive(amount),`VAT mismatch for ${amount}`);assertSaleReconciles(r);}});
 test("many one-cent lines aggregate VAT before rounding instead of understating it",()=>{const r=calculateSale(Array.from({length:100},()=>({qty:1,price:0.01})),0);assert.equal(r.total,1);assert.equal(r.net,0.87);assert.equal(r.vat,0.13);assertSaleReconciles(r);});
+
+test("standard-rate discount VAT matches existing transaction total path",()=>{const r=calculateSale([{qty:1,price:115},{qty:1,price:23}],5);assert.equal(r.total,133);assert.equal(r.vat,vatFromInclusive(133));assertSaleReconciles(r);});
