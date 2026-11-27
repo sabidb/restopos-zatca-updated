@@ -63,8 +63,14 @@ export function getSyncStatus(){
   for(const q of Object.values(readQueue())){
     const id=q.key;
     if(!id)continue;
-    // A pending queue entry supersedes any stale last-success status.
-    out[id]={key:id,ok:false,reason:q.blocked?"oversize":"pending",message:q.lastError||"Waiting for cloud sync",queuedAt:q.queuedAt,attempts:q.attempts||0,blocked:!!q.blocked};
+    const current=out[id];
+    // Queue state overrides a stale success, but preserve a detailed current
+    // failure (oversize/error) so diagnostics and size-budget details remain visible.
+    if(q.blocked){
+      if(!current||current.ok)out[id]={key:id,ok:false,reason:"oversize",message:q.lastError||"Payload exceeds sync budget",queuedAt:q.queuedAt,attempts:q.attempts||0,blocked:true};
+    }else if(!current||current.ok){
+      out[id]={key:id,ok:false,reason:"pending",message:q.lastError||"Waiting for cloud sync",queuedAt:q.queuedAt,attempts:q.attempts||0,blocked:false};
+    }
   }
   return out;
 }
