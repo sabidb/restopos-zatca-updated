@@ -24,7 +24,9 @@ function readQueue(){
 function writeQueue(queue){
   Object.keys(_memoryQueue).forEach(k=>delete _memoryQueue[k]);
   Object.assign(_memoryQueue,queue||{});_queueInitialized=true;
-  try{localStorage.setItem(PENDING_SYNC_KEY,JSON.stringify(queue||{}));return true;}catch(e){console.warn("[Sync] pending queue could not persist locally:",e?.message);return false;}
+  try{localStorage.setItem(PENDING_SYNC_KEY,JSON.stringify(queue||{}));}catch(e){console.warn("[Sync] pending queue could not persist locally:",e?.message);}
+  try{if(typeof window!=="undefined")window.dispatchEvent(new Event("restopos-sync-status"));}catch(_){ }
+  return true;
 }
 function updateQueueEntry(licenseKey,key,patch={},reset=false){
   const queue=readQueue(),id=queueId(licenseKey,key),prev=queue[id]||{};
