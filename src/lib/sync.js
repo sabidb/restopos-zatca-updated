@@ -10,9 +10,32 @@ import { mergeRecordsById, isRecordArrayKey } from "./syncMerge.js";
 export function initSync({db,doc,setDoc,runTransaction}){_db=db;_doc=doc;_setDoc=setDoc;_runTransaction=runTransaction;}
 
 const _syncTimers={};
+const PENDING_SYNC_KEY="restopos_sync_pending_v1";
+const _memoryQueue={};
+function queueId(licenseKey,key){return String(licenseKey)+"::"+String(key);}
+function readQueue(){
+  try{return JSON.parse(localStorage.getItem(PENDING_SYNC_KEY)||"{}")||{};}catch(_){return {..._memoryQueue};}
+}
+function writeQueue(queue){
+  Object.keys(_memoryQueue).forEach(k=>delete _memoryQueue[k]);
+  Object.assign(_memoryQueue,queue||{});
+  try{localStorage.setItem(PENDING_SYNC_KEY,JSON.stringify(queue||{}));return true;}catch(e){console.warn("[Sync] pending queue could not persist locally:",e?.message);return false;}
+}
+function updateQueueEntry(licenseKey,key,patch={},reset=false){
+  const queue=readQueue(),id=queueId(licenseKey,key),prev=queue[id]||{};
+  queue[id]={...prev,...(reset?{queuedAt:new Date().toISOString(),attempts:0,lastError:null,blocked:false}:{}),...patch,licenseKey,key};
+  writeQueue(queue);return queue[id];
+}
+function removeQueueEntry(licenseKey,key){
+  const queue=readQueue();delete queue[queueId(licenseKey,key)];writeQueue(queue);
+}
+export function getPendingSyncQueue(){return Object.values(readQueue()).map(x=>({...x}));}
 export function debouncedSync(licenseKey,key,data){
-  if(_syncTimers[key])clearTimeout(_syncTimers[key]);
-  _syncTimers[key]=setTimeout(()=>syncKeyToFirestore(licenseKey,key,data),3000);
+  if(!licenseKey)return;
+  updateQueueEntry(licenseKey,key,{lastDataAt:new Date().toISOString(),blocked:false,reason:null,lastError:null},true);
+  const timerId=queueId(licenseKey,key);
+  if(_syncTimers[timerId])clearTimeout(_syncTimers[timerId]);
+  _syncTimers[timerId]=setTimeout(()=>syncKeyToFirestore(licenseKey,key,data),3000);
 }
 
 // Everything below lands in ONE Firestore document, which is capped at 1 MiB.
@@ -30,16 +53,41 @@ const _syncStatus={};
 export function getSyncStatus(){
   const out={};
   for(const k in _syncStatus) out[k]={..._syncStatus[k]};
+  for(const q of Object.values(readQueue())){
+    const id=q.key;
+    if(!id)continue;
+    if(!out[id]||out[id].ok!==true){
+      out[id]={key:id,ok:false,reason:q.blocked?"oversize":"pending",message:q.lastError||"Waiting for cloud sync",queuedAt:q.queuedAt,attempts:q.attempts||0,blocked:!!q.blocked};
+    }
+  }
   return out;
+}
+export async function retryPendingSync(licenseKey){
+  const queue=getPendingSyncQueue();
+  let attempted=0,skipped=0;
+  for(const q of queue){
+    if(licenseKey&&q.licenseKey!==licenseKey)continue;
+    if(q.blocked){skipped++;continue;}
+    let raw=null;try{raw=localStorage.getItem(q.key);}catch(_){}
+    if(raw==null){removeQueueEntry(q.licenseKey,q.key);continue;}
+    let value;try{value=JSON.parse(raw);}catch(e){updateQueueEntry(q.licenseKey,q.key,{lastError:"Local JSON is invalid",attempts:(q.attempts||0)+1});skipped++;continue;}
+    attempted++;
+    await syncKeyToFirestore(q.licenseKey,q.key,value);
+  }
+  const remaining=getPendingSyncQueue().filter(q=>!licenseKey||q.licenseKey===licenseKey).length;
+  return {attempted,skipped,remaining};
 }
 
 export async function syncKeyToFirestore(licenseKey,key,data){
   if(!licenseKey)return;
+  updateQueueEntry(licenseKey,key,{blocked:false,reason:null,lastError:null});
   try{
     const json=JSON.stringify(data);
     const size=new TextEncoder().encode(json).length;
     if(size>MAX_SYNC_FIELD_BYTES){
-      _syncStatus[key]={key,ok:false,reason:"oversize",sizeBytes:size,budgetBytes:MAX_SYNC_FIELD_BYTES,at:new Date().toISOString()};
+      const message=`Payload ${size} bytes exceeds ${MAX_SYNC_FIELD_BYTES}-byte field budget`;
+      _syncStatus[key]={key,ok:false,reason:"oversize",message,sizeBytes:size,budgetBytes:MAX_SYNC_FIELD_BYTES,at:new Date().toISOString()};
+      updateQueueEntry(licenseKey,key,{blocked:true,reason:"oversize",lastError:message,attempts:(readQueue()[queueId(licenseKey,key)]?.attempts||0)+1,lastAttemptAt:new Date().toISOString()});
       if(!_oversizeWarned.has(key)){
         _oversizeWarned.add(key);
         console.error(`[Sync] REFUSING to sync "${key}": ${(size/1024).toFixed(0)} KB exceeds the `+
@@ -69,9 +117,12 @@ export async function syncKeyToFirestore(licenseKey,key,data){
       await _setDoc(docRef,{[key]:json,[`${key}_updatedAt`]:updatedAt,licenseKey,lastSyncAt:updatedAt},{merge:true});
     }
     _syncStatus[key]={key,ok:true,sizeBytes:size,at:new Date().toISOString()};
+    removeQueueEntry(licenseKey,key);
   }catch(e){
-    // Louder than a warning: this is the client's backup failing.
-    _syncStatus[key]={key,ok:false,reason:"error",message:e.message,at:new Date().toISOString()};
-    console.error("[Sync] Failed to sync",key,":",e.message);
+    // Durable local queue keeps this key retryable across reloads/offline periods.
+    const message=e?.message||String(e);
+    _syncStatus[key]={key,ok:false,reason:"error",message,at:new Date().toISOString()};
+    updateQueueEntry(licenseKey,key,{blocked:false,reason:"error",lastError:message,attempts:(readQueue()[queueId(licenseKey,key)]?.attempts||0)+1,lastAttemptAt:new Date().toISOString()});
+    console.error("[Sync] Failed to sync",key,":",message);
   }
 }
