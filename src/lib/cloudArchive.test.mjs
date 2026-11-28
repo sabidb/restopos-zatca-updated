@@ -4,7 +4,7 @@
 // duplicated. Uses flushArchive() to persist synchronously (no debounce timer).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { initCloudArchive, archiveSalesDay, flushArchive, summariseSales } from "../cloudArchive.js";
+import { initCloudArchive, archiveSalesDay, flushArchive, summariseSales, loadArchivedRange, loadArchivedInvoice } from "../cloudArchive.js";
 
 // ── localStorage shim (fingerprint cache lives here) ──────────────
 const mem = new Map();
