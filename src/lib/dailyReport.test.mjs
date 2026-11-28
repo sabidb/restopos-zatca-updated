@@ -133,3 +133,57 @@ test("duplicate same-id records prefer newer edit timestamp", () => {
   ];
   assert.equal(buildDailyReport(duplicates, [], "2026-11-27").revenue, 120);
 });
+
+test("category VAT respects zero-rated product tax category", () => {
+  const sale = [{ id: "z1", date: "2026-11-25", status: "completed", total: 100, vat: 0, items: [{ category: "Medicine", taxCategory: "Z", qty: 1, price: 100 }] }];
+  const r = buildDailyReport(sale, [], "2026-11-25");
+  assert.equal(r.categoryVatTotal, 0);
+  assert.equal(r.categoryVatDelta, 0);
+  assert.equal(r.catList[0].vat, 0);
+});
+
+test("daily report surfaces category VAT divergence without changing saved VAT", () => {
+  const sale = [{ id: "d1", date: "2026-11-25", status: "completed", total: 110, vat: 14.35, discount: 5, items: [{ category: "Food", qty: 1, price: 115 }] }];
+  const r = buildDailyReport(sale, [], "2026-11-25");
+  assert.equal(r.vat, 14.35);
+  assert.equal(r.categoryVatTotal, 15);
+  assert.equal(r.categoryVatDelta, 0.65);
+  assert.match(dailyReportHTML(r), /Category VAT breakdown differs/);
+  const p = buildPeriodReport(sale, [], "2026-11-25", "2026-11-25");
+  assert.equal(p.categoryVatTotal, 15);
+  assert.equal(p.categoryVatDelta, 0.65);
+  assert.match(periodReportHTML(p), /Category VAT breakdown differs/);
+});
+
+test("daily and period reports flag duplicate, missing-ID, and malformed financial records",()=>{
+  const sales=[
+    {id:"D1",date:"2026-11-25",status:"completed",total:100,vat:13,updatedAt:"2026-11-25T10:00:00Z"},
+    {id:"D1",date:"2026-11-25",status:"completed",total:100,vat:13,updatedAt:"2026-11-25T11:00:00Z"},
+    {date:"2026-11-25",status:"completed",total:50,vat:6},
+    {id:"D2",date:"2026-11-25",status:"completed",total:null,vat:0},
+  ];
+  const d=buildDailyReport(sales,[],"2026-11-25");
+  assert.equal(d.orderCount,3);
+  assert.equal(d.duplicateSaleCount,1);
+  assert.deepEqual(d.duplicateSaleIds,["D1"]);
+  assert.equal(d.missingSaleIdCount,1);
+  assert.equal(d.invalidFinancialRecordCount,1);
+  assert.match(dailyReportHTML(d),/Sale integrity flags/);
+  const p=buildPeriodReport(sales,[],"2026-11-25","2026-11-25");
+  assert.equal(p.duplicateSaleCount,1);
+  assert.equal(p.missingSaleIdCount,1);
+  assert.equal(p.invalidFinancialRecordCount,1);
+  assert.match(periodReportHTML(p),/Sale integrity flags/);
+});
+
+test("daily report flags duplicate IDs across dates that can hide a sale",()=>{
+  const sales=[
+    {id:"CROSS-1",date:"2026-11-25",status:"completed",total:20,vat:2.61,updatedAt:"2026-11-25T10:00:00Z"},
+    {id:"CROSS-1",date:"2026-11-24",status:"completed",total:20,vat:2.61,updatedAt:"2026-11-26T10:00:00Z"},
+  ];
+  const r=buildDailyReport(sales,[],"2026-11-25");
+  assert.equal(r.orderCount,0);
+  assert.equal(r.duplicateSaleCount,1);
+  assert.deepEqual(r.duplicateSaleIds,["CROSS-1"]);
+  assert.match(dailyReportHTML(r),/Sale integrity flags/);
+});
