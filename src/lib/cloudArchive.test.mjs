@@ -25,6 +25,28 @@ function makeFb(store, opts = {}) {
     db: {},
     collection: (_db, ...path) => ({ collPath: path.join("/") }),
     doc: (coll, id) => ({ collPath: coll.collPath, id }),
+    query: (coll, ...parts) => ({ collPath: coll.collPath, parts }),
+    where: (field, op, value) => ({ kind: "where", field, op, value }),
+    orderBy: (field, direction) => ({ kind: "orderBy", field, direction }),
+    limit: (n) => ({ kind: "limit", n }),
+    startAfter: (cursor) => ({ kind: "startAfter", cursor }),
+    getDoc: async (ref) => ({ exists: () => !!store[keyOf(ref)], data: () => store[keyOf(ref)] }),
+    getDocs: async (q) => {
+      let rows=Object.entries(store).filter(([key])=>key.startsWith(q.collPath+"/"));
+      for(const part of q.parts||[]){
+        if(part.kind==="where"){
+          rows=rows.filter(([,data])=>{
+            const v=data?.[part.field];
+            if(part.op==="==")return v===part.value;
+            if(part.op===">=")return String(v||"")>=String(part.value);
+            if(part.op==="<=")return String(v||"")<=String(part.value);
+            return true;
+          });
+        }
+      }
+      rows.sort((a,b)=>String(a[1]?.date||"").localeCompare(String(b[1]?.date||"")));
+      return {docs:rows.map(([key,data])=>({id:key.slice(q.collPath.length+1),data:()=>data})),size:rows.length};
+    },
     setDoc: async (ref, body) => { store[keyOf(ref)] = { ...(store[keyOf(ref)] || {}), ...body }; },
     writeBatch: () => {
       const ops = [];
@@ -107,4 +129,58 @@ test("archive fingerprint detects same-count same-total content edits",async()=>
   const docs=invoiceDocs(store,"LICD");
   assert.equal(docs.length,1);
   assert.equal(store[docs[0]].items[0].name,"B");
+});
+
+const compactDocs=(store,lic)=>Object.keys(store).filter(k=>k.startsWith(`client_data/${lic}/invoices_compact/`));
+
+test("older day writes compact per-invoice snapshots and verifies index while retaining detailed invoices",async()=>{
+  mem.clear();const store={};initCloudArchive(makeFb(store));
+  const oldDate="2026-07-01";
+  const sales=[
+    {...sale("OLD-1",115,15),items:[{name:"Food",qty:1,price:115,taxCategory:"S"}],receiptHtml:"big"},
+    {...sale("OLD-2",23,3),items:[{name:"Drink",qty:1,price:23,taxCategory:"S"}]},
+  ];
+  archiveSalesDay("OLDLIC",oldDate,sales);await flushArchive();
+  assert.equal(invoiceDocs(store,"OLDLIC").length,2);
+  assert.equal(compactDocs(store,"OLDLIC").length,2);
+  const index=store["client_data/OLDLIC/sales_index/index"].days[oldDate];
+  assert.equal(index.compact.verified,true);
+  assert.equal(index.compact.count,2);
+  assert.equal(index.compact.total,138);
+  assert.equal(index.compact.vat,18);
+  assert.equal(index.compact.missingIdCount,0);
+  const compactKey="client_data/OLDLIC/invoices_compact/OLD-1";
+  assert.equal(store[compactKey].compactArchiveVersion,1);
+  assert.equal(store[compactKey].receiptHtml,undefined);
+});
+
+test("recent day remains detailed and is not compacted",async()=>{
+  mem.clear();const store={};initCloudArchive(makeFb(store));
+  const recent="2026-11-22";
+  archiveSalesDay("RECENT",recent,[sale("R-1",35,4.57)]);await flushArchive();
+  assert.equal(invoiceDocs(store,"RECENT").length,1);
+  assert.equal(compactDocs(store,"RECENT").length,0);
+});
+
+test("verified compact rows are returned for older archive range and invoice lookup",async()=>{
+  mem.clear();const store={};initCloudArchive(makeFb(store));
+  const date="2026-07-01";
+  const sales=[{...sale("C-1",115,15),items:[{name:"Food",qty:1,price:115,privateNote:"drop"}]}];
+  archiveSalesDay("COMPACTREAD",date,sales);await flushArchive();
+  const rows=await loadArchivedRange("COMPACTREAD",date,date);
+  assert.equal(rows.length,1);
+  assert.equal(rows[0].compactArchiveVersion,1);
+  assert.equal(rows[0].items[0].privateNote,undefined);
+  const invoice=await loadArchivedInvoice("COMPACTREAD","C-1");
+  assert.equal(invoice.compactArchiveVersion,1);
+});
+
+test("compact snapshot is unverified when source records lack invoice IDs",async()=>{
+  mem.clear();const store={};initCloudArchive(makeFb(store));
+  const date="2026-07-01";
+  archiveSalesDay("NOID",date,[sale("N-1",100,13),{...sale("",50,6),date}]);await flushArchive();
+  const index=store["client_data/NOID/sales_index/index"].days[date];
+  assert.equal(index.compact.verified,false);
+  assert.equal(index.compact.missingIdCount,1);
+  assert.equal(index.compact.compactDocCount,1);
 });
