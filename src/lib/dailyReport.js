@@ -42,16 +42,23 @@ function isDaySale(s, dateStr) {
  */
 export function buildDailyReport(sales = [], purchaseDocs = [], dateStr) {
   const rawDaySales = (sales || []).filter((s) => isDaySale(s, dateStr));
-  const idCounts = new Map();
+  const idCounts = new Map(), idsWithDate = new Set();
   let missingSaleIdCount = 0, invalidFinancialRecordCount = 0;
+  (sales || []).forEach((s) => {
+    if (!s || s.id == null || s.id === "") return;
+    const id=String(s.id);
+    idCounts.set(id,(idCounts.get(id)||0)+1);
+    if(s.date===dateStr)idsWithDate.add(id);
+  });
   rawDaySales.forEach((s) => {
     if (s.id == null || s.id === "") missingSaleIdCount++;
-    else idCounts.set(String(s.id), (idCounts.get(String(s.id)) || 0) + 1);
+  });
+  const daySales = uniqueSalesById(sales).filter((s) => isDaySale(s, dateStr));
+  daySales.forEach((s) => {
     if (s.total == null || s.vat == null || !Number.isFinite(Number(s.total)) || !Number.isFinite(Number(s.vat))) invalidFinancialRecordCount++;
   });
-  const duplicateSaleIds = [...idCounts.entries()].filter(([,count])=>count>1).map(([id])=>id).slice(0,50);
-  const duplicateSaleCount = [...idCounts.values()].reduce((n,count)=>n+Math.max(0,count-1),0);
-  const daySales = uniqueSalesById(rawDaySales);
+  const duplicateSaleIds = [...idCounts.entries()].filter(([id,count])=>count>1&&idsWithDate.has(id)).map(([id])=>id).slice(0,50);
+  const duplicateSaleCount = [...idCounts.entries()].filter(([id,count])=>count>1&&idsWithDate.has(id)).reduce((n,[,count])=>n+Math.max(0,count-1),0);
   const revenue = r2(sum(daySales, (s) => s.total));
   const vat = r2(sum(daySales, (s) => s.vat)); // output VAT
   const net = r2(revenue - vat);
