@@ -79,5 +79,6 @@ export function compactArchiveDay(sales=[],date,compactedAt=new Date().toISOStri
   const total=round2(completed.reduce((n,s)=>n+(Number(s.total)||0),0));
   const vat=round2(completed.reduce((n,s)=>n+(Number(s.vat)||0),0));
   const net=round2(total-vat);
-  return {date,count:completed.length,total,vat,net,recordCount:compacted.length,fingerprint:fnvFingerprint(compacted),records:compacted};
+  const stableRecords=compacted.map(({compactedAt,...record})=>record);
+  return {date,count:completed.length,total,vat,net,recordCount:compacted.length,fingerprint:fnvFingerprint(stableRecords),records:compacted};
 }
