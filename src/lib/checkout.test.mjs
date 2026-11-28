@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  discountManual, discountPromo, totalAfterDiscount,
+  discountManual, discountPromo, totalAfterDiscount, calculateCheckoutSale,
   cashChange, isCashShort, cashSufficient, splitDiff, splitValid, paymentReady,
 } from "./checkout.js";
 
@@ -56,4 +56,27 @@ test("paymentReady gates each method correctly", () => {
   assert.equal(paymentReady({ method: "Card", total: 0 }), false);      // nothing to pay
   assert.equal(paymentReady({ method: "Both", total: 100, splitCash: "60", splitCard: "40" }), true);
   assert.equal(paymentReady({ method: "Both", total: 100, splitCash: "60", splitCard: "30" }), false);
+});
+
+
+test("canonical checkout calculation reconciles line totals, net and VAT", () => {
+  const sale = calculateCheckoutSale([{ id: "a", qty: 1, price: 115 }, { id: "b", qty: 2, price: 23 }], 5);
+  assert.equal(sale.total, 156);
+  assert.equal(sale.subtotal, 161);
+  assert.equal(sale.discount, 5);
+  assert.equal(sale.total, sale.net + sale.vat);
+  assert.equal(sale.lines.reduce((s, l) => s + l.total, 0), sale.total);
+});
+
+test("canonical checkout calculation respects zero-rated products", () => {
+  const sale = calculateCheckoutSale([{ id: "z", qty: 1, price: 100, taxCategory: "Z" }, { id: "s", qty: 1, price: 115 }], 0);
+  assert.equal(sale.total, 215);
+  assert.equal(sale.vat, 15);
+  assert.equal(sale.lines.find(l => l.id === "z").vat, 0);
+});
+
+test("canonical checkout discount allocation remains deterministic at cent precision", () => {
+  const sale = calculateCheckoutSale([{ id: "a", qty: 1, price: 1 }, { id: "b", qty: 1, price: 1 }, { id: "c", qty: 1, price: 1 }], 0.01);
+  assert.deepEqual(sale.lines.map(l => l.discount), [0.01, 0, 0]);
+  assert.equal(sale.total, sale.net + sale.vat);
 });
