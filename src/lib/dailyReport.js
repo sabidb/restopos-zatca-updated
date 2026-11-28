@@ -41,7 +41,17 @@ function isDaySale(s, dateStr) {
  * @param {string} dateStr     "YYYY-MM-DD"
  */
 export function buildDailyReport(sales = [], purchaseDocs = [], dateStr) {
-  const daySales = uniqueSalesById(sales).filter((s) => isDaySale(s, dateStr));
+  const rawDaySales = (sales || []).filter((s) => isDaySale(s, dateStr));
+  const idCounts = new Map();
+  let missingSaleIdCount = 0, invalidFinancialRecordCount = 0;
+  rawDaySales.forEach((s) => {
+    if (s.id == null || s.id === "") missingSaleIdCount++;
+    else idCounts.set(String(s.id), (idCounts.get(String(s.id)) || 0) + 1);
+    if (s.total == null || s.vat == null || !Number.isFinite(Number(s.total)) || !Number.isFinite(Number(s.vat))) invalidFinancialRecordCount++;
+  });
+  const duplicateSaleIds = [...idCounts.entries()].filter(([,count])=>count>1).map(([id])=>id).slice(0,50);
+  const duplicateSaleCount = [...idCounts.values()].reduce((n,count)=>n+Math.max(0,count-1),0);
+  const daySales = uniqueSalesById(rawDaySales);
   const revenue = r2(sum(daySales, (s) => s.total));
   const vat = r2(sum(daySales, (s) => s.vat)); // output VAT
   const net = r2(revenue - vat);
@@ -90,6 +100,7 @@ export function buildDailyReport(sales = [], purchaseDocs = [], dateStr) {
     qty,
     revenue, vat, net, discount,
     payBreakdown, catList,
+    duplicateSaleCount, duplicateSaleIds, missingSaleIdCount, invalidFinancialRecordCount,
     categoryVatTotal: r2(sum(catList, (c) => c.vat)),
     categoryVatDelta: r2(sum(catList, (c) => c.vat) - vat),
     purchasesTotal: r2(purchasesTotal),
@@ -138,6 +149,10 @@ export function buildPeriodReport(sales = [], purchaseDocs = [], fromStr, toStr)
     purchasesTotal: sumBy((d) => d.purchasesTotal), purchasesVat, purchasesNet: sumBy((d) => d.purchasesNet),
     recoverableVat, nonRecoverableVat,
     categoryVatTotal, categoryVatDelta: r2(categoryVatTotal - vat),
+    duplicateSaleCount: days.reduce((n,d)=>n+d.duplicateSaleCount,0),
+    duplicateSaleIds: [...new Set(days.flatMap(d=>d.duplicateSaleIds))].slice(0,50),
+    missingSaleIdCount: days.reduce((n,d)=>n+d.missingSaleIdCount,0),
+    invalidFinancialRecordCount: days.reduce((n,d)=>n+d.invalidFinancialRecordCount,0),
     purchasesCount: days.reduce((s, d) => s + d.purchasesCount, 0),
     netVat: r2(vat - recoverableVat),
     payBreakdown, catList: Object.values(catMap).sort((a, b) => b.revenue - a.revenue),
@@ -186,6 +201,8 @@ h2{font-size:13px;margin:0 0 6px}</style></head><body>
   ${row("NET VAT PAYABLE", money(report.netVat), true)}
 </table><div class="sub" style="margin-top:6px">Net VAT payable = output VAT on sales − <b>recoverable</b> input VAT. Input VAT is recoverable only when the supplier issued a valid ZATCA e-invoice; this is an estimate, not a filed VAT return.</div></div>
 <div class="warning" style="display:${Math.abs(Number(report.categoryVatDelta)||0)>0.01?'block':'none'}">Category VAT breakdown differs from saved invoice-level output VAT by ${money(report.categoryVatDelta)}. The category calculation is diagnostic only and does not change the authoritative saved VAT amount.</div>
+<div class="warning" style="display:${report.duplicateSaleCount||report.missingSaleIdCount||report.invalidFinancialRecordCount?'block':'none'}">Sale integrity flags: duplicate copies ${report.duplicateSaleCount||0}, missing IDs ${report.missingSaleIdCount||0}, missing/invalid total or VAT fields ${report.invalidFinancialRecordCount||0}. The report deduplicates by sale ID but cannot reconcile offline device data.</div>
+<div class="warning" style="display:${report.duplicateSaleCount||report.missingSaleIdCount||report.invalidFinancialRecordCount?'block':'none'}">Sale integrity flags: duplicate copies ${report.duplicateSaleCount||0}, missing IDs ${report.missingSaleIdCount||0}, missing/invalid total or VAT fields ${report.invalidFinancialRecordCount||0}. The report deduplicates by sale ID but cannot reconcile offline device data.</div>
 <div class="card"><h2>Payments</h2><table>${pays.length ? pays.map(([k, v]) => row(k, money(v))).join("") : row("—", money(0))}</table></div>
 ${cats.length ? `<div class="card"><h2>By category</h2><table><tr><th>Category</th><th style="text-align:right">Qty</th><th style="text-align:right">Revenue</th><th style="text-align:right">VAT</th></tr>
 ${cats.map((c) => `<tr><td>${esc(c.cat)}</td><td style="text-align:right">${c.qty}</td><td style="text-align:right">${money(c.revenue)}</td><td style="text-align:right">${money(c.vat)}</td></tr>`).join("")}</table></div>` : ""}
