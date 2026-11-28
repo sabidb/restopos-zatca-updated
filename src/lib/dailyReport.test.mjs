@@ -175,3 +175,15 @@ test("daily and period reports flag duplicate, missing-ID, and malformed financi
   assert.equal(p.invalidFinancialRecordCount,1);
   assert.match(periodReportHTML(p),/Sale integrity flags/);
 });
+
+test("daily report flags duplicate IDs across dates that can hide a sale",()=>{
+  const sales=[
+    {id:"CROSS-1",date:"2026-11-25",status:"completed",total:20,vat:2.61,updatedAt:"2026-11-25T10:00:00Z"},
+    {id:"CROSS-1",date:"2026-11-24",status:"completed",total:20,vat:2.61,updatedAt:"2026-11-26T10:00:00Z"},
+  ];
+  const r=buildDailyReport(sales,[],"2026-11-25");
+  assert.equal(r.orderCount,0);
+  assert.equal(r.duplicateSaleCount,1);
+  assert.deepEqual(r.duplicateSaleIds,["CROSS-1"]);
+  assert.match(dailyReportHTML(r),/Sale integrity flags/);
+});
