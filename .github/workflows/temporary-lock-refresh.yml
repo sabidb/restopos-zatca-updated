@@ -1,5 +1,7 @@
 name: Temporary dependency lock refresh
 on:
+  push:
+    branches: [fix/dependency-security-pos]
   pull_request:
     branches: [main]
     paths:
