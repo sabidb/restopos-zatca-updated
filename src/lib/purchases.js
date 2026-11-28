@@ -330,3 +330,71 @@ export function detectDuplicatePurchase(candidate = {}, existing = [], opts = {}
 
   return { duplicate: false, level: null, match: null, reason: null };
 }
+
+/**
+ * Read-only reconciliation diagnostic for a saved purchase invoice. It never
+ * changes stored totals or eligibility; it compares saved fields with the
+ * existing purchase calculation path and exposes recoverable input VAT.
+ */
+export function auditPurchaseInvoice(doc = {}) {
+  const computed=computePurchaseInvoice(doc);
+  const warnings=[];
+  const saved={subtotal:doc.subtotal,vatAmount:doc.vatAmount,total:doc.total};
+  const fields=["subtotal","vatAmount","total"];
+  const hasAnySaved=fields.some(k=>doc[k]!=null);
+  const hasAllSaved=fields.every(k=>doc[k]!=null&&Number.isFinite(Number(doc[k])));
+  if(hasAnySaved&&!hasAllSaved)warnings.push("partial-saved-totals");
+  if(hasAllSaved){
+    for(const field of fields){
+      if(zr2(Number(doc[field]))!==zr2(Number(computed[field])))warnings.push(`saved-${field}-mismatch`);
+    }
+  }
+  const savedLines=Array.isArray(doc.lines)?doc.lines:[];
+  if(savedLines.length!==computed.lines.length&&savedLines.length>0)warnings.push("line-count-mismatch");
+  savedLines.forEach((line,i)=>{
+    const expected=computed.lines[i];
+    if(!expected)return;
+    for(const field of ["net","vat","gross"])if(line[field]!=null&&Number.isFinite(Number(line[field]))&&zr2(Number(line[field]))!==zr2(Number(expected[field])))warnings.push(`line-${i}-${field}-mismatch`);
+  });
+  const eligibility=inputVatEligibility(doc);
+  const portion=recoverablePortion(doc);
+  const signed=signedAmounts(computed);
+  return {
+    id:doc.id??null,
+    docType:normDocType(doc.docType),
+    savedTotals:saved,
+    computedTotals:{subtotal:computed.subtotal,vatAmount:computed.vatAmount,total:computed.total},
+    totalDelta:hasAllSaved?zr2(Number(doc.total)-computed.total):null,
+    vatDelta:hasAllSaved?zr2(Number(doc.vatAmount)-computed.vatAmount):null,
+    warnings:[...new Set(warnings)],
+    financiallyReconciled:hasAllSaved&&warnings.length===0,
+    inputVatEligible:eligibility.recoverable,
+    inputVatReasons:eligibility.reasons,
+    recoverablePortion:portion,
+    recoverableInputVat:zr2(signed.vatAmount*portion),
+  };
+}
+
+/** Read-only register audit for duplicate invoices, financial mismatches, and
+ * recoverable input VAT. No document is recalculated or mutated in-place. */
+export function auditPurchaseRegister(docs=[]) {
+  const list=Array.isArray(docs)?docs:[];
+  const audits=list.map(auditPurchaseInvoice);
+  const exactDuplicates=[],nearDuplicates=[];
+  for(let i=0;i<list.length;i++){
+    const dup=detectDuplicatePurchase(list[i],list.slice(0,i));
+    if(dup.level==="exact")exactDuplicates.push({id:list[i]?.id,matchId:dup.match?.id,reason:dup.reason});
+    else if(dup.level==="near")nearDuplicates.push({id:list[i]?.id,matchId:dup.match?.id,reason:dup.reason});
+  }
+  const signed=list.map(signedAmounts).reduce((a,v)=>({subtotal:zr2(a.subtotal+v.subtotal),vatAmount:zr2(a.vatAmount+v.vatAmount),total:zr2(a.total+v.total)}),{subtotal:0,vatAmount:0,total:0});
+  const recoverableInputVat=zr2(list.reduce((n,doc)=>n+signedAmounts(doc).vatAmount*recoverablePortion(doc),0));
+  return {
+    count:list.length,
+    financiallyReconciledCount:audits.filter(a=>a.financiallyReconciled).length,
+    financiallyUnreconciledCount:audits.filter(a=>a.warnings.length>0).length,
+    exactDuplicates,nearDuplicates,
+    signedTotals:signed,
+    recoverableInputVat,
+    audits,
+  };
+}
