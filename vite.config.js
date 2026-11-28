@@ -39,6 +39,9 @@ export default defineConfig({
         ]
       },
       workbox: {
+        // Firebase 13 increases the single application chunk above Workbox's 2 MiB default.
+        // Keep it precached for offline startup, with a bounded 3 MiB limit.
+        maximumFileSizeToCacheInBytes: 3 * 1024 * 1024,
         // Cache all app files for offline use
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
         // The SPA fallback serves index.html for any navigation the service
