@@ -45,10 +45,13 @@
 // Everything is best-effort: a failed archive write must never break the till.
 // ═══════════════════════════════════════════════════════════════════
 
+import { compactArchiveDay, compactSaleForArchive, isOlderThanRetention } from "./lib/archiveRetention.js";
+
 const DEBOUNCE_MS = 8000;
 const BATCH_LIMIT = 400;          // Firestore caps a batch at 500; leave headroom.
 const PAGE_SIZE = 1000;           // read pagination, so a wide range can't spike memory
 const FP_KEY = "restopos_archive_fingerprints";
+const COMPACT_FP_KEY = "restopos_compact_archive_fingerprints";
 
 let fb = null;
 const timers = {};
@@ -68,6 +71,14 @@ function loadFingerprints() {
 function saveFingerprints(fp) {
   try { localStorage.setItem(FP_KEY, JSON.stringify(fp)); } catch (e) {}
 }
+
+function loadCompactFingerprints() {
+  try { return JSON.parse(localStorage.getItem(COMPACT_FP_KEY) || "{}"); } catch (e) { return {}; }
+}
+function saveCompactFingerprints(fp) {
+  try { localStorage.setItem(COMPACT_FP_KEY, JSON.stringify(fp)); } catch (e) {}
+}
+
 function fingerprint(obj) {
   const s = JSON.stringify(obj);
   let h = 0;
@@ -154,12 +165,58 @@ async function writeDay(licenseKey, date, sales) {
   // without a read per invoice. Always refreshed, even when no bill changed,
   // because a void alters the day's totals without adding a document.
   const sum = summariseSales(normalized);
+async function writeCompactDay(licenseKey,date,sales) {
+  const { db, doc, collection, writeBatch, setDoc, query, where, getDocs } = fb;
+  const compactedAt=new Date().toISOString();
+  const sourceSummary=compactArchiveDay(sales,date,compactedAt);
+  const withId=sourceSummary.records.filter(r=>docIdFor(r.id));
+  const expected=compactArchiveDay(withId,date,compactedAt);
+  const fps=loadCompactFingerprints();
+  const scope=fps[licenseKey]||(fps[licenseKey]={});
+  const changed=[];
+  for(const record of withId){
+    const id=docIdFor(record.id);
+    const body=compactSaleForArchive(record,compactedAt);
+    const {compactedAt:ignored,...stableBody}=body;
+    const fp=fingerprint(stableBody);
+    if(scope[id]===fp)continue;
+    changed.push({id,body,fp});
+  }
+  for(let i=0;i<changed.length;i+=BATCH_LIMIT){
+    const slice=changed.slice(i,i+BATCH_LIMIT);
+    const batch=writeBatch(db);
+    for(const row of slice)batch.set(doc(collection(db,"client_data",licenseKey,"invoices_compact"),row.id),row.body,{merge:true});
+    await batch.commit();
+    for(const row of slice)scope[row.id]=row.fp;
+    saveCompactFingerprints(fps);
+  }
+  const snap=await getDocs(query(collection(db,"client_data",licenseKey,"invoices_compact"),where("date","==",date)));
+  const verifiedRows=snap.docs.map(d=>d.data());
+  const verified=compactArchiveDay(verifiedRows,date,compactedAt);
+  const idsMissing=sourceSummary.recordCount-withId.length;
+  const matches=verified.recordCount===expected.recordCount&&verified.count===expected.count&&verified.total===expected.total&&verified.vat===expected.vat&&verified.fingerprint===expected.fingerprint;
+  const verifiedFlag=idsMissing===0&&matches;
+  const compactIndex={
+    count:sourceSummary.count,total:sourceSummary.total,vat:sourceSummary.vat,net:sourceSummary.net,
+    recordCount:sourceSummary.recordCount,compactDocCount:expected.recordCount,missingIdCount:idsMissing,
+    fingerprint:sourceSummary.fingerprint,verified:verifiedFlag,verifiedAt:verifiedFlag?compactedAt:null,
+  };
+  await setDoc(doc(collection(db,"client_data",licenseKey,"sales_index"),"index"),{
+    licenseKey,days:{[date]:{compact:compactIndex}},updatedAt:compactedAt,
+  },{merge:true});
+  if(!verifiedFlag)console.warn("[Archive] compact snapshot is not verified for",date,{missingIdCount:idsMissing,matches});
+  return compactIndex;
+}
+
   await setDoc(doc(collection(db, "client_data", licenseKey, "sales_index"), "index"), {
     licenseKey,
     days: { [date]: { n: sum.n, total: sum.total, vat: sum.vat, fingerprint: sum.fingerprint } },
     updatedAt: new Date().toISOString(),
   }, { merge: true });
 
+  if(isOlderThanRetention(date,new Date(),90)){
+    await writeCompactDay(licenseKey,date,normalized);
+  }
   return changed.length;
 }
 
