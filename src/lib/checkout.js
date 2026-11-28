@@ -8,9 +8,27 @@
 // calls these instead of recomputing inline.
 // ═══════════════════════════════════════════════════════════════════
 import { round2tx } from "./tax.js";
+import { calculateSale, assertSaleReconciles } from "./financialEngine.js";
+import { productVatRate } from "./taxCategories.js";
 
 const num = (v) => Number(v) || 0;
 const pf = (v) => parseFloat(v) || 0;
+
+/**
+ * Canonical checkout financial calculation: discounts are allocated in cents,
+ * VAT is calculated by tax category/rate, and the sale is asserted to reconcile.
+ * This is a new opt-in integration seam; existing UI behavior is unchanged until
+ * its checkout call site is switched to this helper.
+ */
+export function calculateCheckoutSale(items = [], totalDiscount = 0) {
+  const ratedItems = (items || []).map((item) => ({
+    ...item,
+    vatRate: productVatRate(item) * 100,
+  }));
+  const result = calculateSale(ratedItems, totalDiscount);
+  assertSaleReconciles(result);
+  return result;
+}
 
 /** Manual discount on the subtotal: percent or flat, never more than the subtotal. */
 export function discountManual(subtotal, { type, value } = {}) {
