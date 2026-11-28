@@ -194,11 +194,12 @@ async function writeCompactDay(licenseKey,date,sales) {
   const verifiedRows=snap.docs.map(d=>d.data());
   const verified=compactArchiveDay(verifiedRows,date,compactedAt);
   const idsMissing=sourceSummary.recordCount-withId.length;
+  const dateMismatchCount=withId.filter(record=>record.date!==date).length;
   const matches=verified.recordCount===expected.recordCount&&verified.count===expected.count&&verified.total===expected.total&&verified.vat===expected.vat&&verified.fingerprint===expected.fingerprint;
-  const verifiedFlag=idsMissing===0&&matches;
+  const verifiedFlag=idsMissing===0&&dateMismatchCount===0&&matches;
   const compactIndex={
     count:sourceSummary.count,total:sourceSummary.total,vat:sourceSummary.vat,net:sourceSummary.net,
-    recordCount:sourceSummary.recordCount,compactDocCount:expected.recordCount,missingIdCount:idsMissing,
+    recordCount:sourceSummary.recordCount,compactDocCount:expected.recordCount,missingIdCount:idsMissing,dateMismatchCount,
     fingerprint:sourceSummary.fingerprint,verified:verifiedFlag,verifiedAt:verifiedFlag?compactedAt:null,
   };
   await setDoc(doc(collection(db,"client_data",licenseKey,"sales_index"),"index"),{
