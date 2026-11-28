@@ -376,10 +376,17 @@ export async function loadArchivedInvoice(licenseKey, invoiceNo) {
     const { db, doc, collection, getDoc } = fb;
     const id = docIdFor(invoiceNo);
     if (!id) return null;
-    const snap = await getDoc(doc(collection(db, "client_data", licenseKey, "invoices"), id));
-    if(snap.exists())return cleanRow(snap.data());
-    const compactSnap=await getDoc(doc(collection(db,"client_data",licenseKey,"invoices_compact"),id));
-    return compactSnap.exists()?cleanRow(compactSnap.data()):null;
+    const [detailSnap,compactSnap]=await Promise.all([
+      getDoc(doc(collection(db,"client_data",licenseKey,"invoices"),id)),
+      getDoc(doc(collection(db,"client_data",licenseKey,"invoices_compact"),id)),
+    ]);
+    const detail=detailSnap.exists()?cleanRow(detailSnap.data()):null;
+    const compact=compactSnap.exists()?cleanRow(compactSnap.data()):null;
+    if(compact&&isOlderThanRetention(compact.date,new Date(),90)){
+      const index=await loadArchiveIndex(licenseKey);
+      if(index?.[compact.date]?.compact?.verified)return compact;
+    }
+    return detail||compact||null;
   } catch (e) { return null; }
 }
 
