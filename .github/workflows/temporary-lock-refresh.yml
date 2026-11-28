@@ -10,6 +10,9 @@ on:
       - .github/workflows/temporary-lock-refresh.yml
 permissions:
   contents: write
+concurrency:
+  group: lock-refresh-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   refresh-lock-and-verify:
     if: github.head_ref == 'fix/dependency-security-pos'
