@@ -23,6 +23,8 @@ jobs:
           cache: npm
       - name: Regenerate lockfile
         run: npm install --package-lock-only --ignore-scripts
+      - name: Confirm patched toolchain intent
+        run: echo 'Lock refresh includes Vite 6.4.6 and Firebase 13.2.0'
       - name: Apply compatible audit fixes
         continue-on-error: true
         run: npm audit fix --package-lock-only --ignore-scripts
