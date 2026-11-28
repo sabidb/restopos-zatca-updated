@@ -204,7 +204,7 @@ async function writeCompactDay(licenseKey,date,sales) {
   await setDoc(doc(collection(db,"client_data",licenseKey,"sales_index"),"index"),{
     licenseKey,days:{[date]:{compact:compactIndex}},updatedAt:compactedAt,
   },{merge:true});
-  if(!verifiedFlag)console.warn("[Archive] compact snapshot is not verified for",date,{missingIdCount:idsMissing,matches});
+  if(!verifiedFlag)console.warn("[Archive] compact snapshot is not verified for",date,{missingIdCount:idsMissing,matches,expected:{recordCount:expected.recordCount,count:expected.count,total:expected.total,vat:expected.vat,fingerprint:expected.fingerprint},verified:{recordCount:verified.recordCount,count:verified.count,total:verified.total,vat:verified.vat,fingerprint:verified.fingerprint},snapSize:snap.size});
   return compactIndex;
 }
 
