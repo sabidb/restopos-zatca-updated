@@ -176,7 +176,7 @@ async function writeCompactDay(licenseKey,date,sales) {
   const changed=[];
   for(const record of withId){
     const id=docIdFor(record.id);
-    const body=compactSaleForArchive(record,compactedAt);
+    const body={...compactSaleForArchive(record,compactedAt),date};
     const {compactedAt:ignored,...stableBody}=body;
     const fp=fingerprint(stableBody);
     if(scope[id]===fp)continue;
