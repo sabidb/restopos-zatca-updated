@@ -154,3 +154,24 @@ test("daily report surfaces category VAT divergence without changing saved VAT",
   assert.equal(p.categoryVatDelta, 0.65);
   assert.match(periodReportHTML(p), /Category VAT breakdown differs/);
 });
+
+test("daily and period reports flag duplicate, missing-ID, and malformed financial records",()=>{
+  const sales=[
+    {id:"D1",date:"2026-11-25",status:"completed",total:100,vat:13,updatedAt:"2026-11-25T10:00:00Z"},
+    {id:"D1",date:"2026-11-25",status:"completed",total:100,vat:13,updatedAt:"2026-11-25T11:00:00Z"},
+    {date:"2026-11-25",status:"completed",total:50,vat:6},
+    {id:"D2",date:"2026-11-25",status:"completed",total:null,vat:0},
+  ];
+  const d=buildDailyReport(sales,[],"2026-11-25");
+  assert.equal(d.orderCount,3);
+  assert.equal(d.duplicateSaleCount,1);
+  assert.deepEqual(d.duplicateSaleIds,["D1"]);
+  assert.equal(d.missingSaleIdCount,1);
+  assert.equal(d.invalidFinancialRecordCount,1);
+  assert.match(dailyReportHTML(d),/Sale integrity flags/);
+  const p=buildPeriodReport(sales,[],"2026-11-25","2026-11-25");
+  assert.equal(p.duplicateSaleCount,1);
+  assert.equal(p.missingSaleIdCount,1);
+  assert.equal(p.invalidFinancialRecordCount,1);
+  assert.match(periodReportHTML(p),/Sale integrity flags/);
+});
