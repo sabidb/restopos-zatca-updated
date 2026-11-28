@@ -4,8 +4,8 @@ import { compactSaleForArchive, compactArchiveDay, isOlderThanRetention } from "
 
 test("90-day retention cutoff is strict and uses UTC calendar dates",()=>{
   const now=new Date("2026-11-28T12:00:00Z");
-  assert.equal(isOlderThanRetention("2026-08-29",now,90),false);
-  assert.equal(isOlderThanRetention("2026-08-28",now,90),true);
+  assert.equal(isOlderThanRetention("2026-08-30",now,90),false);
+  assert.equal(isOlderThanRetention("2026-08-29",now,90),true);
   assert.equal(isOlderThanRetention("invalid",now,90),false);
 });
 
