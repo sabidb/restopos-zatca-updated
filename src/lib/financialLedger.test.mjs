@@ -56,8 +56,9 @@ test("legacy migration preserves saved totals without recalculation",()=>{
   assert.equal(m.ledger.sales.length,1);assert.equal(m.ledger.transactions.length,2);
   assert.equal(m.ledger.sales[0].total,115);assert.equal(m.ledger.sales[0].vat,15);
   assert.equal(m.audit.missingTransactionCount,0);
-  assert.equal(m.audit.unlinkedTransactionCount,1);
-  assert.equal(m.audit.totalsMatch,true);
+  assert.equal(m.audit.unlinkedTransactionCount,0);
+  assert.equal(m.audit.orphanTransactionCount,1);
+  assert.equal(m.audit.totalsMatch,false);
   assert.equal(m.ledger.legacyMigration,true);
 });
 
