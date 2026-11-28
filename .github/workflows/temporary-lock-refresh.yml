@@ -1,7 +1,7 @@
 name: Temporary dependency lock refresh
 on:
   push:
-    branches: [fix/dependency-security-pos-verified-verified]
+    branches: [fix/dependency-security-pos-verified]
   pull_request:
     branches: [main]
     paths:
@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   refresh-lock-and-verify:
-    if: github.head_ref == 'fix/dependency-security-pos'
+    if: github.head_ref == 'fix/dependency-security-pos-verified'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
