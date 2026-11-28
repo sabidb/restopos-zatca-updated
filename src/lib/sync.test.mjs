@@ -19,8 +19,8 @@ test("a successful sync records ok + byte size", async () => {
 test("an oversized key is refused and recorded with reason 'oversize'", async () => {
   initSync(okHandles);
   const huge = "x".repeat(SYNC_FIELD_BUDGET_BYTES + 1000);
-  await syncKeyToFirestore("LK", "restopos_archived_sales", huge);
-  const s = getSyncStatus().restopos_archived_sales;
+  await syncKeyToFirestore("LK", "restopos_oversized_test_key", huge);
+  const s = getSyncStatus().restopos_oversized_test_key;
   assert.equal(s.ok, false);
   assert.equal(s.reason, "oversize");
   assert.equal(s.budgetBytes, SYNC_FIELD_BUDGET_BYTES);
@@ -97,4 +97,16 @@ test("failed sync is durably queued and retries from the current local value", a
   }finally{
     if(original===undefined)delete globalThis.localStorage;else globalThis.localStorage=original;
   }
+});
+
+
+test("legacy archived-sales blob is skipped because invoices archive separately", async () => {
+  let writes=0;
+  initSync({db:{},doc:()=>({}),setDoc:async()=>{writes++;}});
+  await syncKeyToFirestore("LK","restopos_archived_sales",[{id:"sale-1"}]);
+  const s=getSyncStatus().restopos_archived_sales;
+  assert.equal(s.ok,true);
+  assert.equal(s.reason,"archived-separately");
+  assert.equal(writes,0);
+  assert.equal(getPendingSyncQueue().some(q=>q.licenseKey==="LK"&&q.key==="restopos_archived_sales"),false);
 });

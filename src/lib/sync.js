@@ -92,6 +92,14 @@ export async function retryPendingSync(licenseKey){
 
 export async function syncKeyToFirestore(licenseKey,key,data){
   if(!licenseKey)return;
+  // Historical archived-sales blobs are deprecated. Invoice history is written
+  // by cloudArchive.js into one document per invoice; sending the legacy blob
+  // through client_data would eventually exceed Firestore's document budget.
+  if(key==="restopos_archived_sales"){
+    _syncStatus[key]={key,ok:true,reason:"archived-separately",message:"Sales history is archived per invoice; legacy blob sync skipped.",at:new Date().toISOString()};
+    removeQueueEntry(licenseKey,key);
+    return;
+  }
   updateQueueEntry(licenseKey,key,{blocked:false,reason:null,lastError:null});
   try{
     const json=JSON.stringify(data);
