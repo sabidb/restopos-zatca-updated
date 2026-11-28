@@ -137,8 +137,8 @@ test("older day writes compact per-invoice snapshots and verifies index while re
   mem.clear();const store={};initCloudArchive(makeFb(store));
   const oldDate="2026-07-01";
   const sales=[
-    {...sale("OLD-1",115,15),items:[{name:"Food",qty:1,price:115,taxCategory:"S"}],receiptHtml:"big"},
-    {...sale("OLD-2",23,3),items:[{name:"Drink",qty:1,price:23,taxCategory:"S"}]},
+    {...sale("OLD-1",115,15),date:oldDate,items:[{name:"Food",qty:1,price:115,taxCategory:"S"}],receiptHtml:"big"},
+    {...sale("OLD-2",23,3),date:oldDate,items:[{name:"Drink",qty:1,price:23,taxCategory:"S"}]},
   ];
   archiveSalesDay("OLDLIC",oldDate,sales);await flushArchive();
   assert.equal(invoiceDocs(store,"OLDLIC").length,2);
@@ -165,7 +165,7 @@ test("recent day remains detailed and is not compacted",async()=>{
 test("verified compact rows are returned for older archive range and invoice lookup",async()=>{
   mem.clear();const store={};initCloudArchive(makeFb(store));
   const date="2026-07-01";
-  const sales=[{...sale("C-1",115,15),items:[{name:"Food",qty:1,price:115,privateNote:"drop"}]}];
+  const sales=[{...sale("C-1",115,15),date,items:[{name:"Food",qty:1,price:115,privateNote:"drop"}]}];
   archiveSalesDay("COMPACTREAD",date,sales);await flushArchive();
   const rows=await loadArchivedRange("COMPACTREAD",date,date);
   assert.equal(rows.length,1);
@@ -178,7 +178,7 @@ test("verified compact rows are returned for older archive range and invoice loo
 test("compact snapshot is unverified when source records lack invoice IDs",async()=>{
   mem.clear();const store={};initCloudArchive(makeFb(store));
   const date="2026-07-01";
-  archiveSalesDay("NOID",date,[sale("N-1",100,13),{...sale("",50,6),date}]);await flushArchive();
+  archiveSalesDay("NOID",date,[ {...sale("N-1",100,13),date},{...sale("",50,6),date}]);await flushArchive();
   const index=store["client_data/NOID/sales_index/index"].days[date];
   assert.equal(index.compact.verified,false);
   assert.equal(index.compact.missingIdCount,1);
