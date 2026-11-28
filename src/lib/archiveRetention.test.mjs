@@ -38,3 +38,10 @@ test("compact archive day deduplicates by id and reconciles completed totals",()
   assert.equal(r.records[0].id,"1");assert.equal(r.records[0].updatedAt,"2026-01-02T00:00:00Z");
   assert.match(r.fingerprint,/^[0-9a-f]{8}$/);
 });
+
+test("compact archive fingerprint is stable when compactedAt changes",()=>{
+  const sale={id:"F1",date:"2026-01-01",status:"completed",total:100,vat:13,items:[{name:"A",qty:1,price:100}]};
+  const a=compactArchiveDay([sale],"2026-01-01","2026-11-28T01:00:00Z");
+  const b=compactArchiveDay([sale],"2026-01-01","2026-11-28T02:00:00Z");
+  assert.equal(a.fingerprint,b.fingerprint);
+});
