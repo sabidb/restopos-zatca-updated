@@ -134,9 +134,16 @@ export function datesWithActivity(sales = [], purchaseDocs = []) {
  * generator so a merchant can pull a week / month / any range as one PDF.
  */
 export function buildPeriodReport(sales = [], purchaseDocs = [], fromStr, toStr) {
-  const uniqueSales = uniqueSalesById(sales);
-  const dates = datesWithActivity(uniqueSales, purchaseDocs).filter((d) => d >= fromStr && d <= toStr).sort();
-  const days = dates.map((d) => buildDailyReport(uniqueSales, purchaseDocs, d));
+  const dates = datesWithActivity(sales, purchaseDocs).filter((d) => d >= fromStr && d <= toStr).sort();
+  const days = dates.map((d) => buildDailyReport(sales, purchaseDocs, d));
+  const rangeSales=(sales||[]).filter(s=>s&&typeof s.date==="string"&&s.date>=fromStr&&s.date<=toStr);
+  const allIdCounts=new Map(),idsInRange=new Set();
+  let missingSaleIdCount=0;
+  (sales||[]).forEach(s=>{if(!s||s.id==null||s.id==="")return;const id=String(s.id);allIdCounts.set(id,(allIdCounts.get(id)||0)+1);if(s.date>=fromStr&&s.date<=toStr)idsInRange.add(id);});
+  rangeSales.forEach(s=>{if(s.id==null||s.id==="")missingSaleIdCount++;});
+  const duplicateSaleIds=[...allIdCounts.entries()].filter(([id,count])=>count>1&&idsInRange.has(id)).map(([id])=>id).slice(0,50);
+  const duplicateSaleCount=[...allIdCounts.entries()].filter(([id,count])=>count>1&&idsInRange.has(id)).reduce((n,[,count])=>n+Math.max(0,count-1),0);
+  const invalidFinancialRecordCount=uniqueSalesById(sales).filter(s=>s&&s.date>=fromStr&&s.date<=toStr&&(s.total==null||s.vat==null||!Number.isFinite(Number(s.total))||!Number.isFinite(Number(s.vat)))).length;
   const sumBy = (f) => r2(days.reduce((s, d) => s + (Number(f(d)) || 0), 0));
   const payBreakdown = {}, catMap = {};
   for (const d of days) {
@@ -156,10 +163,7 @@ export function buildPeriodReport(sales = [], purchaseDocs = [], fromStr, toStr)
     purchasesTotal: sumBy((d) => d.purchasesTotal), purchasesVat, purchasesNet: sumBy((d) => d.purchasesNet),
     recoverableVat, nonRecoverableVat,
     categoryVatTotal, categoryVatDelta: r2(categoryVatTotal - vat),
-    duplicateSaleCount: days.reduce((n,d)=>n+d.duplicateSaleCount,0),
-    duplicateSaleIds: [...new Set(days.flatMap(d=>d.duplicateSaleIds))].slice(0,50),
-    missingSaleIdCount: days.reduce((n,d)=>n+d.missingSaleIdCount,0),
-    invalidFinancialRecordCount: days.reduce((n,d)=>n+d.invalidFinancialRecordCount,0),
+    duplicateSaleCount, duplicateSaleIds, missingSaleIdCount, invalidFinancialRecordCount,
     purchasesCount: days.reduce((s, d) => s + d.purchasesCount, 0),
     netVat: r2(vat - recoverableVat),
     payBreakdown, catList: Object.values(catMap).sort((a, b) => b.revenue - a.revenue),
