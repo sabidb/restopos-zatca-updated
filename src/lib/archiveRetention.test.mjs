@@ -17,6 +17,13 @@ test("compact archive keeps financial, legal, tax and operational identifiers",(
   assert.equal(c.receiptHtml,undefined);assert.equal(c.rawXml,undefined);assert.equal(c.photo,undefined);
   assert.deepEqual(c.zatcaResponse,{status:"reported",errorMessage:""});
   assert.equal(c.compactArchiveVersion,1);
+  assert.deepEqual(c.splitPayments,[{method:"cash",amount:10}]);
+});
+
+test("compact archive truncates raw response text and stores only status summary",()=>{
+  const c=compactSaleForArchive({id:"S2",total:1,vat:0,zatcaResponse:"x".repeat(1000},"2026-11-28T00:00:00Z");
+  assert.equal(c.zatcaResponse,undefined);
+  assert.equal(c.zatcaResponseSummary.length,256);
 });
 
 test("compact archive day deduplicates by id and reconciles completed totals",()=>{
