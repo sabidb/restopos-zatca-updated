@@ -20,5 +20,8 @@
     "@vitejs/plugin-react": "^4.4.1",
     "vite": "^6.4.6",
     "vite-plugin-pwa": "^0.21.2"
+  },
+  "overrides": {
+    "@grpc/grpc-js": "^1.14.5"
   }
 }
