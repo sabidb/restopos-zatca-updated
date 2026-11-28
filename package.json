@@ -11,7 +11,7 @@
     "test:emulator": "node --test 'test/emulator/*.test.mjs'"
   },
   "dependencies": {
-    "firebase": "^10.7.1",
+    "firebase": "^13.2.0",
     "jszip": "^3.10.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
