@@ -21,7 +21,7 @@ test("compact archive keeps financial, legal, tax and operational identifiers",(
 });
 
 test("compact archive truncates raw response text and stores only status summary",()=>{
-  const c=compactSaleForArchive({id:"S2",total:1,vat:0,zatcaResponse:"x".repeat(1000},"2026-11-28T00:00:00Z");
+  const c=compactSaleForArchive({id:"S2",total:1,vat:0,zatcaResponse:"x".repeat(1000)},"2026-11-28T00:00:00Z");
   assert.equal(c.zatcaResponse,undefined);
   assert.equal(c.zatcaResponseSummary.length,256);
 });
