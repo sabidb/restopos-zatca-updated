@@ -55,7 +55,7 @@ export function appendSaleAndTransaction(storage,input,key=DEFAULT_LEDGER_KEY,no
 export function auditLedger(value){
   const ledger=normalizeLedger(value);
   const saleCounts=new Map(),txCounts=new Map(),txBySale=new Map();
-  let missingSaleIdCount=0,missingTransactionCount=0,duplicateSaleCount=0,duplicateTransactionCount=0;
+  let missingSaleIdCount=0,missingTransactionCount=0,duplicateSaleCount=0,duplicateTransactionCount=0,unlinkedTransactionCount=0;
   const mismatches=[];
   for(const sale of ledger.sales){
     if(sale.id==null||sale.id===""){missingSaleIdCount++;continue;}
@@ -64,10 +64,12 @@ export function auditLedger(value){
   for(const tx of ledger.transactions){
     if(tx.id==null||tx.id==="")continue;
     txCounts.set(String(tx.id),(txCounts.get(String(tx.id))||0)+1);
-    if(tx.type==="sale"&&tx.saleId!=null){const id=String(tx.saleId);txBySale.set(id,(txBySale.get(id)||[]).concat(tx));}
+    if((tx.type==="sale"||(!tx.type&&tx.saleId!=null))&&tx.saleId!=null){const id=String(tx.saleId);txBySale.set(id,(txBySale.get(id)||[]).concat(tx));}
+    else if(tx.saleId==null)unlinkedTransactionCount++;
   }
   duplicateSaleCount=[...saleCounts.values()].reduce((n,count)=>n+Math.max(0,count-1),0);
   duplicateTransactionCount=[...txCounts.values()].reduce((n,count)=>n+Math.max(0,count-1),0);
+  const orphanTransactionCount=[...txBySale.keys()].filter(id=>!saleCounts.has(id)).length;
   for(const sale of ledger.sales){
     const id=String(sale.id||"");
     if(!id)continue;
@@ -82,7 +84,7 @@ export function auditLedger(value){
   const completed=ledger.sales.filter(s=>!s.isDraft&&s.status!=="voided"&&s.status!=="cancelled");
   const saleTotals={total:completed.reduce((n,s)=>n+(Number(s.total)||0),0),net:completed.reduce((n,s)=>n+(Number(s.net)||0),0),vat:completed.reduce((n,s)=>n+(Number(s.vat)||0),0)};
   const txTotals=ledger.transactions.filter(t=>t.type==="sale").reduce((a,t)=>({total:a.total+(Number(t.total)||0),net:a.net+(Number(t.net)||0),vat:a.vat+(Number(t.vat)||0)}),{total:0,net:0,vat:0});
-  return {saleCount:ledger.sales.length,transactionCount:ledger.transactions.length,missingSaleIdCount,missingTransactionCount,duplicateSaleCount,duplicateTransactionCount,mismatches,saleTotals,transactionTotals:txTotals,totalsMatch:["total","net","vat"].every(k=>Math.round(saleTotals[k]*100)===Math.round(txTotals[k]*100))};
+  return {saleCount:ledger.sales.length,transactionCount:ledger.transactions.length,missingSaleIdCount,missingTransactionCount,duplicateSaleCount,duplicateTransactionCount,unlinkedTransactionCount,orphanTransactionCount,mismatches,saleTotals,transactionTotals:txTotals,totalsMatch:["total","net","vat"].every(k=>Math.round(saleTotals[k]*100)===Math.round(txTotals[k]*100))};
 }
 function mergeRecords(left=[],right=[],keyField="id"){
   const map=new Map(),conflicts=[];
@@ -109,7 +111,8 @@ export function mergeLedgers(left,right,now=new Date().toISOString()){
 }
 export function migrateLegacyLedger(sales=[],transactions=[],now=new Date().toISOString()){
   const salesResult=mergeRecords([],sales,"id");
-  const txResult=mergeRecords([],transactions,"id");
+  const normalizedTransactions=(transactions||[]).map(tx=>tx&&tx.type==null&&tx.saleId!=null?{...tx,type:"sale",legacyTypeInferred:true}:tx);
+  const txResult=mergeRecords([],normalizedTransactions,"id");
   const ledger={version:1,sales:salesResult.records,transactions:txResult.records,updatedAt:now,legacyMigration:true};
   return {ledger,audit:auditLedger(ledger),conflicts:[...salesResult.conflicts,...txResult.conflicts]};
 }
