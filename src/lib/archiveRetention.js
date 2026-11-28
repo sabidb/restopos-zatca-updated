@@ -34,9 +34,13 @@ export function compactSaleForArchive(sale, compactedAt=new Date().toISOString()
   const out=pick(sale,SALE_FIELDS);
   if(Array.isArray(sale?.items)) out.items=compactItems(sale.items);
   if(Array.isArray(sale?.payments)) out.payments=compactPayments(sale.payments);
+  if(Array.isArray(sale?.splitPayments)) out.splitPayments=compactPayments(sale.splitPayments);
   // Keep the ZATCA response envelope's non-sensitive status metadata only.
   if(sale?.zatcaResponse && typeof sale.zatcaResponse==="object") {
     out.zatcaResponse=pick(sale.zatcaResponse,["status","validationStatus","reportingStatus","clearingStatus","warnings","errorCode","errorMessage","reportedAt"]);
+  } else if(typeof sale?.zatcaResponse==="string") {
+    out.zatcaResponseSummary=sale.zatcaResponse.slice(0,256);
+    delete out.zatcaResponse;
   }
   out.compactArchiveVersion=1;
   out.compactedAt=compactedAt;
