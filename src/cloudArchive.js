@@ -292,6 +292,25 @@ export async function loadArchiveIndex(licenseKey) {
 
 const cleanRow = (d) => { const { archivedAt, ...rest } = d || {}; return rest; };
 
+/** Compact invoice snapshots between two dates, oldest first. */
+export async function loadCompactArchivedRange(licenseKey,fromDate,toDate){
+  if(!fb||!licenseKey)return [];
+  const {db,collection,query,where,orderBy,limit,startAfter,getDocs}=fb;
+  const out=[];
+  try{
+    let cursor=null;
+    for(;;){
+      const parts=[collection(db,"client_data",licenseKey,"invoices_compact"),where("date",">=",fromDate),where("date","<=",toDate),orderBy("date","asc"),...(cursor?[startAfter(cursor)]:[]),limit(PAGE_SIZE)];
+      const snap=await getDocs(query(...parts));
+      snap.docs.forEach(d=>out.push(cleanRow(d.data())));
+      if(snap.docs.length<PAGE_SIZE)break;
+      cursor=snap.docs[snap.docs.length-1];
+    }
+  }catch(e){console.warn("[Archive] compact range read failed:",e&&e.message);}
+  out.sort((a,b)=>String(a.createdAt||a.date||"").localeCompare(String(b.createdAt||b.date||""))||String(a.id||"").localeCompare(String(b.id||"")));
+  return out;
+}
+
 /**
  * Bills between two dates (inclusive), oldest first. Paginated, so a request
  * for several years cannot pull an unbounded result set into memory at once.
@@ -325,6 +344,19 @@ export async function loadArchivedRange(licenseKey, fromDate, toDate) {
   // Invoice number breaks ties: two bills rung up in the same second would
   // otherwise come back in whatever order the pages happened to arrive, so the
   // same report could list them differently twice running.
+  // Prefer verified compact snapshots for old dates; retain detailed rows for
+  // recent days and for older dates whose compact copy has not been verified.
+  try{
+    const [compactRows,index]=await Promise.all([loadCompactArchivedRange(licenseKey,fromDate,toDate),loadArchiveIndex(licenseKey)]);
+    const compactByDate=new Map();
+    for(const row of compactRows){if(!compactByDate.has(row.date))compactByDate.set(row.date,[]);compactByDate.get(row.date).push(row);}
+    const verifiedDates=new Set(Object.entries(index||{}).filter(([date,day])=>isOlderThanRetention(date,new Date(),90)&&day?.compact?.verified).map(([date])=>date));
+    const datesToReplace=new Set([...compactByDate.keys()].filter(date=>verifiedDates.has(date)));
+    if(datesToReplace.size){
+      const detailed=out.filter(row=>!datesToReplace.has(row.date));
+      out.splice(0,out.length,...detailed,...compactRows.filter(row=>datesToReplace.has(row.date)));
+    }
+  }catch(e){console.warn("[Archive] compact fallback read failed:",e&&e.message);}
   out.sort((a, b) =>
     String(a.createdAt || a.date || "").localeCompare(String(b.createdAt || b.date || ""))
     || String(a.id || "").localeCompare(String(b.id || "")));
@@ -344,7 +376,9 @@ export async function loadArchivedInvoice(licenseKey, invoiceNo) {
     const id = docIdFor(invoiceNo);
     if (!id) return null;
     const snap = await getDoc(doc(collection(db, "client_data", licenseKey, "invoices"), id));
-    return snap.exists() ? cleanRow(snap.data()) : null;
+    if(snap.exists())return cleanRow(snap.data());
+    const compactSnap=await getDoc(doc(collection(db,"client_data",licenseKey,"invoices_compact"),id));
+    return compactSnap.exists()?cleanRow(compactSnap.data()):null;
   } catch (e) { return null; }
 }
 
@@ -441,7 +475,7 @@ export async function backfillArchive(licenseKey) {
 // answer "what did we take yesterday" instantly — and anything older is read
 // from the cloud on demand. Pulling it all down would fail on quota partway
 // through and leave a mess.
-const RESTORE_DAYS = 120;
+const RESTORE_DAYS = 90;
 const RESTORE_BUDGET_BYTES = 3000000;
 const bytes = (s) => (typeof TextEncoder !== "undefined" ? new TextEncoder().encode(s).length : s.length * 2);
 
