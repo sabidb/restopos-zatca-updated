@@ -45,10 +45,13 @@
 // Everything is best-effort: a failed archive write must never break the till.
 // ═══════════════════════════════════════════════════════════════════
 
+import { compactArchiveDay, compactSaleForArchive, isOlderThanRetention } from "./lib/archiveRetention.js";
+
 const DEBOUNCE_MS = 8000;
 const BATCH_LIMIT = 400;          // Firestore caps a batch at 500; leave headroom.
 const PAGE_SIZE = 1000;           // read pagination, so a wide range can't spike memory
 const FP_KEY = "restopos_archive_fingerprints";
+const COMPACT_FP_KEY = "restopos_compact_archive_fingerprints";
 
 let fb = null;
 const timers = {};
@@ -68,6 +71,14 @@ function loadFingerprints() {
 function saveFingerprints(fp) {
   try { localStorage.setItem(FP_KEY, JSON.stringify(fp)); } catch (e) {}
 }
+
+function loadCompactFingerprints() {
+  try { return JSON.parse(localStorage.getItem(COMPACT_FP_KEY) || "{}"); } catch (e) { return {}; }
+}
+function saveCompactFingerprints(fp) {
+  try { localStorage.setItem(COMPACT_FP_KEY, JSON.stringify(fp)); } catch (e) {}
+}
+
 function fingerprint(obj) {
   const s = JSON.stringify(obj);
   let h = 0;
@@ -154,12 +165,59 @@ async function writeDay(licenseKey, date, sales) {
   // without a read per invoice. Always refreshed, even when no bill changed,
   // because a void alters the day's totals without adding a document.
   const sum = summariseSales(normalized);
+async function writeCompactDay(licenseKey,date,sales) {
+  const { db, doc, collection, writeBatch, setDoc, query, where, getDocs } = fb;
+  const compactedAt=new Date().toISOString();
+  const sourceSummary=compactArchiveDay(sales,date,compactedAt);
+  const withId=sourceSummary.records.filter(r=>docIdFor(r.id));
+  const expected=compactArchiveDay(withId,date,compactedAt);
+  const fps=loadCompactFingerprints();
+  const scope=fps[licenseKey]||(fps[licenseKey]={});
+  const changed=[];
+  for(const record of withId){
+    const id=docIdFor(record.id);
+    const body={...compactSaleForArchive(record,compactedAt),date};
+    const {compactedAt:ignored,...stableBody}=body;
+    const fp=fingerprint(stableBody);
+    if(scope[id]===fp)continue;
+    changed.push({id,body,fp});
+  }
+  for(let i=0;i<changed.length;i+=BATCH_LIMIT){
+    const slice=changed.slice(i,i+BATCH_LIMIT);
+    const batch=writeBatch(db);
+    for(const row of slice)batch.set(doc(collection(db,"client_data",licenseKey,"invoices_compact"),row.id),row.body,{merge:true});
+    await batch.commit();
+    for(const row of slice)scope[row.id]=row.fp;
+    saveCompactFingerprints(fps);
+  }
+  const snap=await getDocs(query(collection(db,"client_data",licenseKey,"invoices_compact"),where("date","==",date)));
+  const verifiedRows=snap.docs.map(d=>d.data());
+  const verified=compactArchiveDay(verifiedRows,date,compactedAt);
+  const idsMissing=sourceSummary.recordCount-withId.length;
+  const dateMismatchCount=withId.filter(record=>record.date!==date).length;
+  const matches=verified.recordCount===expected.recordCount&&verified.count===expected.count&&verified.total===expected.total&&verified.vat===expected.vat&&verified.fingerprint===expected.fingerprint;
+  const verifiedFlag=idsMissing===0&&dateMismatchCount===0&&matches;
+  const compactIndex={
+    count:sourceSummary.count,total:sourceSummary.total,vat:sourceSummary.vat,net:sourceSummary.net,
+    recordCount:sourceSummary.recordCount,compactDocCount:expected.recordCount,missingIdCount:idsMissing,dateMismatchCount,
+    fingerprint:sourceSummary.fingerprint,verified:verifiedFlag,verifiedAt:verifiedFlag?compactedAt:null,
+  };
+  await setDoc(doc(collection(db,"client_data",licenseKey,"sales_index"),"index"),{
+    licenseKey,days:{[date]:{compact:compactIndex}},updatedAt:compactedAt,
+  },{merge:true});
+  if(!verifiedFlag)console.warn("[Archive] compact snapshot is not verified for",date,{missingIdCount:idsMissing,matches,expected:{recordCount:expected.recordCount,count:expected.count,total:expected.total,vat:expected.vat,fingerprint:expected.fingerprint},verified:{recordCount:verified.recordCount,count:verified.count,total:verified.total,vat:verified.vat,fingerprint:verified.fingerprint},snapSize:snap.size});
+  return compactIndex;
+}
+
   await setDoc(doc(collection(db, "client_data", licenseKey, "sales_index"), "index"), {
     licenseKey,
     days: { [date]: { n: sum.n, total: sum.total, vat: sum.vat, fingerprint: sum.fingerprint } },
     updatedAt: new Date().toISOString(),
   }, { merge: true });
 
+  if(isOlderThanRetention(date,new Date(),90)){
+    await writeCompactDay(licenseKey,date,normalized);
+  }
   return changed.length;
 }
 
@@ -235,6 +293,25 @@ export async function loadArchiveIndex(licenseKey) {
 
 const cleanRow = (d) => { const { archivedAt, ...rest } = d || {}; return rest; };
 
+/** Compact invoice snapshots between two dates, oldest first. */
+export async function loadCompactArchivedRange(licenseKey,fromDate,toDate){
+  if(!fb||!licenseKey)return [];
+  const {db,collection,query,where,orderBy,limit,startAfter,getDocs}=fb;
+  const out=[];
+  try{
+    let cursor=null;
+    for(;;){
+      const parts=[collection(db,"client_data",licenseKey,"invoices_compact"),where("date",">=",fromDate),where("date","<=",toDate),orderBy("date","asc"),...(cursor?[startAfter(cursor)]:[]),limit(PAGE_SIZE)];
+      const snap=await getDocs(query(...parts));
+      snap.docs.forEach(d=>out.push(cleanRow(d.data())));
+      if(snap.docs.length<PAGE_SIZE)break;
+      cursor=snap.docs[snap.docs.length-1];
+    }
+  }catch(e){console.warn("[Archive] compact range read failed:",e&&e.message);}
+  out.sort((a,b)=>String(a.createdAt||a.date||"").localeCompare(String(b.createdAt||b.date||""))||String(a.id||"").localeCompare(String(b.id||"")));
+  return out;
+}
+
 /**
  * Bills between two dates (inclusive), oldest first. Paginated, so a request
  * for several years cannot pull an unbounded result set into memory at once.
@@ -268,6 +345,19 @@ export async function loadArchivedRange(licenseKey, fromDate, toDate) {
   // Invoice number breaks ties: two bills rung up in the same second would
   // otherwise come back in whatever order the pages happened to arrive, so the
   // same report could list them differently twice running.
+  // Prefer verified compact snapshots for old dates; retain detailed rows for
+  // recent days and for older dates whose compact copy has not been verified.
+  try{
+    const [compactRows,index]=await Promise.all([loadCompactArchivedRange(licenseKey,fromDate,toDate),loadArchiveIndex(licenseKey)]);
+    const compactByDate=new Map();
+    for(const row of compactRows){if(!compactByDate.has(row.date))compactByDate.set(row.date,[]);compactByDate.get(row.date).push(row);}
+    const verifiedDates=new Set(Object.entries(index||{}).filter(([date,day])=>isOlderThanRetention(date,new Date(),90)&&day?.compact?.verified).map(([date])=>date));
+    const datesToReplace=new Set([...compactByDate.keys()].filter(date=>verifiedDates.has(date)));
+    if(datesToReplace.size){
+      const detailed=out.filter(row=>!datesToReplace.has(row.date));
+      out.splice(0,out.length,...detailed,...compactRows.filter(row=>datesToReplace.has(row.date)));
+    }
+  }catch(e){console.warn("[Archive] compact fallback read failed:",e&&e.message);}
   out.sort((a, b) =>
     String(a.createdAt || a.date || "").localeCompare(String(b.createdAt || b.date || ""))
     || String(a.id || "").localeCompare(String(b.id || "")));
@@ -286,8 +376,17 @@ export async function loadArchivedInvoice(licenseKey, invoiceNo) {
     const { db, doc, collection, getDoc } = fb;
     const id = docIdFor(invoiceNo);
     if (!id) return null;
-    const snap = await getDoc(doc(collection(db, "client_data", licenseKey, "invoices"), id));
-    return snap.exists() ? cleanRow(snap.data()) : null;
+    const [detailSnap,compactSnap]=await Promise.all([
+      getDoc(doc(collection(db,"client_data",licenseKey,"invoices"),id)),
+      getDoc(doc(collection(db,"client_data",licenseKey,"invoices_compact"),id)),
+    ]);
+    const detail=detailSnap.exists()?cleanRow(detailSnap.data()):null;
+    const compact=compactSnap.exists()?cleanRow(compactSnap.data()):null;
+    if(compact&&isOlderThanRetention(compact.date,new Date(),90)){
+      const index=await loadArchiveIndex(licenseKey);
+      if(index?.[compact.date]?.compact?.verified)return compact;
+    }
+    return detail||compact||null;
   } catch (e) { return null; }
 }
 
@@ -384,7 +483,7 @@ export async function backfillArchive(licenseKey) {
 // answer "what did we take yesterday" instantly — and anything older is read
 // from the cloud on demand. Pulling it all down would fail on quota partway
 // through and leave a mess.
-const RESTORE_DAYS = 120;
+const RESTORE_DAYS = 90;
 const RESTORE_BUDGET_BYTES = 3000000;
 const bytes = (s) => (typeof TextEncoder !== "undefined" ? new TextEncoder().encode(s).length : s.length * 2);
 
